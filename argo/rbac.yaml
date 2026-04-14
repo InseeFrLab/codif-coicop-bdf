@@ -1,0 +1,30 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: workflow
+  namespace: projet-budget-famille
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: workflow-role
+  namespace: projet-budget-famille
+rules:
+  - apiGroups: ["argoproj.io"]
+    resources:
+      - workflowtaskresults
+    verbs: ["create", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: workflow-role-binding
+  namespace: projet-budget-famille
+subjects:
+  - kind: ServiceAccount
+    name: workflow
+    namespace: projet-budget-famille
+roleRef:
+  kind: Role
+  name: workflow-role
+  apiGroup: rbac.authorization.k8s.io

@@ -1,0 +1,505 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: pipeline-
+spec:
+  entrypoint: pipeline
+  serviceAccountName: workflow
+
+  podSpecPatch: |
+    containers:
+      - name: main
+        env:
+          - name: AWS_DEFAULT_REGION
+            value: "us-east-1"
+
+  arguments:
+    parameters:
+      - name: sample_size
+        value: ""
+      - name: model-name
+        value: ""
+      - name: skip-vector-db
+        value: "false"
+
+  templates:
+
+    # -----------------------------------------------------------------------
+    # Main pipeline: DAG with parallelism
+    #
+    #                    ┌──→ prune-coicop ──→ create-vector-db ──┐  (skippable)
+    #   preprocessing ──┤                                         ├──→ run-rag
+    #                    └──→ prune-annotations ──→ codif-regex ──┘
+    #                                                └──→ codif-lcs
+    # -----------------------------------------------------------------------
+    - name: pipeline
+      dag:
+        tasks:
+          - name: preprocessing
+            template: preprocessing
+
+          - name: prune-coicop
+            dependencies: [preprocessing]
+            template: prune-coicop
+            when: "\"{{workflow.parameters.skip-vector-db}}\" != \"true\""
+
+          - name: codif-regex
+            dependencies: [prune-annotations]
+            template: codif-regex
+
+          - name: prune-annotations
+            dependencies: [preprocessing]
+            template: prune-annotations
+
+          - name: codif-lcs
+            dependencies: [codif-regex]
+            template: codif-lcs
+
+          - name: create-vector-db
+            dependencies: [prune-coicop]
+            template: create-vector-db
+            when: "\"{{workflow.parameters.skip-vector-db}}\" != \"true\""
+
+          - name: run-rag
+            dependencies: [create-vector-db, codif-regex]
+            template: run-rag
+            arguments:
+              parameters:
+                - name: sample_size
+                  value: "{{workflow.parameters.sample_size}}"
+                - name: model-name
+                  value: "{{workflow.parameters.model-name}}"
+
+    # -----------------------------------------------------------------------
+    # Step 0: Preprocessing — construction du dataset
+    # -----------------------------------------------------------------------
+    - name: preprocessing
+      container:
+        image: inseefrlab/onyxia-vscode-python:py3.13.12
+        command: [sh, -c]
+        args:
+          - |
+            set -e
+            git clone --branch main https://git.lab.sspcloud.fr/ssplab/experimentation-bdf/construction-dataset.git repo && cd repo
+            uv sync
+            uv run main.py
+        env:
+          - name: AWS_ACCESS_KEY_ID
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_ACCESS_KEY_ID
+          - name: AWS_SECRET_ACCESS_KEY
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_SECRET_ACCESS_KEY
+          - name: AWS_SESSION_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_SESSION_TOKEN
+          - name: AWS_S3_ENDPOINT
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_S3_ENDPOINT
+          - name: AWS_ENDPOINT_URL
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_ENDPOINT_URL
+        resources:
+          requests:
+            memory: 2Gi
+            cpu: 100m
+          limits:
+            memory: 50Gi
+            cpu: 15000m
+
+    # -----------------------------------------------------------------------
+    # Step 0b: Codification par regex
+    # -----------------------------------------------------------------------
+    - name: codif-regex
+      container:
+        image: inseefrlab/onyxia-vscode-python:py3.13.12
+        command: [sh, -c]
+        args:
+          - |
+            set -e
+            git clone --branch main https://git.lab.sspcloud.fr/ssplab/experimentation-bdf/regex_codif.git repo && cd repo
+            uv sync
+            uv run src/main.py
+        env:
+          - name: AWS_ACCESS_KEY_ID
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_ACCESS_KEY_ID
+          - name: AWS_SECRET_ACCESS_KEY
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_SECRET_ACCESS_KEY
+          - name: AWS_SESSION_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_SESSION_TOKEN
+          - name: AWS_S3_ENDPOINT
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_S3_ENDPOINT
+          - name: AWS_ENDPOINT_URL
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_ENDPOINT_URL
+        resources:
+          requests:
+            memory: 2Gi
+            cpu: 100m
+          limits:
+            memory: 50Gi
+            cpu: 15000m
+
+    # -----------------------------------------------------------------------
+    # Step 0c: Codification par LCS
+    # -----------------------------------------------------------------------
+    - name: codif-lcs
+      container:
+        image: inseefrlab/onyxia-vscode-r-python-julia:r4.5.3-py3.13.12
+        command: [sh, -c]
+        args:
+          - |
+            set -e
+            git clone --branch main https://git.lab.sspcloud.fr/ssplab/experimentation-bdf/stats-annotations.git repo && cd repo
+            Rscript R/main.R
+        env:
+          - name: AWS_ACCESS_KEY_ID
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_ACCESS_KEY_ID
+          - name: AWS_SECRET_ACCESS_KEY
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_SECRET_ACCESS_KEY
+          - name: AWS_SESSION_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_SESSION_TOKEN
+          - name: AWS_S3_ENDPOINT
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_S3_ENDPOINT
+          - name: AWS_ENDPOINT_URL
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_ENDPOINT_URL
+        resources:
+          requests:
+            memory: 2Gi
+            cpu: 100m
+          limits:
+            memory: 50Gi
+            cpu: 15000m
+
+    # -----------------------------------------------------------------------
+    # Step 1: Prune COICOP nomenclature
+    # -----------------------------------------------------------------------
+    - name: prune-coicop
+      inputs:
+        parameters:
+          - name: config
+            value: config/config.yaml
+      container:
+        image: inseefrlab/onyxia-vscode-python:py3.13.12
+        command: [sh, -c]
+        args:
+          - |
+            set -e
+            git clone --branch main https://github.com/InseeFrLab/coicop-rag.git repo && cd repo
+            uv run scripts/0_prunning_coicop.py --config {{inputs.parameters.config}}
+        env:
+          - name: AWS_ACCESS_KEY_ID
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_ACCESS_KEY_ID
+          - name: AWS_SECRET_ACCESS_KEY
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_SECRET_ACCESS_KEY
+          - name: AWS_SESSION_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_SESSION_TOKEN
+          - name: DDC_ENCRYPTION_KEY
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: DDC_ENCRYPTION_KEY
+        resources:
+          requests:
+            memory: 2Gi
+            cpu: 100m
+          limits:
+            memory: 50Gi
+            cpu: 15000m
+
+    # -----------------------------------------------------------------------
+    # Step 2: Prune annotations
+    # -----------------------------------------------------------------------
+    - name: prune-annotations
+      inputs:
+        parameters:
+          - name: config
+            value: config/config.yaml
+      container:
+        image: inseefrlab/onyxia-vscode-python:py3.13.12
+        command: [sh, -c]
+        args:
+          - |
+            set -e
+            git clone --branch main https://github.com/InseeFrLab/coicop-rag.git repo && cd repo
+            uv run scripts/1_prune_annotations.py --config {{inputs.parameters.config}}
+        env:
+          - name: AWS_ACCESS_KEY_ID
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_ACCESS_KEY_ID
+          - name: AWS_SECRET_ACCESS_KEY
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_SECRET_ACCESS_KEY
+          - name: AWS_SESSION_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_SESSION_TOKEN
+          - name: DDC_ENCRYPTION_KEY
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: DDC_ENCRYPTION_KEY
+        resources:
+          requests:
+            memory: 2Gi
+            cpu: 100m
+          limits:
+            memory: 50Gi
+            cpu: 15000m
+
+    # -----------------------------------------------------------------------
+    # Step 2b: Create vector database
+    # -----------------------------------------------------------------------
+    - name: create-vector-db
+      inputs:
+        parameters:
+          - name: config
+            value: config/config.yaml
+      container:
+        image: inseefrlab/onyxia-vscode-python:py3.13.12
+        command: [sh, -c]
+        args:
+          - |
+            set -e
+            git clone --branch main https://github.com/InseeFrLab/coicop-rag.git repo && cd repo
+            uv run scripts/0_create_vector_db.py --config {{inputs.parameters.config}}
+        env:
+          - name: AWS_ACCESS_KEY_ID
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_ACCESS_KEY_ID
+          - name: AWS_SECRET_ACCESS_KEY
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_SECRET_ACCESS_KEY
+          - name: AWS_SESSION_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_SESSION_TOKEN
+          - name: DDC_ENCRYPTION_KEY
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: DDC_ENCRYPTION_KEY
+          - name: VLLM_EMBEDDING_URL
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: VLLM_EMBEDDING_URL
+          - name: VLLM_EMBEDDING_API_KEY
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: VLLM_EMBEDDING_API_KEY
+          - name: QDRANT_URL
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: QDRANT_URL
+          - name: QDRANT_API_KEY
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: QDRANT_API_KEY
+          - name: QDRANT_API_PORT
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: QDRANT_API_PORT
+        resources:
+          requests:
+            memory: 2Gi
+            cpu: 100m
+          limits:
+            memory: 50Gi
+            cpu: 15000m
+
+    # -----------------------------------------------------------------------
+    # Step 3: Run RAG pipeline
+    # -----------------------------------------------------------------------
+    - name: run-rag
+      inputs:
+        parameters:
+          - name: config
+            value: config/config.yaml
+          - name: sample_size
+          - name: model-name
+      container:
+        image: inseefrlab/onyxia-vscode-python:py3.13.12
+        command: [sh, -c]
+        args:
+          - |
+            set -e
+            git clone --branch main https://github.com/InseeFrLab/coicop-rag.git repo && cd repo
+            mkdir -p logs prompts
+
+            ARGS="--config {{inputs.parameters.config}}"
+
+            if [ -n "{{inputs.parameters.sample_size}}" ]; then
+              ARGS="$ARGS --sample_size {{inputs.parameters.sample_size}}"
+            fi
+
+            if [ -n "{{inputs.parameters.model-name}}" ]; then
+              ARGS="$ARGS --model_name {{inputs.parameters.model-name}}"
+            fi
+
+            uv run scripts/2_run_rag.py $ARGS
+        env:
+          - name: LANGFUSE_BASE_URL
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: LANGFUSE_BASE_URL
+          - name: LANGFUSE_PUBLIC_KEY
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: LANGFUSE_PUBLIC_KEY
+          - name: LANGFUSE_SECRET_KEY
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: LANGFUSE_SECRET_KEY
+          - name: MLFLOW_TRACKING_URI
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: MLFLOW_TRACKING_URI
+          - name: MLFLOW_TRACKING_USERNAME
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: MLFLOW_TRACKING_USERNAME
+          - name: MLFLOW_TRACKING_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: MLFLOW_TRACKING_PASSWORD
+          - name: OLLAMA_API_KEY
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: OLLAMA_API_KEY
+          - name: OLLAMA_URL
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: OLLAMA_URL
+          - name: QDRANT_URL
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: QDRANT_URL
+          - name: QDRANT_API_KEY
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: QDRANT_API_KEY
+          - name: QDRANT_API_PORT
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: QDRANT_API_PORT
+          - name: VLLM_EMBEDDING_URL
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: VLLM_EMBEDDING_URL
+          - name: VLLM_EMBEDDING_API_KEY
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: VLLM_EMBEDDING_API_KEY
+          - name: VLLM_GENERATION_URL
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: VLLM_GENERATION_URL
+          - name: VLLM_GENERATION_API_KEY
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: VLLM_GENERATION_API_KEY
+          - name: AWS_ACCESS_KEY_ID
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_ACCESS_KEY_ID
+          - name: AWS_SECRET_ACCESS_KEY
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_SECRET_ACCESS_KEY
+          - name: AWS_SESSION_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_SESSION_TOKEN
+          - name: DDC_ENCRYPTION_KEY
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: DDC_ENCRYPTION_KEY
+        resources:
+          requests:
+            memory: 2Gi
+            cpu: 100m
+          limits:
+            memory: 50Gi
+            cpu: 15000m
