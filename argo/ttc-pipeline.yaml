@@ -1,0 +1,77 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: ttc-predictions-
+spec:
+  entrypoint: pipeline
+  serviceAccountName: workflow
+
+  templates:
+    - name: pipeline
+      dag:
+        tasks:
+          - name: run-ttc
+            template: run-ttc
+
+    - name: run-ttc
+      inputs:
+        parameters:
+          - name: config
+            value: config/config.yaml
+          - name: sample_size
+          - name: model-name
+      container:
+        image: ghcr.io/micedre/coicop_bdf_classifier:latest
+        command: ["python", "main.py"]
+        args:
+          - predict-basic
+          - "--model"
+          - "mlflow-artifacts:/10/cacf2603514b4887bbfb77e2654c9bc1/artifacts/model"
+          - "--file"
+          - "s3://projet-budget-famille/data/output-annotation-consolidated/annotations-consolidated-2026-04-15/raw_test.parquet"
+          - "--output"
+          - 's3://projet-budget-famille/data/workflow_outputs/outputs_ttc/predictions_{{= sprig.date "20060102150405" sprig.now }}.parquet'
+          - "--text-column"
+          - "l_pr_product"
+          - "--top-k"
+          - "10"
+        env:
+          - name: MLFLOW_TRACKING_URI
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: MLFLOW_TRACKING_URI
+          - name: MLFLOW_TRACKING_USERNAME
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: MLFLOW_TRACKING_USERNAME
+          - name: MLFLOW_TRACKING_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: MLFLOW_TRACKING_PASSWORD
+          - name: AWS_ACCESS_KEY_ID
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_ACCESS_KEY_ID
+          - name: AWS_SECRET_ACCESS_KEY
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_SECRET_ACCESS_KEY
+          - name: AWS_SESSION_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_SESSION_TOKEN
+          - name: AWS_S3_ENDPOINT
+            value: minio.lab.sspcloud.fr
+        resources:
+          requests:
+            memory: 500Mi
+            cpu: 100m
+          limits:
+            memory: 50Gi
+            cpu: 15000m
