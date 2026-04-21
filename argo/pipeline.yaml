@@ -83,7 +83,7 @@ spec:
         args:
           - |
             set -e
-            git clone --branch main https://git.lab.sspcloud.fr/ssplab/experimentation-bdf/construction-dataset.git repo && cd repo
+            git clone --branch main https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/preprocessing
             uv sync
             uv run main.py
         env:
@@ -130,7 +130,7 @@ spec:
         args:
           - |
             set -e
-            git clone --branch main https://git.lab.sspcloud.fr/ssplab/experimentation-bdf/regex_codif.git repo && cd repo
+            git clone --branch main https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/regex-codif
             uv sync
             uv run src/main.py
         env:
@@ -177,7 +177,7 @@ spec:
         args:
           - |
             set -e
-            git clone --branch main https://git.lab.sspcloud.fr/ssplab/experimentation-bdf/stats-annotations.git repo && cd repo
+            git clone --branch main https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/stats-annotations
             Rscript R/main.R
         env:
           - name: AWS_ACCESS_KEY_ID
@@ -227,7 +227,7 @@ spec:
         args:
           - |
             set -e
-            git clone --branch main https://github.com/InseeFrLab/coicop-rag.git repo && cd repo
+            git clone --branch main https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/coicop-rag
             uv run scripts/0_prunning_coicop.py --config {{inputs.parameters.config}}
         env:
           - name: AWS_ACCESS_KEY_ID
@@ -272,7 +272,7 @@ spec:
         args:
           - |
             set -e
-            git clone --branch main https://github.com/InseeFrLab/coicop-rag.git repo && cd repo
+            git clone --branch main https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/coicop-rag
             uv run scripts/1_prune_annotations.py --config {{inputs.parameters.config}}
         env:
           - name: AWS_ACCESS_KEY_ID
@@ -317,7 +317,7 @@ spec:
         args:
           - |
             set -e
-            git clone --branch main https://github.com/InseeFrLab/coicop-rag.git repo && cd repo
+            git clone --branch main https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/coicop-rag
             uv run scripts/0_create_vector_db.py --config {{inputs.parameters.config}}
         env:
           - name: AWS_ACCESS_KEY_ID
@@ -389,7 +389,7 @@ spec:
         args:
           - |
             set -e
-            git clone --branch main https://github.com/InseeFrLab/coicop-rag.git repo && cd repo
+            git clone --branch main https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/coicop-rag
             mkdir -p logs prompts
 
             ARGS="--config {{inputs.parameters.config}}"
