@@ -1,0 +1,29 @@
+argo/pipeline.yaml
+  2f8a7e91f7e91c8b 181
+regex-codif/src/utils/load_config.py
+  2f8a7e91f7e91c8b 17-29
+regex-codif/src/main.py
+  2f8a7e91f7e91c8b 1,6,15-21,25,32
+regex-codif/config/config.yaml
+  2f8a7e91f7e91c8b 2-4,6-8,12
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.2",
+  "base_commit_sha": "00256d333164b16084259c1c2a6841ea8c761ac8",
+  "prompts": {
+    "2f8a7e91f7e91c8b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c3c1e12e-edd7-4b8c-873e-b60b2932e5d0",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "h4njlg",
+      "messages": [],
+      "total_additions": 195,
+      "total_deletions": 10,
+      "accepted_lines": 322,
+      "overriden_lines": 0
+    }
+  }
+}
