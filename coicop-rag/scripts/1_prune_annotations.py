@@ -12,7 +12,7 @@ import logging
 import yaml
 
 from coicop_rag.data.pruning import prune_annotation_lvl4
-from coicop_rag.utils import create_duckdb_connection
+from coicop_rag.utils import create_duckdb_connection, expand_paths
 
 
 def main():
@@ -23,10 +23,13 @@ def main():
         default="config/config.yaml",
         help="Path to config YAML file"
     )
+    parser.add_argument("--run-id", required=True, help="Workflow run identifier")
+    parser.add_argument("--run-date", required=True, help="Workflow run date (YYYY-MM-DD)")
     args = parser.parse_args()
 
     with open(args.config, "r") as f:
         config = yaml.safe_load(f)
+    config = expand_paths(config, run_id=args.run_id, run_date=args.run_date)
 
     logger.info("=" * 80)
     logger.info("STARTING ANNOTATION PRUNING PIPELINE")

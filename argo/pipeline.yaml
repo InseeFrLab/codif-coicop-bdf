@@ -30,10 +30,13 @@ spec:
     # -----------------------------------------------------------------------
     # Main pipeline: DAG with parallelism
     #
-    #                    ┌──→ prune-coicop ──→ create-vector-db ──┐  (skippable)
-    #   preprocessing ──┤                                         ├──→ run-rag
-    #                    └──→ prune-annotations ──→ codif-regex ──┘
-    #                                                └──→ codif-lcs
+    #                    ┌──→ prune-coicop ──→ create-vector-db ─────────────┐  (skippable)
+    #   preprocessing ──┤                                                    ├──→ run-rag
+    #                    └──→ codif-regex ──→ prune-annotations ─────────────┘
+    #                                    │
+    #                                    └──→ codif-lcs
+    #
+    #   preprocessing ──→ run-ttc
     # -----------------------------------------------------------------------
     - name: pipeline
       dag:
@@ -53,7 +56,7 @@ spec:
             when: '"{{workflow.parameters.skip-vector-db}}" != "true"'
 
           - name: codif-regex
-            dependencies: [prune-annotations]
+            dependencies: [preprocessing]
             template: codif-regex
             arguments:
               parameters:
@@ -63,7 +66,7 @@ spec:
                   value: "{{workflow.parameters.run_date}}"
 
           - name: prune-annotations
-            dependencies: [preprocessing]
+            dependencies: [codif-regex]
             template: prune-annotations
             arguments:
               parameters:
@@ -88,7 +91,7 @@ spec:
             when: '"{{workflow.parameters.skip-vector-db}}" != "true"'
 
           - name: run-rag
-            dependencies: [create-vector-db, codif-regex]
+            dependencies: [create-vector-db, prune-annotations]
             template: run-rag
             arguments:
               parameters:
@@ -325,7 +328,7 @@ spec:
           - |
             set -e
             git clone --branch main https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/coicop-rag
-            uv run scripts/1_prune_annotations.py --config {{inputs.parameters.config}}
+            uv run scripts/1_prune_annotations.py --config {{inputs.parameters.config}} --run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}
         env:
           - name: AWS_ACCESS_KEY_ID
             valueFrom:
@@ -446,7 +449,7 @@ spec:
             git clone --branch main https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/coicop-rag
             mkdir -p logs prompts
 
-            ARGS="--config {{inputs.parameters.config}}"
+            ARGS="--config {{inputs.parameters.config}} --run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}"
 
             if [ -n "{{inputs.parameters.sample_size}}" ]; then
               ARGS="$ARGS --sample_size {{inputs.parameters.sample_size}}"

@@ -23,7 +23,7 @@ import subprocess
 import random
 
 from coicop_rag.data.parsing import extract_json_from_response
-from coicop_rag.utils import create_duckdb_connection, merge_eval_and_retreived, truncate_code
+from coicop_rag.utils import create_duckdb_connection, expand_paths, merge_eval_and_retreived, truncate_code
 from coicop_rag.eval.metrics import (
     compute_hierarchical_metrics,
     calculate_accuracy_at_level,
@@ -51,14 +51,16 @@ def main():
     
     parser = setup_argument_parser()
     args = parser.parse_args()
-    
+
     # config = load_config("config.yaml")
     config = load_config(args.config)
     config = merge_config_with_args(config, args)
-    
+    config = expand_paths(config, run_id=args.run_id, run_date=args.run_date)
+
     logger.info(f"✓ Configuration loaded: {config['llm']['model_name']}")
 
-    # Generate timestamp for this run
+    # Timestamp for MLflow run names and plots; no longer used in S3 paths
+    # (run_id already uniquely identifies the run folder).
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     
     # ---------------------------------------------------------------------------
@@ -175,7 +177,6 @@ def main():
             df_eval,
             df_retrieved_codes,
             config,
-            timestamp
         )
         
         mlflow.log_param("eval_output_path", eval_path)
@@ -358,6 +359,18 @@ def setup_argument_parser():
         '--experiment_name',
         type=str,
         help='MLflow experiment name (overrides config)'
+    )
+
+    # Workflow run identity
+    parser.add_argument(
+        '--run-id',
+        required=True,
+        help='Workflow run identifier'
+    )
+    parser.add_argument(
+        '--run-date',
+        required=True,
+        help='Workflow run date (YYYY-MM-DD)'
     )
 
     return parser
@@ -948,28 +961,25 @@ def plot_confidence_vs_accuracy(df_eval: pd.DataFrame, level: int = 4) -> plt.Fi
     return fig
 
 
-def export_predictions(con, df_eval, df_retrieved_codes, config, timestamp):
+def export_predictions(con, df_eval, df_retrieved_codes, config):
     """
     Export predictions to S3
-    
+
     Args:
         con: DuckDB connection
         df_eval: Evaluation dataframe
         df_retrieved_codes: Retrieved codes dataframe
-        config: Configuration dictionary
-        timestamp: Timestamp string for file naming
-        
+        config: Configuration dictionary (paths already expanded with run_id/run_date)
+
     Returns:
         tuple: (eval_path, retrieved_path)
     """
     logger.info("=" * 80)
     logger.info("STEP 6: EXPORTING PREDICTIONS")
     logger.info("=" * 80)
-    
-    eval_path = config['predictions']['s3_path'].format(timestamp=timestamp)
-    retrieved_path = config['predictions']['s3_path_retrieved_codes'].format(
-        timestamp=timestamp
-    )
+
+    eval_path = config['predictions']['s3_path']
+    retrieved_path = config['predictions']['s3_path_retrieved_codes']
     
     # Export evaluation results
     con.sql(f"""

@@ -1,7 +1,20 @@
 import os
-from typing import List, Dict, Optional
+from typing import Any, List, Dict, Optional
 import pandas as pd
 import duckdb
+
+
+def expand_paths(obj: Any, **kwargs: str) -> Any:
+    """Recursively apply str.format(**kwargs) to every string in a nested
+    dict/list structure. Used to substitute {run_id} / {run_date} in config
+    path templates."""
+    if isinstance(obj, dict):
+        return {k: expand_paths(v, **kwargs) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [expand_paths(v, **kwargs) for v in obj]
+    if isinstance(obj, str):
+        return obj.format(**kwargs)
+    return obj
 
 
 def create_duckdb_connection() -> duckdb.DuckDBPyConnection:

@@ -1,8 +1,8 @@
 # config.yaml
 
 annotations:
-  s3_path: "s3://projet-budget-famille/data/regex/output/raw_test_without_regex.parquet"
-  s3_path_rag: "s3://projet-budget-famille/data/workflow_outputs/prunning/raw_test_without_regex_pruned.parquet"
+  s3_path: "s3://projet-budget-famille/data/workflow_runs/{run_date}/{run_id}/codif-regex/raw_test_without_regex.parquet"
+  s3_path_rag: "s3://projet-budget-famille/data/workflow_runs/{run_date}/{run_id}/prune-annotations/raw_test_without_regex_pruned.parquet"
   sample_size: null
   features:
     - id
@@ -47,8 +47,8 @@ coicop:
     prune: true  # true = keep only canonical codes (code == code_parent_equivalent)
 
 predictions:
-  s3_path: "s3://projet-budget-famille/data/workflow_outputs/outputs_rag/predictions_{timestamp}.parquet"
-  s3_path_retrieved_codes: "s3://projet-budget-famille/data/workflow_outputs/outputs_rag/retrieved_codes_{timestamp}.parquet"
+  s3_path: "s3://projet-budget-famille/data/workflow_runs/{run_date}/{run_id}/run-rag/predictions.parquet"
+  s3_path_retrieved_codes: "s3://projet-budget-famille/data/workflow_runs/{run_date}/{run_id}/run-rag/retrieved_codes.parquet"
 
 eval:
   threshold_confidence: 0.7
