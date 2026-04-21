@@ -1,0 +1,43 @@
+stats-annotations/R/analyse_magasins.R
+  2f8a7e91f7e91c8b 1-43
+stats-annotations/C/distance_gcd_batch_cpp.cpp
+  2f8a7e91f7e91c8b 1-66
+stats-annotations/R/calcul_lcs_libel.R
+  2f8a7e91f7e91c8b 1-189
+stats-annotations/R/fonctions.R
+  2f8a7e91f7e91c8b 1-294
+stats-annotations/R/main.R
+  2f8a7e91f7e91c8b 1-81
+stats-annotations/R/regex_libel.R
+  2f8a7e91f7e91c8b 1-74
+stats-annotations/R/test_stopwords.R
+  2f8a7e91f7e91c8b 1-8
+stats-annotations/README.md
+  2f8a7e91f7e91c8b 1-14
+stats-annotations/stats-annotations.Rproj
+  2f8a7e91f7e91c8b 1-13
+stats-annotations/.gitignore
+  2f8a7e91f7e91c8b 1-14
+stats-annotations/R/calcul_distances.R
+  2f8a7e91f7e91c8b 1-85
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.2",
+  "base_commit_sha": "19cba1a496f4be5c86cbccce39f87afb77669dc5",
+  "prompts": {
+    "2f8a7e91f7e91c8b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c3c1e12e-edd7-4b8c-873e-b60b2932e5d0",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "h4njlg",
+      "messages": [],
+      "total_additions": 1884,
+      "total_deletions": 1003,
+      "accepted_lines": 1004,
+      "overriden_lines": 0
+    }
+  }
+}
