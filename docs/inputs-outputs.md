@@ -220,7 +220,7 @@ Code : [`coicop-bdf-classifier/`](../coicop-bdf-classifier/) (source vendorisée
 | Argument CLI | Chemin |
 |---|---|
 | `--model` | `mlflow-artifacts:/10/cacf2603514b4887bbfb77e2654c9bc1/artifacts/model` |
-| `--file` | `s3://projet-budget-famille/data/workflow_runs/{{inputs.parameters.run_date}}/{{inputs.parameters.run_id}}/preprocessing/raw_test.parquet` |
+| `--file` | `s3://projet-budget-famille/data/workflow_runs/{{inputs.parameters.run_date}}/{{inputs.parameters.run_id}}/codif-regex/raw_test_without_regex.parquet` |
 
 **Écrit** :
 
@@ -228,7 +228,7 @@ Code : [`coicop-bdf-classifier/`](../coicop-bdf-classifier/) (source vendorisée
 |---|---|
 | `--output` | `s3://projet-budget-famille/data/workflow_runs/{{inputs.parameters.run_date}}/{{inputs.parameters.run_id}}/run-ttc/predictions.parquet` |
 
-Prédit top-10 COICOP (`--top-k 10`) sur la colonne `l_pr_product`. Depuis l'harmonisation, `run-ttc` ne dépend plus que de `preprocessing` dans le DAG (et non plus de `codif-regex`).
+Prédit top-10 COICOP (`--top-k 10`) sur la colonne `l_pr_product`. `run-ttc` classifie les items que `codif-regex` n'a pas pu coder (même rôle que `run-rag` et `codif-lcs`).
 
 ---
 
@@ -240,16 +240,16 @@ sources statiques (data/…)                   prune-coicop ──► data/workf
        ▼                                                                                        │
 preprocessing ──► <run>/preprocessing/                                                          │
        │                                                                                        │
-       ├──► codif-regex ──► <run>/codif-regex/ ──┬──► prune-annotations ──► <run>/prune-annotations/ ──► run-rag ──► <run>/run-rag/
-       │                                         │
-       │                                         └──► codif-lcs ──► <run>/codif-lcs/
-       │                                                                                        │
-       │                                                                  create-vector-db ◄────┘
-       │                                                                      │
-       │                                                                      ▼
-       │                                                              Qdrant "coicop_lineage" ──► utilisé par run-rag
-       │
-       └──► run-ttc ──► <run>/run-ttc/
+       └──► codif-regex ──► <run>/codif-regex/ ──┬──► prune-annotations ──► <run>/prune-annotations/ ──► run-rag ──► <run>/run-rag/
+                                                 │
+                                                 ├──► codif-lcs ──► <run>/codif-lcs/
+                                                 │
+                                                 └──► run-ttc ──► <run>/run-ttc/
+                                                                                                │
+                                                                     create-vector-db ◄─────────┘
+                                                                         │
+                                                                         ▼
+                                                                 Qdrant "coicop_lineage" ──► utilisé par run-rag
 ```
 
 `<run>` = `s3://projet-budget-famille/data/workflow_runs/{run_date}/{run_id}/`.
