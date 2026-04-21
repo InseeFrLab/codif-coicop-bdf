@@ -1,0 +1,12 @@
+# Fichier de configuration
+S3:
+  BUCKET: "projet-budget-famille"
+
+paths:
+  copain_annotations: "/data/output-annotation"
+  additional_annotations: "/data/codification-manuelle-anterieure/annotations_test_2024.csv"
+  old_annotations: "/data/codification-manuelle-anterieure/annotations_BDF_2017.csv"
+  app_annotations: "/data/input-annotation/liste_produits_fr_copain.csv"
+  shops_mapping: "/data/input-annotation/liste_magasins.csv"
+  uncodable_products: "/data/codification-manuelle-anterieure/produit_non_annotable.csv"
+  output: "/data/output-annotation-consolidated"
