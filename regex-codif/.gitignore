@@ -1,0 +1,6 @@
+*.log
+*.pyc
+.quarto/*
+/.quarto/
+**/*.quarto_ipynb
+public/*
