@@ -1,8 +1,9 @@
+import argparse
 import os
 import s3fs
 import pandas as pd
 
-from utils.load_config import load_config
+from utils.load_config import load_config, expand_paths
 from utils.logging import setup_logging
 from utils.init_duckdb import init_duckdb
 from utils.load_rules import load_regex_rules
@@ -11,16 +12,24 @@ from data.save_data import save_data_to_parquet
 from data.apply_regex import apply_regex
 
 
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--run-id", required=True, help="Workflow run identifier")
+    parser.add_argument("--run-date", required=True, help="Workflow run date (YYYY-MM-DD)")
+    return parser.parse_args()
+
+
 def main():
     # CONFIGURATION -------------------------------------
 
+    args = parse_args()
     logger = setup_logging()
 
     # -----------------------------------------------------------------------
     # Load config file and paths
     # -----------------------------------------------------------------------
     logger.info("Chargement du fichier de configuration depuis le fichier config.yaml")
-    config = load_config()
+    config = expand_paths(load_config(), run_id=args.run_id, run_date=args.run_date)
     logger.info("Fin du chargement du fichier de configuration")
 
     # -----------------------------------------------------------------------
