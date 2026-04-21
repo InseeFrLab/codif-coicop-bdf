@@ -21,6 +21,10 @@ spec:
         value: ""
       - name: skip-vector-db
         value: "false"
+      - name: run_id
+        value: "{{workflow.name}}"
+      - name: run_date
+        value: "{{workflow.creationTimestamp.Y}}-{{workflow.creationTimestamp.m}}-{{workflow.creationTimestamp.d}}"
 
   templates:
     # -----------------------------------------------------------------------
@@ -36,6 +40,12 @@ spec:
         tasks:
           - name: preprocessing
             template: preprocessing
+            arguments:
+              parameters:
+                - name: run_id
+                  value: "{{workflow.parameters.run_id}}"
+                - name: run_date
+                  value: "{{workflow.parameters.run_date}}"
 
           - name: prune-coicop
             dependencies: [preprocessing]
@@ -45,14 +55,32 @@ spec:
           - name: codif-regex
             dependencies: [prune-annotations]
             template: codif-regex
+            arguments:
+              parameters:
+                - name: run_id
+                  value: "{{workflow.parameters.run_id}}"
+                - name: run_date
+                  value: "{{workflow.parameters.run_date}}"
 
           - name: prune-annotations
             dependencies: [preprocessing]
             template: prune-annotations
+            arguments:
+              parameters:
+                - name: run_id
+                  value: "{{workflow.parameters.run_id}}"
+                - name: run_date
+                  value: "{{workflow.parameters.run_date}}"
 
           - name: codif-lcs
             dependencies: [codif-regex]
             template: codif-lcs
+            arguments:
+              parameters:
+                - name: run_id
+                  value: "{{workflow.parameters.run_id}}"
+                - name: run_date
+                  value: "{{workflow.parameters.run_date}}"
 
           - name: create-vector-db
             dependencies: [prune-coicop]
@@ -68,15 +96,29 @@ spec:
                   value: "{{workflow.parameters.sample_size}}"
                 - name: model-name
                   value: "{{workflow.parameters.model-name}}"
+                - name: run_id
+                  value: "{{workflow.parameters.run_id}}"
+                - name: run_date
+                  value: "{{workflow.parameters.run_date}}"
 
           - name: run-ttc
             dependencies: [codif-regex]
             template: run-ttc
+            arguments:
+              parameters:
+                - name: run_id
+                  value: "{{workflow.parameters.run_id}}"
+                - name: run_date
+                  value: "{{workflow.parameters.run_date}}"
 
     # -----------------------------------------------------------------------
     # Step 0: Preprocessing — construction du dataset
     # -----------------------------------------------------------------------
     - name: preprocessing
+      inputs:
+        parameters:
+          - name: run_id
+          - name: run_date
       container:
         image: inseefrlab/onyxia-vscode-python:py3.13.12
         command: [sh, -c]
@@ -124,6 +166,10 @@ spec:
     # Step 0b: Codification par regex
     # -----------------------------------------------------------------------
     - name: codif-regex
+      inputs:
+        parameters:
+          - name: run_id
+          - name: run_date
       container:
         image: inseefrlab/onyxia-vscode-python:py3.13.12
         command: [sh, -c]
@@ -171,6 +217,10 @@ spec:
     # Step 0c: Codification par LCS
     # -----------------------------------------------------------------------
     - name: codif-lcs
+      inputs:
+        parameters:
+          - name: run_id
+          - name: run_date
       container:
         image: inseefrlab/onyxia-vscode-r-python-julia:r4.5.3-py3.13.12
         command: [sh, -c]
@@ -266,6 +316,8 @@ spec:
         parameters:
           - name: config
             value: config/config.yaml
+          - name: run_id
+          - name: run_date
       container:
         image: inseefrlab/onyxia-vscode-python:py3.13.12
         command: [sh, -c]
@@ -383,6 +435,8 @@ spec:
             value: config/config.yaml
           - name: sample_size
           - name: model-name
+          - name: run_id
+          - name: run_date
       container:
         image: inseefrlab/onyxia-vscode-python:py3.13.12
         command: [sh, -c]
@@ -511,6 +565,10 @@ spec:
     # Step 4: Run TTC predictions
     # -----------------------------------------------------------------------
     - name: run-ttc
+      inputs:
+        parameters:
+          - name: run_id
+          - name: run_date
       container:
         image: ghcr.io/micedre/coicop_bdf_classifier:latest
         command: ["python", "main.py"]
