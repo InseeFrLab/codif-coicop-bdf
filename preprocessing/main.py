@@ -1,7 +1,7 @@
 # %%
 
+import argparse
 import os
-from datetime import date
 import s3fs
 import time
 import uuid
@@ -22,9 +22,17 @@ from src.data.save_data import export_parquet_s3
 from sklearn.model_selection import train_test_split
 
 
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--run-id", required=True, help="Workflow run identifier")
+    parser.add_argument("--run-date", required=True, help="Workflow run date (YYYY-MM-DD)")
+    return parser.parse_args()
+
+
 def main():
     # CONFIGURATION -------------------------------------
 
+    args = parse_args()
     logger = setup_logging()
     fs = s3fs.S3FileSystem(endpoint_url=os.environ["AWS_ENDPOINT_URL"])
 
@@ -162,14 +170,12 @@ def main():
         annotations, config, "raw_product", "code"
     )
 
-    timestamp = date.today().isoformat()
-
-    base_path = (
-    f"{concat_path_from_key(config, 'paths', 'output')}"
-    f"/annotations-consolidated-{timestamp}"
+    output_root = concat_path_from_key(config, "paths", "output_root").format(
+        run_id=args.run_id, run_date=args.run_date
     )
-    export_parquet_s3(annotations_hors_copain_with_multiple_codes, f"{base_path}/annotations_hors_copain_with_multiple_codes.parquet")
-    export_parquet_s3(annotations_with_multiple_codes, f"{base_path}/annotations_with_multiple_codes.parquet")
+    qa_path = f"{output_root}/qa"
+    export_parquet_s3(annotations_hors_copain_with_multiple_codes, f"{qa_path}/annotations_hors_copain_with_multiple_codes.parquet")
+    export_parquet_s3(annotations_with_multiple_codes, f"{qa_path}/annotations_with_multiple_codes.parquet")
 
     logger.info("Fin des contrôles sur les données annotées")
 
@@ -205,13 +211,8 @@ def main():
     logger.info(f"Nombre de lignes total du fichier test: {len(test_anno_wb)}")
     
     # Export
-    base_path = (
-        f"{concat_path_from_key(config, 'paths', 'output')}"
-        f"/annotations-consolidated-{timestamp}"
-    )
-    
-    export_parquet_s3(train_anno_wb,  f"{base_path}/raw_train.parquet")
-    export_parquet_s3(test_anno_wb,   f"{base_path}/raw_test.parquet")
+    export_parquet_s3(train_anno_wb, f"{output_root}/raw_train.parquet")
+    export_parquet_s3(test_anno_wb, f"{output_root}/raw_test.parquet")
 
     # COMPTER CEUX AVEC/SANS BUDGET (hors données suggester) ================
     statistics_annotations_data(con, pd.concat([train_anno_wb, test_anno_wb], axis=0))
