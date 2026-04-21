@@ -1,0 +1,477 @@
+sync_id;product;price;product_date;store;store_type;code1;libellé_COICOP1
+2142;0;0;45441;Eco Market;Grande et petite surface alimentaire;98.1.2;Courses en supermarché
+237;3;3;45428;Fromager;Commerce de détail alimentaire;01.1.4.5.0;Fromage
+5731;20;20;45456;Coiffeur;Services de loisirs, soins, animaux;13.1.3.1;Coiffure
+4291;70;70;45450;Mécanicien;Services pour l’automobile et motocycles;07.2.3.0;Entretien et réparation de matériel de transport personnel
+4293;6990;69.9;45450;Feu Vert;Services pour l’automobile et motocycles;98.1.3;Courses non alimentaires
+1428;10 poules ;30;45437;Ferme;Marché, vente à domicile, automate;01.1.2.1.4;Volaille, vivante
+2400;2 menus;44;45443;Restaurant lisole;Ajout utilisateur;11.1.1.1;Restaurants, cafés et autres – avec service complet 
+5800;20 euros ;20;45454;Retrait banque ;Ajout utilisateur;99.2;Opération bancaire (retrait, virement, prélèvement)
+5801;40 euros ;40;45455;Retrait banque ;Ajout utilisateur;99.2;Opération bancaire (retrait, virement, prélèvement)
+8740;Abonnement musique ;17.99;45468;Spotify ;Ajout utilisateur;08.3.9.2;Abonnement à des contenus audiovisuels, services de streaming et location de contenus audiovisuels
+1176;Accessoire bureau;22;45436;Action;Grand magasin, bazar;09.7.4.0;Papeterie et matériel de dessin (ND)
+7480;Accessoire mobile;22.99;45464;Amazon;Achat par internet, téléphone, correspondance;08.1.9.2;Autres accessoires d'information et de communication 
+8557;Accessoires fete anniversaire;24.26;45468;Zôdio;Aménagement de l’habitat;09.2.1;Jeux, jouets et loisirs
+456;Actron;34;45430;Pharmacie;Biens et produits personnels, puériculture;06.1.1.1;Médicaments, vaccins et autres préparations pharmaceutiques
+3185;Affranchissement courrier;6.71;45446;La Poste;Services publics, services autoroutes, transport, télécommunication;07.4.1.1;Services de traitement du courrier
+4463;Aimant rond cadeau maîtresse;16.5;45450;Mannaé;Ajout utilisateur;99.1;Cadeaux
+2672;Alimentaire;252;45444;Leclerc;Grande et petite surface alimentaire;98.1.1;Courses alimentaires
+3935;Alimentaire;21;45448;Carrefour;Grande et petite surface alimentaire;98.1.1;Courses alimentaires
+3618;Alimentaire;7.68;45448;Carrefour;Grande et petite surface alimentaire;98.1.1;Courses alimentaires
+4253;Alimentaire;51.82;2024-06-06;Match;Grande et petite surface alimentaire;98.1.1;Courses alimentaires
+3625;Alimentaire ;272;45447;Intermarché;Grande et petite surface alimentaire;98.1.1;Courses alimentaires
+5616;Alimentaire ;57.75;45455;Leclerc Drive;Achat par internet, téléphone, correspondance;98.1.1;Courses alimentaires
+522;Alimentation;100;45430;Auchan;Grande et petite surface alimentaire;98.1.1;Courses alimentaires
+1471;Alimentation;11.08;45429;Monop;Grande et petite surface alimentaire;98.1.1;Courses alimentaires
+1501;Alimentation;11.08;45429;Monop;Grande et petite surface alimentaire;98.1.1;Courses alimentaires
+1543;Alimentation;11.08;45429;Monop;Grande et petite surface alimentaire;98.1.1;Courses alimentaires
+1552;Alimentation;3.4;45427;Intermarché;Grande et petite surface alimentaire;98.1.1;Courses alimentaires
+1758;Alimentation;21.66;45429;Casino;Grande et petite surface alimentaire;98.1.1;Courses alimentaires
+1843;Alimentation;48.68;45440;Hypermarché;Grande et petite surface alimentaire;98.1.1;Courses alimentaires
+2246;Alimentation;19.28;45442;Lidl;Grande et petite surface alimentaire;98.1.1;Courses alimentaires
+2760;Alimentation;140.84;45443;Auchan Drive;Achat par internet, téléphone, correspondance;98.1.1;Courses alimentaires
+4296;Alimentation;47.63;45449;Leclerc;Grande et petite surface alimentaire;98.1.1;Courses alimentaires
+5545;Alimentation;89.24;45455;Leclerc;Grande et petite surface alimentaire;98.1.1;Courses alimentaires
+6449;Alimentation;43.22;45451;Delhaize;Ajout utilisateur;98.1.1;Courses alimentaires
+6433;Alimentation;50.85;45450;Super U;Grande et petite surface alimentaire;98.1.1;Courses alimentaires
+7210;Alimentation;179.38;45449;Chronodrive;Achat par internet, téléphone, correspondance;98.1.1;Courses alimentaires
+7602;Alimentation;30.83;45459;Carrefour;Grande et petite surface alimentaire;98.1.1;Courses alimentaires
+7614;Alimentation;167.29;45463;Lidl;Grande et petite surface alimentaire;98.1.1;Courses alimentaires
+8010;Alimentation;124.03;45458;Lidl;Grande et petite surface alimentaire;98.1.1;Courses alimentaires
+8012;Alimentation;38.69;45458;Leclerc;Grande et petite surface alimentaire;98.1.1;Courses alimentaires
+8215;Alimentation;87.25;45467;Chronodrive;Achat par internet, téléphone, correspondance;98.1.1;Courses alimentaires
+8442;Alimentation;45.86;45467;Vrac;Ajout utilisateur;98.1.1;Courses alimentaires
+8616;Alimentation;12;45469;Match;Grande et petite surface alimentaire;98.1.1;Courses alimentaires
+8650;Alimentation;71.72;45465;Franprix;Grande et petite surface alimentaire;98.1.1;Courses alimentaires
+1624;Alimentation;30.88;2024-05-20;Intermarché;Grande et petite surface alimentaire;98.1.2;Courses en supermarché
+8985;Alimentation;54.05;2024-06-27;Chronodrive;Achat par internet, téléphone, correspondance;98.1.1;Courses alimentaires
+9068;Alimentation;95;2024-06-28;Leclerc;Grande et petite surface alimentaire;98.1.1;Courses alimentaires
+9340;Alimentation;7;2024-06-27;Match;Grande et petite surface alimentaire;98.1.1;Courses alimentaires
+2569;Alimentation ;193;45441;Intermarché;Grande et petite surface alimentaire;98.1.1;Courses alimentaires
+4429;Alimentation ;37.5;45450;Auchan;Grande et petite surface alimentaire;98.1.1;Courses alimentaires
+5684;Alimentation ;188;45456;Leclerc;Grande et petite surface alimentaire;98.1.1;Courses alimentaires
+6454;Alimentation ;131.57;45454;Super U;Grande et petite surface alimentaire;98.1.1;Courses alimentaires
+6697;Alimentation ;11.97;45459;Netto;Grande et petite surface alimentaire;98.1.1;Courses alimentaires
+6766;Alimentation ;12.44;45454;Leclerc;Grande et petite surface alimentaire;98.1.1;Courses alimentaires
+3309;Alimentation ;27.34;2024-06-03;Lidl;Grande et petite surface alimentaire;98.1.1;Courses alimentaires
+1943;Alimentation et entretien maison;178.23;45441;Carrefour Drive;Achat par internet, téléphone, correspondance;98.1.2;Courses en supermarché
+2990;Alimentation et hygiène ;256.05;45444;Leclerc;Grande et petite surface alimentaire;98.1.2;Courses en supermarché
+9591;Aliments;28;2024-06-21;Quick;Restauration rapide, café, bar;11.1.1.2;Restaurants, cafés et établissements similaires — service limité (S)
+5836;Anniversaire thibaut ;92;45455;Cinéma;Services de loisirs, soins, animaux;09.6.1.0;Services fournis par les cinémas, théâtres et salles de concert
+3643;Appareil dentaire suivi;384.9;45447;Orthodontiste;Services de santé;06.2.2.9;Autres services dentaires ambulatoires 
+4139;Arrêt de travail ;30;45449;Médecin;Services de santé;06.2.3;Autres services de soins ambulatoires
+3855;Asperges ;5;45447;Monop;Grande et petite surface alimentaire;01.1.7.1.1;Asperges, fraîches ou réfrigérées
+6742;Assiette mixte kebab;17;45461;Kebab;Restauration rapide, café, bar;11.1.1.2;Restaurants, cafés et autres – à service limité 
+3811;Assurance habitation;38;45448;Banque;Organismes financiers;12.1.3.0;Assurance lié au logement
+9705;Assurance habitation ;48,1599998474121;2024-07-03;Banque;Organismes financiers;12.1.3.0;Assurance liée aux logements (S)
+3634;Assurance maison;64;45447;Assurance pret;Ajout utilisateur;12.1.3.0;Assurance liée au logement
+4949;Assurance multimedia;47.88;45453;Fnac;Sports et loisirs;12.1.9.0;Autre assurance
+3811;Assurance prêt immobilier ;28;45448;Banque;Organismes financiers;12.1.9.0;Autre assurance
+4104;Assurance pret maison;58.84;45447;Assurance;Organismes financiers;12.1.9.0;Autre assurance
+5566;Assurance scolaire;57;45453;Mae;Ajout utilisateur;12.1.9.0;Autre assurance
+8911;Assurance vie;20;45470;Assurance;Organismes financiers;12.1.1.0;Assurance vie et accidents (S)
+6451;Assurances;100;45453;Groupama;Organismes financiers;12.1.9.0;Autre assurance
+9242;Atelier;37.5;45472;Etagere cafe;Ajout utilisateur;98.1.2;Courses en supermarché
+3857;Baguette céréales ;1.5;45447;Boulangerie;Commerce de détail alimentaire;01.1.1.3.1;Pain
+2600;Baguette tradition ;1.2;45444;Boulangerie;Commerce de détail alimentaire;01.1.1.3.1;Pain
+2872;Baguette tradition ;1.2;2024-06-02;Boulangerie;Commerce de détail alimentaire;01.1.1.3.1;Pain
+4327;Baguettes viennoiseries ;14;45450;Boulangerie ;Ajout utilisateur;01.1.1.3;Pain et produits de boulangerie (ND)
+1756;Balade en bateau;9;45427;Chalet des iles;Ajout utilisateur;09.4.2.2;Location, entretien et réparation d'autres biens durables majeurs pour les loisirs
+9537;Balance de cuisine ;20;2024-07-01;Amazon;Achat par internet, téléphone, correspondance;05.3.2.1.2;Autres petits appareils électroménagers pour la préparation culinaire
+675;Barbecue;10;45431;Aldi;Grande et petite surface alimentaire;01.1.2.2;Viande, fraîche, réfrigérée ou congelée
+1812;Batterie et chargeur pour taillehaies;49.99;45440;Match;Grande et petite surface alimentaire;05.5.2.2;Accessoires divers
+192;Bd;50;45428;Fnac;Sports et loisirs;09.7.1.9;Autres livres (SD)
+196;Bd;12;45428;Fnac;Sports et loisirs;09.7.1.9;Autres livres (SD)
+203;Bd;12;45427;Fnac;Sports et loisirs;09.7.1.9;Autres livres (SD)
+209;Bd;9;45428;Fnac;Sports et loisirs;09.7.1.9;Autres livres (SD)
+212;Bd;9;45428;Fnac;Sports et loisirs;09.7.1.9;Autres livres (SD)
+3863;Bière malta;1.5;45429;Rafale b market;Ajout utilisateur;02.1.3.0;Bière 
+2825;Bijoux fantaisies ;39;45444;Nature et sens;Ajout utilisateur;13.2.1.1;Bijoux et montres 
+9531;Billeterie;24;2024-06-29;Billeterie;Services de loisirs, soins, animaux;09.6;Services culturels
+6237;Billets kermesse ecole;20;45458;Ecole;Services publics, services autoroutes, transport, télécommunication;10.1.0;Petite enfance et enseignement primaire (S)
+8867;Bo bun;13;45467;Happy bo bun;Ajout utilisateur;11.1.1.2;Restaurants, cafés et autres – à service limité
+969;Boisson;6;45435;Leclerc;Grande et petite surface alimentaire;98.1.1;Courses alimentaires
+8870;Boisson chaude;14.8;45467;Starbucks;Restauration rapide, café, bar;11.1.1.2;Restaurants, cafés et autres – à service limité
+7020;Boissons sans alcool ;6;45461;Café;Restauration rapide, café, bar;11.1.1.2;Restaurants, cafés et autres – à service limité 
+8025;Boite de nuit;17;45465;Boite de nuit;Services de loisirs, soins, animaux;09.4.6.1;Services récréatifs et de loisirs (
+7542;Bonbons;4;45464;Boulangerie;Commerce de détail alimentaire;01.1.8.9.9;Autres sucreries et desserts nec (ne contenant pas de cacao)
+4908;Bottes de moto;300;45453;Dafy ;Ajout utilisateur;03.2.1;Chaussures et autres chaussures
+7010;Bouillie bordelaise;7.64;45462;Super U;Grande et petite surface alimentaire;05.6.1.9;Autres biens ménagers non durables
+4018;Boulangerie ;10.5;45445;Boulangerie ;Ajout utilisateur;01.1.1.3;Pain et produits de boulangerie (ND)
+7745;Bubble tea;5;45465;La mal de nia;Ajout utilisateur;01.2.3.0.9;Autres produits à base de thé et produits végétaux pour infusion
+1781;Burger;39;45433;Blend burger;Ajout utilisateur;11.1.1.2;Restaurants, cafés et autres – à service limité
+4830;Burger;55;45451;Fast food;Restauration rapide, café, bar;11.1.1.2;Restaurants, cafés et autres – à service limité
+7427;Burgers;35.6;45463;Uber eats;Ajout utilisateur;11.1.1.2;Restaurants, cafés et autres – à service limité (S)
+418;Cable audio;2;45429;Action;Grand magasin, bazar;08.1.9.2;Autres accessoires d'information et de communication (SD)
+9342;Cadeau;80;45469;Inter Sport;Sports et loisirs;99.1;Cadeaux
+8763;Cadeau anniversaire;200;2024-06-23;Banque;Organismes financiers;99.1;Cadeaux, dons
+7469;Cadeaux ;25.72;45464;Temu;Ajout utilisateur;99.1;Cadeaux
+5627;Café mn s ;6.29;45455;Carrefour ;Ajout utilisateur;01.2.2.0;Café et succédanés de café
+5721;Cagnotte cadeau;10;45456;Boutique cadeaux;Autres magasins spécialisés;99.1;Cadeaux
+3876;Caleçon ;4.5;45433;Cbe bazar;Ajout utilisateur;03.1.2.1;Vêtements pour hommes ou garçons
+4483;Carburant gas oil;80.2;45450;Station service bordeaux ;Ajout utilisateur;07.2.2.1;Gazole
+4016;Carré potager;45;45449;Cdiscount;Achat par internet, téléphone, correspondance;09.3.1.2;Plantes, graines et fleurs
+4076;Carte cadeau;100;45446;Grain De Malice;Habillement, chaussure maroquinerie;99.1;Cadeaux
+4793;Carte cadeau;40;45452;Cultura;Sports et loisirs;99.1;Cadeaux
+6073;Carte cadeau;64;45458;Yves Rocher;Biens et produits personnels, puériculture;99.1;Cadeaux
+5637;Carte de 10 entrees;32;45454;Piscine;Services de loisirs, soins, animaux;09.4.6.2;Prestations sportives - practice
+2731;Carte fnac;9.99;2024-06-01;Fnac;Sports et loisirs;98.1.3;Courses non alimentaires
+907;Carte google play;10;45430;Auchan;Grande et petite surface alimentaire;08.2.0.0;Logiciel(s)
+3602;Carte postale;3.2;45447;Presse tabac;Tabac, presse;09.7.3.0;Divers imprimés
+3586;Casque rugby;25;45446;Decathlon;Sports et loisirs;09.2.2.1;Équipement pour le sport
+4612;Cereales;21.36;45451;Leclerc;Grande et petite surface alimentaire;01.1.1.1;Céréales 
+3811;Cgos épargne vacances ;80;45448;Banque;Organismes financiers;98.2;Opération bancaire (retrait, virement, prélèvement)
+3599;Chambre dhotel;200;45445;Hôtel;Hôtel;11.2.0.1;Hôtels, motels, auberges et services d'hébergement similaires 
+9680;Chaussea;17,3700008392334;2024-07-01;Chaussea;Habillement, chaussure maroquinerie;98.1.3;Courses non alimentaires
+4527;Chaussures enfant;40;45451;Chaussea;Habillement, chaussure maroquinerie;03.2.1.3;Chaussures pour bébés et enfants
+9589;Chaussures enfants;38;2024-06-19;Chaussea;Habillement, chaussure maroquinerie;03.2.1.3;Chaussures pour nourrissons et enfants (SD)
+3627;Chaussures randonnée ;116;45448;Trekkin;Ajout utilisateur;03.2.1;Chaussures et autres chaussures
+5611;Chips;6;45453;Carrefour;Grande et petite surface alimentaire;01.1.1.9;Autres céréales et produits de minoterie 
+6464;Chips;4.5;45459;Epicerie fine;Commerce de détail alimentaire;01.1.7.9;Légumes, tubercules, plantains, bananes à cuire et légumineuses moulues et autres préparations
+2619;Chocolat en poudre;4.75;45444;Auchan City;Grande et petite surface alimentaire;01.1.8.5;Chocolat, cacao et produits alimentaires à base de cacao
+7353;Chou rave;1.8;45452;Notre supermarché de proximité ;Ajout utilisateur;01.1.7.1.2;Choux, frais ou réfrigérés
+5242;Cierge;5;45454;Eglise;Autres services, don;13.2.2.0;Articles de dévotion et articles pour les célébrations religieuses et rituelles
+7623;Clé usb;14.3;45465;Helloasso;Ajout utilisateur;08.1.9.2;Autres accessoires d'information et de communication (SD)
+6855;Cloud;4.48;45456;Google;Ajout utilisateur;08.3.3.0;Services de fourniture d'accès Internet et services de stockage net
+4754;Contravention;90;45452;Contravention;Ajout utilisateur;99.4;Impôts, taxes et cotisations syndicales
+4053;Coque telephone;22.99;45449;Amazon;Achat par internet, téléphone, correspondance;08.1.9.2;Autres accessoires d'information et de communication
+6135;Cotisation;21.05;45457;Banque;Organismes financiers;99.2;Opération bancaire (retrait, virement, prélèvement)
+859;Cotisation cagnotte cadeau;50;45434;Billeterie;Services de loisirs, soins, animaux;99.1;Cadeaux
+3811;Cotisation syndicale;32;45448;Banque;Organismes financiers;99.2;Opération bancaire (retrait, virement, prélèvement)
+7475;Coupe de cheveux;57;45464;Coiffure;Services de loisirs, soins, animaux;13.1.3.1;Coiffure
+8430;Courrier international;10.75;45463;Kiosque journaux;Tabac, presse;09.7.2.1;Journaux
+5668;Cours de photo;89;45455;Photoprof;Ajout utilisateur;09.6.9.0;Autres services culturels
+1929;Course;24;45441;Intermarché;Grande et petite surface alimentaire;98.1.2;Courses en supermarché
+3163;Course;100.26;45440;Intermarché;Grande et petite surface alimentaire;98.1.2;Courses en supermarché
+3274;Course;54.86;45442;Leclerc;Grande et petite surface alimentaire;98.1.2;Courses en supermarché
+3623;Course;144;45448;Leclerc Drive;Achat par internet, téléphone, correspondance;98.1.2;Courses en supermarché
+6095;Course;154.27;45458;Leclerc;Grande et petite surface alimentaire;98.1.2;Courses en supermarché
+6760;Course;56;45461;Leclerc;Grande et petite surface alimentaire;98.1.2;Courses en supermarché
+2809;Course;51.18;2024-06-01;Leclerc;Grande et petite surface alimentaire;98.1.2;Courses en supermarché
+3523;Course;5.85;2024-06-04;Lidl;Grande et petite surface alimentaire;98.1.2;Courses en supermarché
+2049;Course alimentaire;184;45441;Super U;Grande et petite surface alimentaire;98.1.1;Courses alimentaires
+8754;Course drive;116.98;2024-06-26;Intermarché;Grande et petite surface alimentaire;98.1.2;Courses en supermarché
+398;Courses;122;45429;Intermarché;Grande et petite surface alimentaire;98.1.2;Courses en supermarché
+2119;Courses;46.21;45441;Grand Frais;Grande et petite surface alimentaire;98.1.2;Courses en supermarché
+2121;Courses;120;45441;Carrefour;Grande et petite surface alimentaire;98.1.2;Courses en supermarché
+2277;Courses;59.59;45442;Carrefour;Grande et petite surface alimentaire;98.1.2;Courses en supermarché
+2605;Courses;45;45444;Leclerc;Grande et petite surface alimentaire;98.1.2;Courses en supermarché
+4025;Courses;120;45445;Marché Couvert;Marché, vente à domicile, automate;98.1.2;Courses en supermarché
+4765;Courses;50.85;45449;Super U;Grande et petite surface alimentaire;98.1.2;Courses en supermarché
+6044;Courses;100.7;45458;Leclerc;Grande et petite surface alimentaire;98.1.2;Courses en supermarché
+5115;Courses;12.05;45451;Intermarché;Grande et petite surface alimentaire;98.1.2;Courses en supermarché
+6892;Courses;73.89;45462;Intermarché;Grande et petite surface alimentaire;09.6.9.0;ALIMENTATION ET BOISSONS NON ALCOOLISÉES
+9674;Courses;67,2200012207031;2024-07-03;Auchan;Grande et petite surface alimentaire;98.1.2;Courses en supermarché
+9749;Courses;133,259994506836;2024-06-28;Leclerc;Grande et petite surface alimentaire;98.1.2;Courses en supermarché
+9752;Courses;53,9000015258789;2024-06-29;Boucherie;Commerce de détail alimentaire;98.1.2;Courses en supermarché
+5472;Courses alimentaire;18.08;45448;Leclerc;Grande et petite surface alimentaire;98.1.1;Courses alimentaires
+5493;Courses alimentaire;13.2;45452;Carrefour;Grande et petite surface alimentaire;98.1.1;Courses alimentaires
+5490;Courses alimentaire;12.65;45451;Match;Grande et petite surface alimentaire;98.1.1;Courses alimentaires
+5834;Courses alimentaire;86.36;45454;Cora;Grande et petite surface alimentaire;98.1.1;Courses alimentaires
+1775;Courses alimentaires;10.36;45440;Alimentation;Grande et petite surface alimentaire;98.1.1;Courses alimentaires
+4599;Courses alimentaires;79;45451;Leclerc;Grande et petite surface alimentaire;98.1.1;Courses alimentaires
+9406;Courses alimentaires ;33.9;45472;Auchan;Grande et petite surface alimentaire;98.1.1;Courses alimentaires
+6345;Courses diverses pour la semaine;95;45456;Carrefour;Grande et petite surface alimentaire;98.1.2;Courses en supermarché
+1273;Court bouillon ;1.41;45437;Leclerc;Grande et petite surface alimentaire;01.1.5.9;Autres huiles et graisses animales 
+8512;Coussin;4.99;45458;Foir Fouille;Grand magasin, bazar;05.2.1;Textiles de maison 
+8541;Coussin;4.99;45458;Foir Fouille;Grand magasin, bazar;05.2.1;Textiles de maison 
+3939;Credit;8.38;45448;Allianz;Organismes financiers;99.2;Opération bancaire (retrait, virement, prélèvement)
+74;Dachine;6.4;45418;Marché;Marché, vente à domicile, automate;01.1.7.5.9;Autres tubercules
+482;Dachine;6.9;45430;Marché;Marché, vente à domicile, automate;01.1.7.5.9;Autres tubercules
+8383;Dallmayr;5;45468;Machine à café;Marché, vente à domicile, automate;11.1.1.2;Restaurants, cafés et autres – à service limité
+7600;Deguisements;7.4;45458;Farfouil;Ajout utilisateur;09.2.1.2;Autres jeux, jouets et loisirs
+7013;Dejeuner ;15;45459;Food Truck;Restauration rapide, café, bar;11.1.1.2;Restaurants, cafés et autres – à service limité 
+8552;Diagnostique;40;45468;Reparateur electromenager;Ajout utilisateur;05.3.3.0;Réparation, installation et location d'appareils électroménagers
+8664;Dieteticien;80;45468;Pommera;Ajout utilisateur;06.2.3;Autres services de soins ambulatoires 
+6819;Dîner;80;45461;Restaurant;Restauration classique;11.1.1.1;Restaurants, cafés et autres – avec service complet
+7627;Dîner;80;45463;Resto;Restauration classique;11.1.1.1;Restaurants, cafés et autres – avec service complet
+753;Divers;126;45432;Lidl;Grande et petite surface alimentaire;98.1.2;Courses en supermarché
+756;Divers;70;45432;Intermarché;Grande et petite surface alimentaire;98.1.2;Courses en supermarché
+1587;Divers;46;45428;Amazon;Achat par internet, téléphone, correspondance;98.1.4;Autres courses
+1628;Divers;300;45439;Divers;Ajout utilisateur;98.2;Divers
+9151;Divers;93.36;2024-06-29;Lidl;Grande et petite surface alimentaire;98.1.2;Courses en supermarché
+5577;Don;20;45453;Don;Autres services, don;99.1;Cadeaux
+6088;Don;10;45458;Front populaire;Ajout utilisateur;99.1;Cadeaux
+5562;Don ;20;45453;Unicef;Ajout utilisateur;99.1;Cadeaux
+6200;Don à parti politique ;200;45459;Don à parti politique ;Ajout utilisateur;99.1;Cadeaux
+7621;Don clown hôpitaux;8;45462;Auchan;Grande et petite surface alimentaire;99.1;Cadeaux
+4314;Don msf;13.97;45448;Association;Autres services, don;99.1;Cadeaux
+4183;Donburi poulet ;14.1;45449;Ikki shushi;Ajout utilisateur;11.1.1.2;Restaurants, cafés et autres – à service limité
+3442;Dons;40;45448;Médecin sans frontières ;Ajout utilisateur;99.1;Cadeaux
+4667;Du pains ;4.7;45451;Leader Price;Grande et petite surface alimentaire;01.1.1.3.1;Pain
+3870;Eau de coco;4;45431;Capes legumes;Ajout utilisateur;01.2.9.0.0;Autres boissons non alcoolisées
+3881;Eau de coco;4;45435;Zeste citron;Ajout utilisateur;01.2.9.0.0;Autres boissons non alcoolisées
+4136;Eau de coco;4;45449;Baguet Shop;Restauration rapide, café, bar;11.1.1.2;Restaurants, cafés et autres – à service limité
+5148;Eau plate ;2;45453;Boulangerie;Commerce de détail alimentaire;11.1.1.2;Restaurants, cafés et autres – à service limité
+5256;Eauforce;59;45454;Facture Eau;Autres services, don;04.4.1.1;Approvisionnement en eau par des systèmes de réseau
+6694;Échéance de crédit;592.23;45461;Banque;Organismes financiers;99.2;Opération bancaire (retrait, virement, prélèvement)
+9247;Échéance prêt maison;526.53;45472;Banque;Organismes financiers;99.2;Opération bancaire (retrait, virement, prélèvement)
+5140;Embrayage butée souffleur de cardan roulement ;325;45453;Auto quick;Ajout utilisateur;07.2.1;Pièces et accessoires pour matériel de transport personnel 
+6230;Emmental tranche ;3.9;45458;Lidl;Grande et petite surface alimentaire;01.1.4.5.0;Fromage
+4061;Engie;264.8;45449;Engie;Services publics, services autoroutes, transport, télécommunication;04.5;ÉLECTRICITÉ, GAZ ET AUTRES COMBUSTIBLES
+1433;Entrée  plats et désert  ;23.9;45438;Restaurant;Restauration classique;11.1.1;Restaurants, cafés et autres
+9700;Entretien adoucisseur ;16,8899993896484;2024-07-02;Culligan entretien;Ajout utilisateur;05.6.1.1;Produits de nettoyage et d’entretien ménagers (ND)
+3747;Entretien véhicule ;59;45448;Midas;Services pour l’automobile et motocycles;07.2.3.0;Entretien et réparation de matériel de transport personnel
+8913;Épargne enfant;125;45470;Banque;Organismes financiers;99.2;Opération bancaire (retrait, virement, prélèvement)
+4822;Epicerie;61.88;45448;Aldi;Grande et petite surface alimentaire;98.1.2;Courses en supermarché
+9854;Epicerie;13;2024-06-29;Epicerie;Grande et petite surface alimentaire;98.1.1;Courses alimentaires
+88;Épicerie ;16.31;45426;Match;Grande et petite surface alimentaire;98.1.2;Courses en supermarché
+3422;Epicerie bio;69.4;45448;Koro;Ajout utilisateur;98.1.2;Courses en supermarché
+5223;Ergothérapeute ;45;45454;Santé ;Ajout utilisateur;06.2.3.1;Services curatifs et de réadaptation ambulatoires
+6834;Evaneos;197.5;45459;Agence voyage;Services de loisirs, soins, animaux;09.8.0.0;Forfaits vacances (S)
+9580;Extension cils;54;2024-06-20;Arômes nomades;Ajout utilisateur;13.1.3.2;Soins de beauté corporels (S)
+159;Film;58;45428;Bowling;Services de loisirs, soins, animaux;09.6.1.0;Services fournis par les cinémas, théâtres et salles de concert
+6425;Financiers;4.3;45459;Boulanger;Commerce de détail alimentaire;01.1.1.3.9.3;Biscuits et gâteaux
+7775;Fleur;42;45465;Fleuriste;Autres magasins spécialisés;09.3.1.2;Plantes, graines et fleurs
+8720;Fleurs;9.36;45468;Jardin des fleurs;Ajout utilisateur;09.3.1.2;Plantes, graines et fleurs
+4737;Fleurs ;26.95;45452;Jardiland;Aménagement de l’habitat;09.3.1.2;Plantes, graines et fleurs
+8027;Forfait;14.98;45460;Téléphonie;Equipement du foyer;08.3.2.0;Services de communications mobiles 
+8031;Forfait;51.98;45460;Téléphonie;Equipement du foyer;08.3.2.0;Services de communications mobiles 
+9712;Formule;19,5;2024-07-04;Bibimcup;Ajout utilisateur;11.1.1.1;Restaurants, cafés et établissements similaires — service complet (S)
+5510;Formule dejeuné;24;45455;Boulangerie;Commerce de détail alimentaire;11.1.1.2;Restaurants, cafés et autres – à service limité
+3677;Formule dejeuner;19.4;45448;Boulanger;Commerce de détail alimentaire;11.1.1.2;Restaurants, cafés et autres – à service limité
+4263;Fourniture gaz;157;45450;Total energie;Ajout utilisateur;04.5.2.1;Gaz naturel par réseaux
+7649;Fournitures ;34.76;45465;Noz;Grande et petite surface alimentaire;09.7.4.0;Papeterie et matériel de dessin
+2792;Foyer college;10;45444;Ecole;Services publics, services autoroutes, transport, télécommunication;11.2.0.3;Services d'hébergement des internats, universités et autres établissements d'enseignement
+1075;Française des jeux;3;45435;Bar tabac;Restauration rapide, café, bar;09.4.7;Jeux de hasard
+1072;Frites;3;45435;Distributeur;Marché, vente à domicile, automate;11.1.1.2;Restaurants, cafés et autres – à service limité
+8081;Frites;5.5;45466;Pny;Ajout utilisateur;11.1.1.2;Restaurants, cafés et autres – à service limité
+8398;Frites;5.5;45466;Friterie;Restauration rapide, café, bar;11.1.1.2;Restaurants, cafés et autres – à service limité
+5990;Fruit et légumes ;64;45457;Ferme;Marché, vente à domicile, automate;98.1.1;Courses alimentaires
+6866;Fruits;35;45459;Marché;Marché, vente à domicile, automate;01.1.6;Fruits et noix 
+907;Fruits et légumes ;4.34;45430;Auchan;Grande et petite surface alimentaire;98.1.1;Courses alimentaires
+4734;Fruits et légumes ;18.91;45451;Benebono;Ajout utilisateur;98.1.1;Courses alimentaires
+5550;Fruits et légumes ;11;45455;Marché;Marché, vente à domicile, automate;98.1.1;Courses alimentaires
+8313;Fruits et légumes ;50.35;45466;Le verger de chatenay ;Ajout utilisateur;98.1.1;Courses alimentaires
+6097;Fruits légumes ;29.4;45456;Auchan;Grande et petite surface alimentaire;98.1.1;Courses alimentaires
+7931;Galette complète ;8.99;45465;Flunch;Restauration rapide, café, bar;11.1.1.2;Restaurants, cafés et autres – à service limité
+4843;Gant ;4.9;45452;Bricorama;Aménagement de l’habitat;05.6.1.9;Autres biens ménagers non durables
+4980;Garantie voiture;28;45453;Credipar;Ajout utilisateur;12.1.9.0;Autre assurance
+2381;Gasoil;60.31;45443;Station Carrefour;Autres magasins spécialisés;07.2.2.1;Gazole 
+3498;Gasoil;50;45447;Total;Autres magasins spécialisés;07.2.2.1;Gazole
+7706;Gasoil;50;45465;Leclerc Essence;Autres magasins spécialisés;07.2.2.1;Gazole
+5142;Gasoil ;80;45453;Station total ;Ajout utilisateur;07.2.2.1;Gazole (ND)
+6817;Gazon artificiel;22;45454;Manomano;Ajout utilisateur;04.3.1.1;Matériaux pour l'entretien et la réparation du logement 
+9697;Gel nettoyant ;1,49000000953674;2024-07-02;Lidl;Grande et petite surface alimentaire;05.6.1.1;Produits de nettoyage et d’entretien ménagers (ND)
+3855;Ginger beer;7;45447;Monop;Grande et petite surface alimentaire;02.1.3.0;Bière
+4211;Goûter ;11.1;45449;Yogourt factory;Ajout utilisateur;11.1.1.2;Restaurants, cafés et autres – à service limité
+9571;Habits enfants;28;2024-06-17;Boutique vêtements;Habillement, chaussure maroquinerie;03.1.2;Vêtements (SD)
+8094;Haloumi;9;45466;Le passage a niveau;Ajout utilisateur;11.1.1.2;Restaurants, cafés et autres – à service limité
+8081;Hamburger;14;45466;Pny;Ajout utilisateur;11.1.1.2;Restaurants, cafés et autres – à service limité
+3288;Hamburger ;8.1;45446;Mc Do;Restauration rapide, café, bar;11.1.1.2;Restaurants, cafés et autres – à service limité
+6452;High tech;39.99;45453;Amazon;Achat par internet, téléphone, correspondance;08.1.9;Autres équipements et accessoires d'information et de communication
+5237;Housse téléphone ;19;45454;Intersport;Sports et loisirs;08.1.9.2;Autres accessoires d'information et de communication
+5062;Implant dentaire;794.15;45454;Dentiste;Services de santé;06.2.2.9;Autres services dentaires ambulatoires
+5110;Implant dentaire;794.15;45454;Dentiste;Services de santé;06.2.2.9;Autres services dentaires ambulatoires
+6257;Impresssion;2.16;45457;Buro pro;Ajout utilisateur;13.9.0.9;Autres services nca
+4248;Interet;2.35;45449;Banque;Organismes financiers;99.2;Opération bancaire (retrait, virement, prélèvement)
+8918;Intermarché;20;45470;Intermarché;Grande et petite surface alimentaire;98.1.2;Courses en supermarché
+9372;Intermarche ;26;45473;Leclerc;Grande et petite surface alimentaire;98.1.2;Courses en supermarché
+8120;Jalapenos;4.5;45465;Otacos;Ajout utilisateur;11.1.1.2;Restaurants, cafés et autres – à service limité
+9640;Jambon;2,59999990463257;2024-07-01;Leclerc;Grande et petite surface alimentaire;01.1.2.3.2;Viandes de porc, coupées, salées, séchées ou fumées (bacon et jambon)
+4195;Jambon uf lait jus fromage yop ;44.9;45449;Leclerc;Grande et petite surface alimentaire;98.1.1;Courses alimentaires
+4504;Je nai pas trouvé ;183;45451;Leclerc;Grande et petite surface alimentaire;98.1.2;Courses en supermarché
+4519;Je nai pas trouvé ;24;45451;Association école;Autres services, don;10;Services de l'enseignement
+4517;Je nai pas trouvé ;5.5;45451;Association école;Autres services, don;10;Services de l'enseignement
+4650;Je sais pas;17.98;45451;Claire S;Autres magasins spécialisés;13.2.1.1;Bijoux et montres
+4131;Journal ;2.5;45445;Tabac journaux;Tabac, presse;09.7.2.1;Journaux 
+5980;Jus de pomme;6;45457;Super U;Grande et petite surface alimentaire;01.2.1.0.0;Jus de fruits et de légumes
+6542;Jus de pomme ;3.5;45460;Distributeur;Marché, vente à domicile, automate;01.2.1.0.0;Jus de fruits et de légumes
+3855;Jus de pomme ;4;45447;Monop;Grande et petite surface alimentaire;01.2.1.0.0;Jus de fruits et de légumes
+7780;Jus dorange;2.6;45465;Carrefour Contact;Grande et petite surface alimentaire;01.2.1.0.0;Jus de fruits et de légumes
+9676;Kfc;17,8999996185303;2024-07-02;KFC;Restauration rapide, café, bar;11.1.1.2;Restaurants, cafés et établissements similaires — service limité (S)
+8361;Kinesiologue;70;45468;Docteur;Services de santé;06.2.3;Autres services de soins ambulatoires
+6876;Kinésithérapie;70;45461;Kiné;Services de santé;06.2.3;Autres services de soins ambulatoires 
+1241;Kit natation fille;17;45436;Decathlon;Sports et loisirs;09.2.2.1;Équipement pour le sport
+3588;Lambris bois;103.4;45447;Leroy Merlin;Aménagement de l’habitat;04.3.1.1;Matériaux pour l'entretien et la réparation du logement
+2959;Legumes et fromage;71.09;45443;Miyam;Ajout utilisateur;98.1.1;Courses alimentaires
+7153;Licence;70;45462;Club foot;Services de loisirs, soins, animaux;09.4.6.2;Prestations sportives - practice 
+1155;Lidl;50;45433;Lidl;Grande et petite surface alimentaire;98.1.2;Courses en supermarché
+5887;Lidl;59.58;45454;Lidl;Grande et petite surface alimentaire;98.1.2;Courses en supermarché
+4396;Liniment;10.5;45450;Pharmacie;Biens et produits personnels, puériculture;06.1.1.1;Médicaments, vaccins et autres préparations pharmaceutiques
+3460;Litière ;5;45447;Match;Grande et petite surface alimentaire;09.3.2.2;Produits pour animaux de compagnie et autres animaux domestiques
+6994;Livres;25;45456;Fnac;Sports et loisirs;09.7.1;Livres
+6923;Location instrument de musique ;47;45460;Magasin instrument musique;Ajout utilisateur;09.6.1.0;Autres services culturels
+6230;Lutti arlequin ;1.75;45458;Lidl;Grande et petite surface alimentaire;01.1.8.9;Autres sucreries et desserts nca
+71;Mabi;11.9;45414;Epicerie;Grande et petite surface alimentaire;02.1.1.0;Spiritueux et liqueurs (ND)
+4847;Macflury ;10;45452;Mac Donald's;Restauration rapide, café, bar;11.1.1.2;Restaurants, cafés et autres – à service limité
+2285;Maillot de bain;25;45442;Decathlon;Sports et loisirs;03.1.2;Vêtements 
+4688;Maillot de bain ;37.47;45452;Inter Sport;Sports et loisirs;03.1.2;Vêtements
+7010;Mangue sechee;3.39;45462;Super U;Grande et petite surface alimentaire;01.1.6.7;Fruits séchés et déshydratés
+7465;Marcel;24;45463;Amazon;Achat par internet, téléphone, correspondance;03.1.2;Vêtements 
+7797;Massage;90;45465;Lôk siam spa;Ajout utilisateur;13.1.3.2;Soins personnels
+4255;Materiel;34;45450;Leroy Merlin;Aménagement de l’habitat;04.3.2.0;Services d'entretien, de réparation et de sécurité du logement
+5762;Mc donald;26.45;45455;Fast food;Restauration rapide, café, bar;11.1.1.2;Restaurants, cafés et autres – à service limité
+7705;Mcdonalds;11;45464;Fast food;Restauration rapide, café, bar;11.1.1.2;Restaurants, cafés et autres – à service limité
+1601;Medecin;45;45429;Médecin;Services de santé;06.2.3;Autres services de soins ambulatoires
+1634;Medecin;16.6;45433;Médecin;Services de santé;06.2.3;Autres services de soins ambulatoires
+4030;Médecin ;26.5;2024-06-01;Médecin;Services de santé;06.2;Services de soins ambulatoires
+4027;Médicament ;9.5;45444;Pharmacie ;Ajout utilisateur;06.1.1;Médicaments 
+3937;Mensuel;67.5;45448;Mutuelle;Organismes financiers;12.1.2.0;Assurances liées à la santé
+7931;Menu flunch galette coca;10.99;45465;Flunch;Restauration rapide, café, bar;11.1.1.2;Restaurants, cafés et autres – à service limité
+5629;Menu wings ;10;45455;Mcdonalds ;Ajout utilisateur;11.1.1.2;Restaurants, cafés et autres – à service limité
+3855;Mozzarella ;5.5;45447;Monop;Grande et petite surface alimentaire;01.1.4.5.0;Fromage
+4579;Mozzarella ;4;2024-06-07;Monoprix;Grande et petite surface alimentaire;01.1.4.5.0;Fromage
+7604;Nichoir cube;51.98;45460;Ducatillon;Ajout utilisateur;09.3.2;Animaux de compagnie et produits pour animaux de compagnie 
+5816;Nourriture;49;45456;Super U;Grande et petite surface alimentaire;98.1.1;Courses alimentaires
+6853;Nourriture;10.72;45455;Carrefour;Grande et petite surface alimentaire;98.1.1;Courses alimentaires
+6864;Nourriture;32;45459;Carrefour;Grande et petite surface alimentaire;98.1.1;Courses alimentaires
+3272;Nourriture ;26;45446;Leclerc;Grande et petite surface alimentaire;98.1.1;Courses alimentaires
+6512;Nourriture ;24.6;45453;Grand Frais;Grande et petite surface alimentaire;98.1.1;Courses alimentaires
+6518;Nourriture ;50.96;45453;Leclerc;Grande et petite surface alimentaire;98.1.1;Courses alimentaires
+3343;Objets de décoration ;60.26;45436;Jardiland;Aménagement de l’habitat;05.1.1.2;Mobilier de jardin et de camping
+6157;Olives;10.24;45458;Marché;Marché, vente à domicile, automate;01.1.7.4.7;Olives, fraîches ou réfrigérées
+5555;Ordure menagere;111.24;45455;Trésor Public;Services publics, services autoroutes, transport, télécommunication;04.4.2.0;Collecte des ordures
+2963;Osteopathe;55;45444;Ostéopathe;Services de santé;06.2.3;Autres services de soins ambulatoires
+8710;Ostéopathe;55;2024-06-21;Ostéopathe;Services de santé;06.2;Services de soins ambulatoires
+3920;Ostéopathe ;65;45448;Ostéopathe;Services de santé;06.2.3.1;Services curatifs et de réadaptation ambulatoires
+5126;Pack d eau ;2.2;45453;Leader Price;Grande et petite surface alimentaire;01.2.5.0;Eau
+3199;Paillette;45.8;45446;Sisi la paillette;Ajout utilisateur;09.2.1.3;Articles de célébration
+3785;Pain;2.4;45448;Boulangerie;Commerce de détail alimentaire;01.1.1.3.1;Pain
+2964;Pain et gateau ;10;45444;Boulangerie;Commerce de détail alimentaire;01.1.1.3;Pain et produits de boulangerie (ND)
+9640;Pain hamburger;0,899999976158142;2024-07-01;Leclerc;Grande et petite surface alimentaire;01.1.1.3.1;Pain
+5617;Pain hamburger fromage ketchup jus salade steaks ;20.99;45455;Leader Price;Grande et petite surface alimentaire;98.1.1;Courses alimentaires
+7647;Pains;4.6;45465;Boulangerie;Commerce de détail alimentaire;01.1.1.3.1;Pain
+3676;Pancarte maitresse;30;45447;Nuages et paillettes;Ajout utilisateur;09.7.4.0;Papeterie et matériel de dessin
+5548;Panier animal;22;45455;Maxi Zoo;Aménagement de l’habitat;09.3.2.2;Produits pour animaux de compagnie et autres animaux domestiques
+5980;Papier cadeau ;4;45457;Super U;Grande et petite surface alimentaire;09.7.4.0;Papeterie et matériel de dessin
+4845;Papier toilette dentifrice soda pépite ;17.8;45452;Carrefour cluny ;Ajout utilisateur;98.1.2;Courses en supermarché
+1131;Paquet de twins;2.5;45435;Noz;Grande et petite surface alimentaire;01.1.1.3.9.3;Biscuits et gâteaux
+4481;Parapharmacie;49.2;45451;Pharmacie hibon ;Ajout utilisateur;06.1.1.1;Médicaments, vaccins et autres préparations pharmaceutiques
+1972;Parc dattraction;197.61;45438;Disneyland;Services de loisirs, soins, animaux;09.4.6.1;Prestations sportives - practice
+1984;Parc dattraction;197.61;45438;Disneyland;Services de loisirs, soins, animaux;09.4.6.1;Prestations sportives - practice
+5111;Parc dattraction;54;45451;Parc attraction;Services de loisirs, soins, animaux;09.4.6.1;Services récréatifs et de loisirs 
+1614;Parking;5.5;45429;Parking;Autres services, don;07.2.4.1;Services de stationnement
+8749;Parking;3.2;2024-06-22;Parking;Autres services, don;07.2.4.1;Services de parkings et de stationnement (S)
+8712;Parking;3;2024-06-24;Parking;Autres services, don;07.2.4.1;Services de parkings et de stationnement (S)
+6658;Parti politique ;300;45460;Don argent;Autres services, don;99.1;Cadeaux
+3855;Pâte feuilletée ;1.2;45447;Monop;Grande et petite surface alimentaire;01.1.1.9.0;Autres céréales et produits de minoterie
+3907;Péage ;15.2;45448;Péage autoroute;Services publics, services autoroutes, transport, télécommunication;07.2.4.2;Installations de péage
+4897;Péage ;12.7;2024-06-07;Vinci Autoroute;Services publics, services autoroutes, transport, télécommunication;07.2.4.2;Péages (S)
+5819;Peignoir ;30;45456;Amazon;Achat par internet, téléphone, correspondance;03.1.2;Vêtements
+3219;Pellicule argentique;29.9;45446;Photographe;Sports et loisirs;09.1.1.2;Accessoires pour matériel photographique et cinématographique
+9300;Petitdéjeuner;9;45473;Café pivoine;Ajout utilisateur;11.1.1.2;Restaurants, cafés et autres – à service limité 
+9146;Petite surface;189;45463;Franprix;Grande et petite surface alimentaire;98.1.2;Courses en supermarché
+8052;Piège à guêpes et frelons ;24.99;45466;Amazon;Achat par internet, téléphone, correspondance;05.6.1.9;Autres biens ménagers non durables
+1398;Pineau;11.8;45438;Marché;Marché, vente à domicile, automate;02.1.2.1;Vin de raisin
+8757;Piscine;4.6;45469;Piscine;Services de loisirs, soins, animaux;09.4.6.2;Prestations sportives - practice
+4374;Piscine ;2.85;45447;Piscine;Services de loisirs, soins, animaux;09.4.6.2;Prestations sportives - practice
+1143;Piscine municipale ;20;45432;Piscine municipale;Services de loisirs, soins, animaux;09.4.6.2;Prestations sportives - practice
+7934;Pizza canibale;13;45466;Don vito;Ajout utilisateur;11.1.1.2;Restaurants, cafés et autres – à service limité
+5619;Pizza chanbon fromage jus  ;19.85;45455;Leclerc ;Ajout utilisateur;01.1.9.1.4;Sandwichs, pizzas, quiches, pâtés à la viande ou au poisson, surgelés ou non
+1835;Plat a emporte;27.8;45439;Restaurant asiatique;Restauration classique;11.1.1.1;Restaurants, cafés et autres – avec service complet 
+1821;Plateau de table chêne massif;80;45440;Le Bon Coin;Achat par internet, téléphone, correspondance;05.1.1.1;Meubles de maison
+5053;Plein de courses;104.19;45451;Auchan;Grande et petite surface alimentaire;98.1.2;Courses en supermarché
+5096;Plein de courses;104.19;45451;Auchan;Grande et petite surface alimentaire;98.1.2;Courses en supermarché
+3677;Pneumologue;92;45448;Boulanger;Commerce de détail alimentaire;06.2.3.1;Services curatifs et de réadaptation ambulatoires
+4564;Pochette course;9.7;45451;Amazon;Achat par internet, téléphone, correspondance;05.6.1.9;Autres biens ménagers non durables
+969;Poêle savoyarde;12;45435;Leclerc;Grande et petite surface alimentaire;05.4.0.3;Ustensiles et articles de cuisine
+3863;Pomme de terre;1.2;45429;Rafale b market;Ajout utilisateur;01.1.7.5.1;Pommes de terre
+2884;Pomme de terre ;1.5;45445;Marché;Marché, vente à domicile, automate;01.1.7.9;Légumes, tubercules, plantains, bananes à cuire et légumineuses moulues et autres préparations
+1273;Pommes de terre;3.99;45437;Leclerc;Grande et petite surface alimentaire;01.1.7.9;Légumes, tubercules, plantains, bananes à cuire et légumineuses moulues et autres préparations
+5457;Pose stérilet ;3.84;45455;Sage Femme;Services de santé;06.2.1.9;Autres services préventifs
+1128;Poules pondeuses  vivantes;25;45435;Fermier;Marché, vente à domicile, automate;01.1.2.1.4;Volaille, vivante
+4407;Poulet crudites;3.11;45450;Leclerc;Grande et petite surface alimentaire;01.1.9.1.4;Sandwichs, pizzas, quiches, pâtés à la viande ou au poisson, surgelés ou non
+9429;Pourboires;4;45474;KFC;Restauration rapide, café, bar;11.1.1.2;Restaurants, cafés et autres – à service limité
+3363;Prelevement;6.45;45446;Banque;Organismes financiers;98.1.3;Courses non alimentaires
+722;Prélèvement ;38.65;45433;Fape obsèques ;Ajout utilisateur;12.1.1.0;Assurance vie et accident (S)
+724;Prélèvement impôts ;1.14;45433;Banque populaire ;Ajout utilisateur;99.4;Impôts, taxes et cotisations syndicales
+3963;Prelevement mensuel ;5;45448;Medecin sans frontieres ;Ajout utilisateur;99.2;Opération bancaire (retrait, virement, prélèvement)
+724;Prélèvement parts sociales ;1.55;45433;Banque populaire ;Ajout utilisateur;99.4;Impôts, taxes et cotisations syndicales
+3656;Presse;3.5;45448;Presse;Tabac, presse;09.7.2;Journaux et périodiques
+3941;Pret immobilier;63.82;45448;Pret bancaire;Ajout utilisateur;99.2;Opération bancaire (retrait, virement, prélèvement)
+4107;Pret vehicule;666.03;45447;Pret voiture;Ajout utilisateur;07.2.4.4;Location de matériel de transport personnel sans chauffeur (S)
+4113;Pret vehicule;137.54;45447;Pret vehicule;Ajout utilisateur;07.2.4.4;Location de matériel de transport personnel sans chauffeur (S)
+8242;Produit cheveux;21.8;45463;Amazon;Achat par internet, téléphone, correspondance;06.1.1.2;Médicaments à base de plantes et produits homéopathiques
+3354;Produits diététiques ;16.05;45440;Naturalia;Commerce de détail alimentaire;98.1.1;Courses alimentaires
+1128;Provence pondeuses ;12;45435;Fermier;Marché, vente à domicile, automate;01.1.2.1.4;Volaille, vivante
+7045;Psychologue ;30;45454;Soins;Services de santé;06.2.1;Services de soins préventifs
+6936;Quête ;2.5;45459;Diocèse de nanterre;Ajout utilisateur;99.1;Cadeaux
+3867;Racines;3.8;45430;Capes legumes;Ajout utilisateur;01.1.7.4;Autres légumes, frais ou réfrigérés
+1791;Ravioli rana x2;9.48;45431;Casino;Grande et petite surface alimentaire;01.1.1.5.0;Macaroni, nouilles, couscous et pâtes similaires
+7255;Recharge carte;20;45461;Cantine;Restauration scolaire et professionnelle;11.1.2;Cantines, cafétérias et réfectoires
+6117;Remboursement;15;45457;Don;Autres services, don;99.1;Cadeaux
+3943;Remboursement credir;57.98;45448;Credit foncier;Ajout utilisateur;99.2;Opération bancaire (retrait, virement, prélèvement)
+8635;Rembt pret auto;74.78;45463;Diac;Ajout utilisateur;99.2;Opération bancaire (retrait, virement, prélèvement)
+998;Reparation;20;45434;Reparateur lavelinge;Ajout utilisateur;05.3.1.9;Autres gros appareils électroménagers
+5889;Réparation robo tondeuse;232.65;45454;Herriberry;Ajout utilisateur;05.5.3.0;Réparation et location d'outils et d'équipements motorisés et non motorisés
+8374;Repas ;13.39;45465;Resto;Restauration classique;11.1.1.1;Restaurants, cafés et autres – avec service complet
+5056;Repas du midi;7.69;45453;Traiteur chinois;Commerce de détail alimentaire;11.1.1.2;Restaurants, cafés et autres – à service limité
+5101;Repas du midi;7.69;45453;Traiteur chinois;Commerce de détail alimentaire;11.1.1.2;Restaurants, cafés et autres – à service limité
+8641;Repas restaurant;16.9;45464;Comptoir brochant;Ajout utilisateur;11.1.1.1;Restaurants, cafés et autres – avec service complet
+6918;Répétition;22.5;45460;Studio de repetition;Ajout utilisateur;09.6.1.0;Autres services culturels
+9520;Restaurant;48;2024-06-28;Restaurant;Restauration classique;11.1.1.1;Restaurants, cafés et établissements similaires — service complet (S)
+6455;Restaurant;22.33;2024-06-11;Resto;Restauration classique;11.1.1.1;Restaurants, cafés et établissements similaires — service complet (S)
+6447;Restaurant;94.6;2024-06-08;Restaurant;Restauration classique;11.1.1.1;Restaurants, cafés et établissements similaires — service complet (S)
+4460;Restaurant ;50.7;45449;Au bureau ;Ajout utilisateur;11.1.1.1;Restaurants, cafés et établissements similaires — service complet (S)
+8310;Restaurant ;39.9;45464;Tiger asian food;Ajout utilisateur;11.1.1.1;Restaurants, cafés et autres – avec service complet
+7434;Restaurant universitaire;3.3;45462;Restaurant universitaire;Ajout utilisateur;11.1.2.9;Autres cantines, cafétérias et réfectoires 
+6622;Restaurants;38;45459;Restaurant;Restauration classique;11.1.1.1;Restaurants, cafés et autres – avec service complet
+5823;Retrait;30;45452;Caisse Epargne;Organismes financiers;99.2;Opération bancaire (retrait, virement, prélèvement)
+6441;Retrait argent;60;45450;Distributeur;Marché, vente à domicile, automate;99.2;Opération bancaire (retrait, virement, prélèvement)
+8761;Retrait argent;50;45470;Banque;Organismes financiers;99.2;Opération bancaire (retrait, virement, prélèvement)
+7663;Retrait especes;2000;45460;Crédit Agricole;Organismes financiers;99.2;Opération bancaire (retrait, virement, prélèvement)
+5509;Revelateur plaque dentaire;13.08;45455;Pharmacie;Biens et produits personnels, puériculture;06.1.2.1;Produits de diagnostic médical
+5470;Revision auto;153.6;45448;Midas;Services pour l’automobile et motocycles;07.2.3.0;Entretien et réparation de matériel de transport personnel
+4173;Royal chees ;10.3;45449;Mcdonalds la batelière ;Ajout utilisateur;11.1.1.2;Restaurants, cafés et autres – à service limité
+1174;Sac cadeaux;3;45436;Action;Grand magasin, bazar;09.7.4.0;Papeterie et matériel de dessin (ND)
+71;Sachet plastique;0.15;45414;Epicerie;Grande et petite surface alimentaire;05.6.1.9;Autres biens ménagers non durables
+4407;Salade fruit;4.25;45450;Leclerc;Grande et petite surface alimentaire;01.1.6.9.9;Autres préparations de fruits et de noix
+5132;Sandwich;12.5;45453;Commande de sandwich  fête décole ;Ajout utilisateur;11.1.1.2;Restaurants, cafés et autres – à service limité
+8184;Sangria;10;45465;Bar;Restauration rapide, café, bar;11.1.1.2;Restaurants, cafés et autres – à service limité
+3156;Santé;63;45440;Médecin;Services de santé;06.2;SERVICES DE SOINS AMBULATOIRES
+6464;Saucisson;5.5;45459;Epicerie fine;Commerce de détail alimentaire;01.1.2.3;Viande, séchée, salée, en saumure ou fumée
+4078;Séance osthéopathie;65;45447;Ostéopathe;Services de santé;06.2.3;Autres services de soins ambulatoires
+6800;Service de loisirs et divertissements;95;45458;Escape game pillard;Ajout utilisateur;09.4.6.1;Services récréatifs et de loisirs 
+9712;Side;5;2024-07-04;Bibimcup;Ajout utilisateur;11.1.1.1;Restaurants, cafés et établissements similaires — service complet (S)
+4156;Snacking;4.5;45447;Franprix;Grande et petite surface alimentaire;11.1.1.2;Restaurants, cafés et autres – à service limité
+5988;Soin bébé ;31;45457;Pharmacie;Biens et produits personnels, puériculture;06.2.1;Services de soins préventifs
+4770;Solde réservation ;510.6;45452;Camping;Camping;11.2.0.2;Centres de vacances, campings, auberges de jeunesse et services d'hébergement similaires
+7044;Sophrologue;65;45457;Soins;Services de santé;06.2.1;Services de soins préventifs
+4236;Souvenirs ;47;45449;Zoo de vincennes;Ajout utilisateur;98.1.3;Courses non alimentaires
+6259;Stage football vacances;180;45457;Aunis fc;Ajout utilisateur;09.4.6.2;Prestations sportives - practice
+3503;Strepsil ;7.95;45447;Pharmacie;Biens et produits personnels, puériculture;06.1.1.1;Médicaments, vaccins et autres préparations pharmaceutiques
+7931;Suppléments ;0.7;45465;Flunch;Restauration rapide, café, bar;11.1.1.2;Restaurants, cafés et autres – à service limité
+2904;Support telephonique;10;45444;Ali express;Ajout utilisateur;98.1.4;Autres courses
+4711;Surfrider fondation ;7;45451;Don;Autres services, don;99.1;Cadeaux
+2103;Surgelé ;25.98;45437;Picard;Grande et petite surface alimentaire;98.1.1;Courses alimentaires
+9772;Surgelé ;37,7999992370605;2024-07-04;Picard;Grande et petite surface alimentaire;98.1.1;Courses alimentaires
+5841;Syndicat des eaux;141.9;45456;Seaff;Ajout utilisateur;04.4.1.1;Approvisionnement en eau par des systèmes de réseau
+909;Tacos ;22;45433;Tacos express;Ajout utilisateur;11.1.1.2;Restaurants, cafés et autres – à service limité
+1812;Taillehaies electrique;89.99;45440;Match;Grande et petite surface alimentaire;05.5.1.0;Outils et équipements motorisés
+85;Tarama;5.38;45426;Super U;Grande et petite surface alimentaire;01.1.3.3.9;Autres poissons, préparés ou conservés
+8033;Taxe fonciere;48;45461;Impôts;Services publics, services autoroutes, transport, télécommunication;99.4;Impôts, taxes et cotisations syndicales
+6692;Taxe foncière;129;45461;Impôts;Services publics, services autoroutes, transport, télécommunication;99.4;Impôts, taxes et cotisations syndicales
+7158;Taxe foncière ;29;45461;Impôts;Services publics, services autoroutes, transport, télécommunication;99.4;Impôts, taxes et cotisations syndicales
+7336;Taxe foncière partie 1;131;45460;Impôts;Services publics, services autoroutes, transport, télécommunication;99.4;Impôts, taxes et cotisations syndicales
+425;Tee shirt;22;45429;Temu;Ajout utilisateur;03.1.2;Vêtements 
+4934;Tee shirts;42;45450;Primark;Habillement, chaussure maroquinerie;03.1.2;Vêtements
+1633;Telesurveillance;44.95;45433;Eps;Ajout utilisateur;04.3.2.0;Services d'entretien, de réparation et de sécurité du logement
+869;Temu;19;2024-05-21;Centrakor;Aménagement de l’habitat;05.1.1.4;Ameublement, moquettes et moquettes (D)
+9706;Tenue de compte;8,6899995803833;2024-07-04;Banque;Organismes financiers;12.2.2.0;Frais explicites des institutions bancaires (S)
+3503;Test anti covid;2.99;45447;Pharmacie;Biens et produits personnels, puériculture;06.1.1.1;Médicaments, vaccins et autres préparations pharmaceutiques
+9384;Ticket de transport;86.4;45474;Sncf;Services publics, services autoroutes, transport, télécommunication;07.3.1.1;Transport de voyageurs par train
+9434;Ticket de transport;86.4;45474;Sncf;Services publics, services autoroutes, transport, télécommunication;07.3.1.1;Transport de voyageurs par train
+6031;Ticket entrée;2.9;45458;Centre aquatique;Services de loisirs, soins, animaux;09.4.6.2;Prestations sportives - practice
+3824;Timbres;41;45448;La Poste;Services publics, services autoroutes, transport, télécommunication;07.4.1.1;Services de traitement du courrier
+8946;Timbres;15.48;45467;La Poste;Services publics, services autoroutes, transport, télécommunication;07.4.1.1;Services de traitement du courrier 
+9850;Too good to go;7,98999977111816;2024-06-26;Too good to go;Ajout utilisateur;98.1.1;Courses alimentaires
+9850;Too good to go;2;2024-06-26;Too good to go;Ajout utilisateur;98.1.1;Courses alimentaires
+9297;Tradition;1.2;45473;Boulanger;Commerce de détail alimentaire;01.1.1.3.1;Pain
+3846;Traiteur ;15;45444;Epicier;Grande et petite surface alimentaire;11.1.1.2;Restaurants, cafés et autres – à service limité
+6527;Travaux;960;45454;Terrassier;Ajout utilisateur;04.3.2;Services d'entretien, de réparation et de sécurité du logement
+8746;Uber eat;15.12;2024-06-19;Uber;Services publics, services autoroutes, transport, télécommunication;11.1.1.2;Restaurants, cafés et autres – à service limité (S)
+4667;Uf curcuma dissolvent jus ;7.43;45451;Leader Price;Grande et petite surface alimentaire;98.1.2;Courses en supermarché
+3996;Une bouteille deau ;2;45449;Drive Carrefour;Achat par internet, téléphone, correspondance;01.2.5.0.0;Eau
+4711;Unicef;13;45451;Don;Autres services, don;99.1;Cadeaux
+2961;Vetement jouet nourriture;20;45445;Vide grenier;Marché, vente à domicile, automate;98.1.4;Autres courses
+1329;Vêtements;239.6;45437;Uniqlo;Habillement, chaussure maroquinerie;03.1.2;Vêtements
+4331;Vêtements ;118;45450;Kiabi;Habillement, chaussure maroquinerie;03.1.2;Vêtements
+6347;Vêtements enfants;80;45456;H§M;Habillement, chaussure maroquinerie;03.1.2;Vêtements 
+5297;Vêtements femme ;57.75;45454;Boutique vêtements;Habillement, chaussure maroquinerie;03.1.2.2;Vêtements pour femmes ou filles
+7258;Vin et tapas;32.75;45462;Bar;Restauration rapide, café, bar;11.1.1.2;Restaurants, cafés et autres – à service limité
+5826;Virement;27;45453;Caisse Epargne;Organismes financiers;99.2;Opération bancaire (retrait, virement, prélèvement)
+3453;Virement ;80;45447;Crédit Mutuel;Organismes financiers;99.2;Opération bancaire (retrait, virement, prélèvement)
+6615;Vis;5.81;45458;Brico Dépôt;Aménagement de l’habitat;04.3.1.1;Matériaux pour l'entretien et la réparation du logement
+9598;Volant badminton;2,49000000953674;2024-07-03;Leclerc;Grande et petite surface alimentaire;09.2.2.1;Articles de sport (SD)
+2015;Volet roulant;595.45;45441;Menuiserie;Services d’aménagement de l’habitat;04.3.2.0;Services d'entretien, de réparation et de sécurité du logement

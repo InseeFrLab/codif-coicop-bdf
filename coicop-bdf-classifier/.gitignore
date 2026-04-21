@@ -1,0 +1,28 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Training artifacts
+lightning_logs/
+mlruns/
+checkpoints/
+models/
+
+# Generated data
+/*.parquet
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Quarto
+index_files/
+.html

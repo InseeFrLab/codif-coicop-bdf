@@ -1,0 +1,1529 @@
+---
+title: "Analyse de la precision du classifieur COICOP"
+subtitle: "Rapport d'evaluation sur les donnees de test"
+author: "Equipe classification BDF"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    theme: cosmo
+    code-fold: true
+    fig-width: 10
+    fig-height: 6
+lang: fr
+execute:
+  warning: false
+  message: false
+---
+
+```{python}
+#| label: setup
+#| code-summary: "Imports et configuration"
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.ticker as mticker
+import seaborn as sns
+from sklearn.metrics import accuracy_score, f1_score
+from pathlib import Path
+
+sns.set_theme(style="whitegrid", palette="colorblind")
+plt.rcParams["figure.dpi"] = 120
+plt.rcParams["font.size"] = 11
+```
+
+## Introduction
+
+Ce rapport évalue la précision du classifieur automatique de codes COICOP (*Classification of Individual Consumption According to Purpose*) développé pour l'enquête Budget de Famille (BDF) de l'INSEE. Le modèle prédit automatiquement un code COICOP à partir du libellé textuel d'un produit de consommation.
+
+**Objectif du rapport :** quantifier les performances du modèle sur un jeu de données annoté, identifier les zones de faiblesse, et formuler des recommandations pour l'usage opérationnel.
+
+**Structure du rapport :**
+
+- **Métriques globales** — accuracy et F1 par niveau hiérarchique, calibration du score de confiance, courbe couverture/précision
+- **Analyses de sous-groupes** — performance par source de données, enseigne, année, type de magasin et tranche de budget
+- **Analyse des erreurs** — cascade hiérarchique, types d'erreurs, codes difficiles, lien avec les données d'entraînement
+- **Impact financier** — part du chiffre d'affaires correctement codée par tranche de confiance
+- **Synthèse et recommandations** — points clés et pistes d'amélioration
+
+::: {.callout-note}
+## Limitations principales à garder en tête
+
+- Le modèle prédit **toujours au niveau 4** de la hiérarchie COICOP, même lorsque le vrai code est de profondeur inférieure. Les comparaisons sont donc effectuées niveau par niveau.
+- Les codes **98.x et 99.x** (codes techniques) sont absents des données d'entraînement : toute prédiction sur ces codes est nécessairement incorrecte. L'impact de ces codes est isolé dans les analyses "hors 98/99".
+:::
+
+## Chargement et preparation des donnees
+
+```{python}
+# | label: load-data
+# | code-summary: "Chargement du fichier predictions.parquet"
+
+DATA_PATH = Path("../../predictions_finetune.parquet")
+df = pd.read_parquet(DATA_PATH)
+print(f"Nombre d'observations : {len(df):,}")
+print(f"Nombre de colonnes : {len(df.columns)}")
+```
+
+```{python}
+#| label: extract-levels
+#| code-summary: "Extraction des niveaux hierarchiques vrais et nettoyage"
+
+def extract_levels(code: str) -> dict[str, str | None]:
+    """Extrait les niveaux hierarchiques d'un code COICOP (ex: '01.1.2.3')."""
+    parts = str(code).split(".")
+    return {
+        "true_level1": parts[0].zfill(2) if len(parts) >= 1 else None,
+        "true_level2": parts[0].zfill(2) + "." + parts[1] if len(parts) >= 2 else None,
+        "true_level3": parts[0].zfill(2) + "." + ".".join(parts[1:3]) if len(parts) >= 3 else None,
+        "true_level4": parts[0].zfill(2) + "." + ".".join(parts[1:4]) if len(parts) >= 4 else None,
+    }
+
+true_levels = df["code"].apply(extract_levels).apply(pd.Series)
+for col in true_levels.columns:
+    df[col] = true_levels[col]
+
+# Profondeur du code vrai (nombre de niveaux)
+df["true_depth"] = df["code"].apply(lambda x: len(str(x).split(".")))
+
+# Flag codes techniques 98.x / 99.x
+df["is_technical"] = df["true_level1"].isin(["98", "99"])
+
+print(f"Codes techniques (98/99) : {df['is_technical'].sum():,} ({df['is_technical'].mean()*100:.1f}%)")
+print(f"\nProfondeur des codes vrais :")
+print(df["true_depth"].value_counts().sort_index().to_string())
+
+# Correct au niveau 4 (comparaison homogene)
+df["correct_l4"] = (df["true_level4"] == df["predicted_level4"]) & df["true_level4"].notna()
+
+# Sous-ensemble hors codes techniques
+df_clean = df[~df["is_technical"]].copy()
+```
+
+::: {.callout-warning}
+Les codes vrais ont des profondeurs variables (1 a 5 niveaux) alors que le modele predit toujours au **niveau 4**. Les comparaisons sont donc effectuees **niveau par niveau** : pour chaque niveau, on ne retient que les observations dont le code vrai couvre au moins ce niveau. La top-k accuracy est calculee au **niveau 4** (le niveau de prediction du modele).
+:::
+
+```{python}
+#| label: helpers
+#| code-summary: "Fonctions utilitaires"
+
+def compute_accuracy_by_level(data: pd.DataFrame) -> pd.DataFrame:
+    """Calcule accuracy et F1 par niveau COICOP."""
+    rows = []
+    for lvl in range(1, 5):
+        true_col = f"true_level{lvl}"
+        pred_col = f"predicted_level{lvl}"
+        valid = data[true_col].notna() & data[pred_col].notna()
+        sub = data[valid]
+        if len(sub) > 0:
+            acc = accuracy_score(sub[true_col], sub[pred_col])
+            f1 = f1_score(sub[true_col], sub[pred_col], average="weighted", zero_division=0)
+            n_classes_true = sub[true_col].nunique()
+            n_classes_pred = sub[pred_col].nunique()
+            rows.append({
+                "Niveau": f"Niveau {lvl}",
+                "Nb classes (vrai)": n_classes_true,
+                "Nb classes (pred)": n_classes_pred,
+                "N": len(sub),
+                "Accuracy (%)": round(acc * 100, 2),
+                "F1 weighted": round(f1, 4),
+            })
+    return pd.DataFrame(rows)
+
+
+def compute_topk_accuracy(data: pd.DataFrame, level: int = 4, max_k: int = 10) -> pd.DataFrame:
+    """Calcule la top-k accuracy au niveau specifie, pour k=1..max_k."""
+    true_col = f"true_level{level}"
+    # Ne garder que les obs avec un code vrai couvrant ce niveau
+    valid = data[true_col].notna()
+    sub = data[valid]
+
+    if len(sub) == 0:
+        return pd.DataFrame({"k": range(1, max_k + 1), "Top-k Accuracy": [np.nan] * max_k})
+
+    results = []
+    for k in range(1, max_k + 1):
+        # Colonnes de prediction a ce niveau
+        pred_cols = [f"predicted_level{level}"]
+        for rank in range(2, k + 1):
+            col = f"predicted_level{level}_top{rank}"
+            if col in sub.columns:
+                pred_cols.append(col)
+
+        hits = 0
+        for _, row in sub.iterrows():
+            true_code = row[true_col]
+            candidates = [row[c] for c in pred_cols if pd.notna(row.get(c))]
+            if true_code in candidates:
+                hits += 1
+
+        results.append({"k": k, "Top-k Accuracy": hits / len(sub)})
+    return pd.DataFrame(results)
+```
+
+## Modele evalue
+
+Le modele evalue est un **classifieur plat** (*basic classifier*) fine-tune, stocke dans `/home/onyxia/finetune/basic_model/model`.
+
+```{python}
+# | label: model-info
+# | code-summary: "Caracteristiques du modele et des donnees d'entrainement"
+
+import pickle
+
+# Metadata du modele
+with open(
+    Path("/home/onyxia/finetune/basic_model/model/basic_metadata.pkl"), "rb"
+) as f:
+    meta = pickle.load(f)
+
+print("=== Architecture du modele ===")
+for k, v in meta.items():
+    if isinstance(v, (str, int, float, bool, type(None))):
+        print(f"  {k}: {v}")
+    elif isinstance(v, list):
+        print(f"  {k}: {len(v)} elements")
+    elif isinstance(v, dict):
+        print(f"  {k}: {len(v)} entrees")
+
+# Donnees d'entrainement
+train = pd.read_parquet("../../raw_train_processed.parquet")
+print(f"\n=== Donnees d'entrainement (raw_train_processed.parquet) ===")
+print(f"  Nombre d'observations : {len(train):,}")
+print(f"  Nombre de codes uniques : {train['code'].nunique()}")
+if "source" in train.columns:
+    print(f"\n  Repartition par source :")
+    for src, cnt in train["source"].value_counts().items():
+        print(f"    {src}: {cnt:,} ({cnt / len(train) * 100:.1f}%)")
+```
+
+Le modele utilise un **tokenizer n-gram** (trigrammes a 6-grammes de caracteres) et predit directement un code COICOP de niveau 4 parmi ses classes connues. Il a ete **fine-tune** a partir des donnees du fichier `raw_train_processed.parquet`, qui combinent des donnees de caisse (DDC) et des donnees synthetiques generees par LLM.
+
+::: {.callout-note}
+Le modele ne connait pas les codes techniques **98.x** et **99.x** (absents des donnees d'entrainement). Toute prediction sur ces codes sera necessairement fausse.
+:::
+
+**Avantages du classifieur plat :** simplicité de mise en production, rapidité d'inférence, et robustesse face aux libellés courts. **Principale limite :** contrairement à un classifieur hiérarchique, il n'exploite pas explicitement la structure en niveaux de la nomenclature COICOP, ce qui peut entraîner des erreurs sémantiquement éloignées (prédire une division incorrecte au niveau 1 plutôt qu'un code voisin au niveau 4).
+
+## Repartition des codes COICOP
+
+### Par niveau 1 (divisions)
+
+```{python}
+#| label: fig-dist-level1
+#| fig-cap: "Repartition des observations par code COICOP de niveau 1"
+
+level1_counts = df["true_level1"].value_counts().sort_index()
+
+fig, ax = plt.subplots(figsize=(10, 5))
+bars = ax.bar(level1_counts.index, level1_counts.values, color="steelblue", edgecolor="white")
+for bar, val in zip(bars, level1_counts.values):
+    ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 10,
+            str(val), ha="center", va="bottom", fontsize=9)
+ax.set_xlabel("Code niveau 1")
+ax.set_ylabel("Nombre d'observations")
+ax.set_title("Repartition par division COICOP (niveau 1)")
+plt.tight_layout()
+plt.show()
+```
+
+### Par niveau 2
+
+```{python}
+#| label: fig-dist-level2
+#| fig-cap: "Top-20 des codes COICOP de niveau 2"
+
+level2_counts = df["true_level2"].dropna().value_counts().head(20).sort_values(ascending=True)
+
+fig, ax = plt.subplots(figsize=(10, 6))
+ax.barh(level2_counts.index, level2_counts.values, color="steelblue")
+ax.set_xlabel("Nombre d'observations")
+ax.set_title("Top-20 des codes COICOP de niveau 2")
+for i, v in enumerate(level2_counts.values):
+    ax.text(v + 5, i, str(v), va="center", fontsize=9)
+plt.tight_layout()
+plt.show()
+```
+
+### Par niveau 3
+
+```{python}
+#| label: fig-dist-level3
+#| fig-cap: "Top-25 des codes COICOP de niveau 3"
+
+level3_counts = df["true_level3"].dropna().value_counts().head(25).sort_values(ascending=True)
+
+fig, ax = plt.subplots(figsize=(10, 8))
+ax.barh(level3_counts.index, level3_counts.values, color="steelblue")
+ax.set_xlabel("Nombre d'observations")
+ax.set_title("Top-25 des codes COICOP de niveau 3")
+for i, v in enumerate(level3_counts.values):
+    ax.text(v + 5, i, str(v), va="center", fontsize=9)
+plt.tight_layout()
+plt.show()
+```
+
+### Par niveau 4
+
+```{python}
+#| label: fig-dist-level4
+#| fig-cap: "Top-30 des codes COICOP de niveau 4"
+
+level4_counts = df["true_level4"].dropna().value_counts().head(30).sort_values(ascending=True)
+
+fig, ax = plt.subplots(figsize=(10, 9))
+ax.barh(level4_counts.index, level4_counts.values, color="steelblue")
+ax.set_xlabel("Nombre d'observations")
+ax.set_title("Top-30 des codes COICOP de niveau 4")
+for i, v in enumerate(level4_counts.values):
+    ax.text(v + 3, i, str(v), va="center", fontsize=8)
+plt.tight_layout()
+plt.show()
+```
+
+### Nombre de classes par niveau
+
+```{python}
+#| label: tbl-nb-classes
+#| tbl-cap: "Nombre de classes distinctes par niveau COICOP"
+
+class_counts = []
+for lvl in range(1, 5):
+    col = f"true_level{lvl}"
+    vals = df[col].dropna()
+    vals_no_tech = df.loc[~df["is_technical"], col].dropna()
+    class_counts.append({
+        "Niveau": f"Niveau {lvl}",
+        "Nb classes (total)": vals.nunique(),
+        "Nb classes (hors 98/99)": vals_no_tech.nunique(),
+        "Nb observations": len(vals),
+        "Nb obs. (hors 98/99)": len(vals_no_tech),
+    })
+pd.DataFrame(class_counts).style.hide(axis="index")
+```
+
+
+## Metriques globales
+
+### Accuracy et F1 par niveau COICOP
+
+```{python}
+#| label: tbl-global-accuracy
+#| tbl-cap: "Accuracy et F1 par niveau hierarchique COICOP (toutes observations)"
+
+global_acc = compute_accuracy_by_level(df)
+global_acc.style.format({"Accuracy (%)": "{:.2f}", "F1 weighted": "{:.4f}"}).hide(axis="index")
+```
+
+```{python}
+#| label: tbl-global-accuracy-no-tech
+#| tbl-cap: "Accuracy et F1 par niveau hierarchique COICOP (hors codes 98/99)"
+
+global_acc_clean = compute_accuracy_by_level(df_clean)
+global_acc_clean.style.format({"Accuracy (%)": "{:.2f}", "F1 weighted": "{:.4f}"}).hide(axis="index")
+```
+
+### Top-k accuracy (niveau 4)
+
+```{python}
+#| label: fig-topk-global
+#| fig-cap: "Top-k accuracy au niveau 4 (toutes obs. vs hors codes 98/99)"
+
+topk_all = compute_topk_accuracy(df, level=4)
+topk_clean = compute_topk_accuracy(df_clean, level=4)
+
+fig, ax = plt.subplots(figsize=(8, 5))
+ax.plot(topk_all["k"], topk_all["Top-k Accuracy"] * 100, marker="o", linewidth=2, markersize=8, label="Toutes observations")
+ax.plot(topk_clean["k"], topk_clean["Top-k Accuracy"] * 100, marker="s", linewidth=2, markersize=8, label="Hors codes 98/99")
+
+for _, row in topk_all.iterrows():
+    ax.annotate(f"{row['Top-k Accuracy']*100:.1f}%",
+                (row["k"], row["Top-k Accuracy"] * 100),
+                textcoords="offset points", xytext=(0, -15), ha="center", fontsize=8, color="C0")
+for _, row in topk_clean.iterrows():
+    ax.annotate(f"{row['Top-k Accuracy']*100:.1f}%",
+                (row["k"], row["Top-k Accuracy"] * 100),
+                textcoords="offset points", xytext=(0, 10), ha="center", fontsize=8, color="C1")
+
+ax.set_xlabel("k")
+ax.set_ylabel("Accuracy (%)")
+ax.set_xticks(range(1, 11))
+ax.set_ylim(0, 105)
+ax.legend()
+ax.set_title("Top-k accuracy (niveau 4)")
+plt.tight_layout()
+plt.show()
+```
+
+### Distribution des scores de confiance
+
+```{python}
+#| label: fig-confidence-dist
+#| fig-cap: "Distribution des scores de confiance (top-1)"
+
+fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+
+# Histogramme
+axes[0].hist(df["confidence"], bins=50, edgecolor="white", alpha=0.8)
+axes[0].set_xlabel("Score de confiance")
+axes[0].set_ylabel("Nombre d'observations")
+axes[0].set_title("Distribution des scores de confiance")
+
+# Confiance selon si la prediction est correcte (niveau 4, obs avec vrai niveau 4)
+sub_l4 = df[df["true_level4"].notna()]
+for label, group in sub_l4.groupby("correct_l4"):
+    lbl = "Correct" if label else "Incorrect"
+    axes[1].hist(group["confidence"], bins=50, alpha=0.6, label=lbl, density=True)
+axes[1].set_xlabel("Score de confiance")
+axes[1].set_ylabel("Densite")
+axes[1].set_title("Confiance selon la justesse (niveau 4)")
+axes[1].legend()
+
+plt.tight_layout()
+plt.show()
+```
+
+### Courbe de calibration
+
+```{python}
+#| label: fig-calibration
+#| fig-cap: "Courbe de calibration : confiance vs accuracy reelle (niveau 4)"
+
+sub_l4 = df[df["true_level4"].notna()].copy()
+bins = np.linspace(0, 1, 21)
+sub_l4["conf_bin"] = pd.cut(sub_l4["confidence"], bins=bins)
+cal = sub_l4.groupby("conf_bin", observed=True).agg(
+    accuracy=("correct_l4", "mean"),
+    count=("correct_l4", "count"),
+    mean_conf=("confidence", "mean"),
+).reset_index()
+
+fig, ax1 = plt.subplots(figsize=(8, 5))
+ax1.plot([0, 1], [0, 1], "--", color="gray", label="Calibration parfaite")
+ax1.plot(cal["mean_conf"], cal["accuracy"], "o-", linewidth=2, markersize=6, label="Modele")
+ax1.set_xlabel("Confiance moyenne du bin")
+ax1.set_ylabel("Accuracy reelle")
+ax1.set_title("Courbe de calibration (niveau 4)")
+ax1.legend()
+
+ax2 = ax1.twinx()
+ax2.bar(cal["mean_conf"], cal["count"], width=0.04, alpha=0.2, color="gray", label="Volume")
+ax2.set_ylabel("Nombre d'observations")
+
+plt.tight_layout()
+plt.show()
+```
+
+### Couverture vs accuracy par seuil de confiance
+
+```{python}
+#| label: fig-coverage-accuracy
+#| fig-cap: "Couverture et accuracy en fonction du seuil de confiance (niveau 4)"
+
+sub_l4 = df[df["true_level4"].notna()]
+thresholds = np.arange(0, 1.01, 0.05)
+cov_acc = []
+for t in thresholds:
+    mask = sub_l4["confidence"] >= t
+    n_above = mask.sum()
+    coverage = n_above / len(sub_l4)
+    acc = sub_l4.loc[mask, "correct_l4"].mean() if n_above > 0 else np.nan
+    cov_acc.append({"seuil": t, "couverture": coverage, "accuracy": acc})
+cov_acc = pd.DataFrame(cov_acc)
+
+fig, ax1 = plt.subplots(figsize=(8, 5))
+ax1.plot(cov_acc["seuil"], cov_acc["accuracy"] * 100, "o-", color="tab:blue", label="Accuracy")
+ax1.set_xlabel("Seuil de confiance")
+ax1.set_ylabel("Accuracy (%)", color="tab:blue")
+ax1.tick_params(axis="y", labelcolor="tab:blue")
+
+ax2 = ax1.twinx()
+ax2.plot(cov_acc["seuil"], cov_acc["couverture"] * 100, "s-", color="tab:orange", label="Couverture")
+ax2.set_ylabel("Couverture (%)", color="tab:orange")
+ax2.tick_params(axis="y", labelcolor="tab:orange")
+
+lines1, labels1 = ax1.get_legend_handles_labels()
+lines2, labels2 = ax2.get_legend_handles_labels()
+ax1.legend(lines1 + lines2, labels1 + labels2, loc="center left")
+
+plt.title("Compromis couverture / accuracy (niveau 4)")
+plt.tight_layout()
+plt.show()
+```
+
+### Accuracy par tranche de confiance et par niveau COICOP
+
+```{python}
+#| label: fig-accuracy-by-confidence
+#| fig-cap: "Accuracy par tranche de confiance et par niveau COICOP (hors codes 98/99)"
+
+sub_clean = df_clean.copy()
+conf_bins = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+conf_labels = [f"{conf_bins[i]:.1f}-{conf_bins[i+1]:.1f}" for i in range(len(conf_bins) - 1)]
+sub_clean["conf_tranche"] = pd.cut(sub_clean["confidence"], bins=conf_bins, labels=conf_labels, include_lowest=True)
+
+fig, ax = plt.subplots(figsize=(10, 6))
+for lvl in range(1, 5):
+    true_col = f"true_level{lvl}"
+    pred_col = f"predicted_level{lvl}"
+    acc_by_conf = []
+    for tranche in conf_labels:
+        group = sub_clean[sub_clean["conf_tranche"] == tranche]
+        valid = group[true_col].notna() & group[pred_col].notna()
+        sub = group[valid]
+        acc = accuracy_score(sub[true_col], sub[pred_col]) * 100 if len(sub) > 0 else np.nan
+        acc_by_conf.append(acc)
+    ax.plot(conf_labels, acc_by_conf, marker="o", linewidth=2, label=f"Niveau {lvl}")
+
+ax.set_xlabel("Tranche de confiance")
+ax.set_ylabel("Accuracy (%)")
+ax.set_title("Accuracy par tranche de confiance et par niveau COICOP")
+ax.legend()
+plt.xticks(rotation=45, ha="right")
+plt.tight_layout()
+plt.show()
+```
+
+```{python}
+#| label: tbl-accuracy-by-confidence
+#| tbl-cap: "Accuracy et volume par tranche de confiance (niveau 4, hors codes 98/99)"
+
+rows_conf = []
+for tranche in conf_labels:
+    group = sub_clean[sub_clean["conf_tranche"] == tranche]
+    valid = group["true_level4"].notna() & group["predicted_level4"].notna()
+    sub = group[valid]
+    n = len(sub)
+    acc = accuracy_score(sub["true_level4"], sub["predicted_level4"]) * 100 if n > 0 else np.nan
+    rows_conf.append({"Confiance": tranche, "N": len(group), "N (niv. 4)": n, "Accuracy niv. 4 (%)": round(acc, 2) if not np.isnan(acc) else None})
+pd.DataFrame(rows_conf).style.format({"Accuracy niv. 4 (%)": "{:.2f}"}).hide(axis="index")
+```
+
+::: {.callout-tip}
+## Points clés — métriques globales
+
+- **La performance se dégrade à mesure que le niveau hiérarchique augmente**, ce qui est attendu : classifier les 13 grandes divisions (niveau 1) est plus facile que distinguer les centaines de codes fins de niveau 4.
+- **La top-k accuracy au niveau 4** révèle le potentiel en mode assistance : si le modèle propose plusieurs candidats, la vraie réponse apparaît fréquemment dans les premières suggestions. Ce mode est utile pour un workflow d'aide à l'annotation humaine.
+- **La courbe de calibration** indique si le score de confiance est fiable. Un modèle bien calibré voit sa confiance moyenne correspondre à son accuracy réelle. Un écart systématique (sur- ou sous-confiance) est à surveiller, notamment dans les zones à forte densité d'observations.
+- **La courbe couverture/accuracy** permet de choisir un seuil opérationnel : en relevant le seuil de confiance, on réduit le volume de prédictions automatiques mais on améliore leur précision. Les prédictions en dessous du seuil peuvent être orientées vers une validation manuelle.
+:::
+
+## Analyse par source
+
+```{python}
+#| label: source-stats
+#| code-summary: "Statistiques par source"
+
+print("Distribution des sources :")
+print(df["source"].value_counts().to_string())
+print(f"\nDont codes techniques (98/99) par source :")
+print(df.groupby("source")["is_technical"].sum().to_string())
+```
+
+### Accuracy par source et par niveau (toutes observations)
+
+```{python}
+#| label: tbl-source-accuracy
+#| tbl-cap: "Accuracy par source et par niveau COICOP"
+
+source_rows = []
+for source, group in df.groupby("source"):
+    row = {"Source": source, "N": len(group)}
+    for lvl in range(1, 5):
+        true_col = f"true_level{lvl}"
+        pred_col = f"predicted_level{lvl}"
+        valid = group[true_col].notna() & group[pred_col].notna()
+        sub = group[valid]
+        row[f"Niv. {lvl} (%)"] = round(accuracy_score(sub[true_col], sub[pred_col]) * 100, 2) if len(sub) > 0 else np.nan
+    source_rows.append(row)
+source_acc = pd.DataFrame(source_rows)
+source_acc.style.format({f"Niv. {i} (%)": "{:.2f}" for i in range(1, 5)}).hide(axis="index")
+```
+
+### Accuracy par source et par niveau (hors codes 98/99)
+
+```{python}
+#| label: tbl-source-accuracy-clean
+#| tbl-cap: "Accuracy par source et par niveau COICOP (hors codes 98/99)"
+
+source_rows_clean = []
+for source, group in df_clean.groupby("source"):
+    row = {"Source": source, "N": len(group)}
+    for lvl in range(1, 5):
+        true_col = f"true_level{lvl}"
+        pred_col = f"predicted_level{lvl}"
+        valid = group[true_col].notna() & group[pred_col].notna()
+        sub = group[valid]
+        row[f"Niv. {lvl} (%)"] = round(accuracy_score(sub[true_col], sub[pred_col]) * 100, 2) if len(sub) > 0 else np.nan
+    source_rows_clean.append(row)
+source_acc_clean = pd.DataFrame(source_rows_clean)
+source_acc_clean.style.format({f"Niv. {i} (%)": "{:.2f}" for i in range(1, 5)}).hide(axis="index")
+```
+
+```{python}
+#| label: fig-source-accuracy
+#| fig-cap: "Accuracy par source et par niveau COICOP (hors codes 98/99)"
+
+fig, ax = plt.subplots(figsize=(10, 5))
+x = np.arange(len(source_acc_clean))
+width = 0.2
+for i, lvl in enumerate(range(1, 5)):
+    col = f"Niv. {lvl} (%)"
+    ax.bar(x + i * width, source_acc_clean[col], width, label=f"Niveau {lvl}")
+ax.set_xticks(x + 1.5 * width)
+ax.set_xticklabels(source_acc_clean["Source"], rotation=15, ha="right")
+ax.set_ylabel("Accuracy (%)")
+ax.legend()
+ax.set_title("Accuracy par source et par niveau (hors codes 98/99)")
+plt.tight_layout()
+plt.show()
+```
+
+### Top-k accuracy par source (niveau 4, hors codes 98/99)
+
+```{python}
+#| label: fig-topk-source
+#| fig-cap: "Top-k accuracy par source (niveau 4, hors codes 98/99)"
+
+fig, ax = plt.subplots(figsize=(8, 5))
+for source, group in df_clean.groupby("source"):
+    topk_src = compute_topk_accuracy(group, level=4)
+    ax.plot(topk_src["k"], topk_src["Top-k Accuracy"] * 100, marker="o", label=f"{source} (n={len(group)})")
+ax.set_xlabel("k")
+ax.set_ylabel("Accuracy (%)")
+ax.set_xticks(range(1, 11))
+ax.legend()
+ax.set_title("Top-k accuracy par source (niveau 4, hors codes 98/99)")
+plt.tight_layout()
+plt.show()
+```
+
+Les disparités de performance entre sources s'expliquent principalement par deux facteurs : **(1) la qualité des libellés** (certaines sources fournissent des descriptions détaillées et normalisées, d'autres des libellés cryptiques ou très courts) et **(2) la spécificité des produits** (une source spécialisée dans l'alimentaire sera naturellement mieux couverte par les données d'entraînement qu'une source multi-secteurs). La top-k accuracy par source confirme si les difficultés sont intrinsèques aux produits (courbe basse même pour k élevé) ou liées à des ambiguïtés récupérables (gain rapide dès k=2 ou k=3).
+
+## Analyse par enseigne (shop)
+
+### Top-20 enseignes par volume
+
+```{python}
+#| label: fig-shop-top20
+#| fig-cap: "Top-20 enseignes : volume et accuracy (niveau 4, hors codes 98/99)"
+
+shop_stats = df_clean[df_clean["true_level4"].notna()].groupby("shop").agg(
+    n=("true_level4", "size"),
+    accuracy=("correct_l4", "mean"),
+).sort_values("n", ascending=False).head(20).sort_values("n", ascending=True)
+
+fig, axes = plt.subplots(1, 2, figsize=(14, 7))
+
+# Volume
+axes[0].barh(shop_stats.index, shop_stats["n"], color="steelblue")
+axes[0].set_xlabel("Nombre d'observations")
+axes[0].set_title("Volume par enseigne")
+
+# Accuracy
+mean_acc = df_clean.loc[df_clean["true_level4"].notna(), "correct_l4"].mean()
+colors = plt.cm.RdYlGn(shop_stats["accuracy"])
+axes[1].barh(shop_stats.index, shop_stats["accuracy"] * 100, color=colors)
+axes[1].set_xlabel("Accuracy (%)")
+axes[1].set_title("Accuracy (niveau 4) par enseigne")
+axes[1].axvline(mean_acc * 100, color="red", linestyle="--", label=f"Moyenne globale ({mean_acc*100:.1f}%)")
+axes[1].legend()
+
+plt.tight_layout()
+plt.show()
+```
+
+### Distribution de l'accuracy par enseigne
+
+```{python}
+#| label: fig-shop-dist
+#| fig-cap: "Distribution de l'accuracy par enseigne (enseignes avec >= 20 observations, hors codes 98/99)"
+
+shop_acc = df_clean[df_clean["true_level4"].notna()].groupby("shop").agg(
+    n=("true_level4", "size"),
+    accuracy=("correct_l4", "mean"),
+).query("n >= 20")
+
+fig, ax = plt.subplots(figsize=(8, 5))
+ax.hist(shop_acc["accuracy"] * 100, bins=30, edgecolor="white", alpha=0.8)
+ax.axvline(shop_acc["accuracy"].mean() * 100, color="red", linestyle="--", label=f"Moyenne : {shop_acc['accuracy'].mean()*100:.1f}%")
+ax.set_xlabel("Accuracy (%)")
+ax.set_ylabel("Nombre d'enseignes")
+ax.set_title("Distribution de l'accuracy par enseigne (n >= 20, hors 98/99)")
+ax.legend()
+plt.tight_layout()
+plt.show()
+```
+
+La distribution de l'accuracy inter-enseignes révèle l'hétérogénéité du problème : certaines enseignes ont des assortiments très spécialisés (produits distinctifs et libellés homogènes → bonne performance), tandis que d'autres vendent une grande variété de produits avec des libellés variables → difficulté accrue. Les enseignes sous-performantes méritent une analyse qualitative : s'agit-il de produits mal représentés dans l'entraînement, ou de libellés ambigus difficiles à interpréter même humainement ?
+
+## Analyse par annee
+
+```{python}
+#| label: tbl-annee-accuracy
+#| tbl-cap: "Accuracy par annee et par niveau COICOP (hors codes 98/99)"
+
+annee_rows = []
+for annee, group in df_clean.groupby("annee"):
+    row = {"Annee": int(annee), "N": len(group)}
+    for lvl in range(1, 5):
+        true_col = f"true_level{lvl}"
+        pred_col = f"predicted_level{lvl}"
+        valid = group[true_col].notna() & group[pred_col].notna()
+        sub = group[valid]
+        row[f"Niv. {lvl} (%)"] = round(accuracy_score(sub[true_col], sub[pred_col]) * 100, 2) if len(sub) > 0 else np.nan
+    annee_rows.append(row)
+annee_acc = pd.DataFrame(annee_rows)
+annee_acc.style.format({f"Niv. {i} (%)": "{:.2f}" for i in range(1, 5)}).hide(axis="index")
+```
+
+```{python}
+#| label: fig-annee-accuracy
+#| fig-cap: "Accuracy par annee et par niveau COICOP (hors codes 98/99)"
+
+fig, ax = plt.subplots(figsize=(8, 5))
+x = np.arange(len(annee_acc))
+width = 0.2
+for i, lvl in enumerate(range(1, 5)):
+    col = f"Niv. {lvl} (%)"
+    ax.bar(x + i * width, annee_acc[col], width, label=f"Niveau {lvl}")
+ax.set_xticks(x + 1.5 * width)
+ax.set_xticklabels(annee_acc["Annee"].astype(int))
+ax.set_ylabel("Accuracy (%)")
+ax.legend()
+ax.set_title("Accuracy par annee et par niveau (hors codes 98/99)")
+plt.tight_layout()
+plt.show()
+```
+
+Une performance stable sur les différentes années est un signe positif de robustesse du modèle : il n'y a pas de dérive temporelle notable liée à l'évolution des libellés ou des assortiments produits. En revanche, si certaines années affichent une performance inférieure, cela peut indiquer un changement dans les sources de données ou dans la nomenclature COICOP elle-même.
+
+## Analyse par type de magasin (shop_type_name)
+
+### Accuracy par type de magasin
+
+```{python}
+#| label: fig-shoptype-accuracy
+#| fig-cap: "Accuracy et volume par type de magasin (top-15, niveau 4, hors codes 98/99)"
+
+shoptype_data = df_clean[df_clean["true_level4"].notna()]
+shoptype_stats = shoptype_data.groupby("shop_type_name").agg(
+    n=("true_level4", "size"),
+    accuracy=("correct_l4", "mean"),
+).sort_values("n", ascending=False).head(15).sort_values("accuracy", ascending=True).reset_index()
+
+# Tronquer les labels longs et ajouter le volume
+shoptype_stats["label"] = shoptype_stats.apply(
+    lambda r: (r["shop_type_name"][:40] + "..." if len(r["shop_type_name"]) > 40 else r["shop_type_name"]) + f"  (n={r['n']})",
+    axis=1,
+)
+
+mean_acc = shoptype_data["correct_l4"].mean()
+
+fig, ax = plt.subplots(figsize=(10, 7))
+colors = plt.cm.RdYlGn(shoptype_stats["accuracy"])
+bars = ax.barh(range(len(shoptype_stats)), shoptype_stats["accuracy"] * 100, color=colors, edgecolor="white", height=0.7)
+ax.set_yticks(range(len(shoptype_stats)))
+ax.set_yticklabels(shoptype_stats["label"], fontsize=10)
+ax.set_xlabel("Accuracy (%)")
+ax.axvline(mean_acc * 100, color="red", linestyle="--", linewidth=1.5, label=f"Moyenne globale ({mean_acc*100:.1f}%)")
+
+# Annotations des valeurs
+for i, (acc, n) in enumerate(zip(shoptype_stats["accuracy"], shoptype_stats["n"])):
+    ax.text(acc * 100 + 0.5, i, f"{acc*100:.1f}%", va="center", fontsize=9)
+
+ax.legend(loc="lower right")
+ax.set_title("Accuracy (niveau 4) par type de magasin (hors 98/99)")
+ax.set_xlim(0, shoptype_stats["accuracy"].max() * 100 + 8)
+plt.tight_layout()
+plt.show()
+```
+
+### Heatmap accuracy par niveau et type de magasin
+
+```{python}
+#| label: fig-shoptype-heatmap
+#| fig-cap: "Heatmap accuracy par niveau COICOP et type de magasin (top-15, hors codes 98/99)"
+
+top_types = df_clean["shop_type_name"].value_counts().head(15).index.tolist()
+heat_rows = []
+for stype in top_types:
+    group = df_clean[df_clean["shop_type_name"] == stype]
+    n = len(group)
+    # Tronquer le label et ajouter le volume
+    label = (stype[:40] + "...") if len(stype) > 40 else stype
+    label = f"{label}  (n={n})"
+    row = {"Type": label}
+    for lvl in range(1, 5):
+        true_col = f"true_level{lvl}"
+        pred_col = f"predicted_level{lvl}"
+        valid = group[true_col].notna() & group[pred_col].notna()
+        sub = group[valid]
+        row[f"Niveau {lvl}"] = accuracy_score(sub[true_col], sub[pred_col]) * 100 if len(sub) > 0 else np.nan
+    heat_rows.append(row)
+heat_df = pd.DataFrame(heat_rows).set_index("Type")
+
+fig, ax = plt.subplots(figsize=(12, 8))
+sns.heatmap(heat_df, annot=True, fmt=".1f", cmap="RdYlGn", ax=ax, vmin=0, vmax=100,
+            linewidths=0.5, annot_kws={"fontsize": 11})
+ax.set_title("Accuracy (%) par type de magasin et niveau COICOP (hors 98/99)", fontsize=13)
+ax.set_xlabel("")
+ax.set_yticklabels(ax.get_yticklabels(), fontsize=10)
+ax.set_xticklabels(ax.get_xticklabels(), fontsize=11)
+plt.tight_layout()
+plt.show()
+```
+
+Les magasins spécialisés (boulangeries, poissonneries, fromageries, etc.) tendent à obtenir de meilleures performances car leur assortiment est concentré sur quelques catégories COICOP bien représentées dans les données d'entraînement. À l'inverse, les grandes surfaces généralistes présentent une diversité de produits qui rend la tâche plus difficile. La heatmap par niveau permet d'identifier si les difficultés sont concentrées sur un niveau particulier (généralement L3 et L4, les plus fins) ou si elles touchent même la classification de premier niveau.
+
+## Analyse par budget
+
+```{python}
+#| label: budget-prep
+#| code-summary: "Preparation des tranches de budget"
+
+df["budget_clean"] = pd.to_numeric(df["budget"], errors="coerce")
+df_clean["budget_clean"] = pd.to_numeric(df_clean["budget"], errors="coerce")
+
+budget_valid = df_clean["budget_clean"].notna()
+print(f"Observations avec budget valide (hors 98/99) : {budget_valid.sum():,} / {len(df_clean):,}")
+print(f"Budget min : {df_clean.loc[budget_valid, 'budget_clean'].min():.2f} EUR")
+print(f"Budget max : {df_clean.loc[budget_valid, 'budget_clean'].max():.2f} EUR")
+print(f"Budget median : {df_clean.loc[budget_valid, 'budget_clean'].median():.2f} EUR")
+
+# Tranches de budget
+bins_budget = [0, 2, 5, 10, 20, 50, 100, float("inf")]
+labels_budget = ["0-2", "2-5", "5-10", "10-20", "20-50", "50-100", "100+"]
+df_clean["budget_tranche"] = pd.cut(df_clean["budget_clean"], bins=bins_budget, labels=labels_budget, right=True)
+```
+
+### Accuracy par tranche de budget
+
+```{python}
+#| label: fig-budget-accuracy
+#| fig-cap: "Accuracy (niveau 4) par tranche de budget (hors codes 98/99)"
+
+budget_data = df_clean[df_clean["budget_tranche"].notna() & df_clean["true_level4"].notna()]
+budget_stats = budget_data.groupby("budget_tranche", observed=True).agg(
+    n=("true_level4", "size"),
+    accuracy=("correct_l4", "mean"),
+).reset_index()
+
+fig, ax1 = plt.subplots(figsize=(9, 5))
+colors = plt.cm.RdYlGn(budget_stats["accuracy"])
+bars = ax1.bar(budget_stats["budget_tranche"].astype(str), budget_stats["accuracy"] * 100, color=colors, edgecolor="white")
+ax1.set_xlabel("Tranche de budget (EUR)")
+ax1.set_ylabel("Accuracy (%)")
+mean_acc = budget_data["correct_l4"].mean()
+ax1.axhline(mean_acc * 100, color="red", linestyle="--", alpha=0.7, label=f"Moyenne ({mean_acc*100:.1f}%)")
+
+# Volume en annotation
+for bar, n in zip(bars, budget_stats["n"]):
+    ax1.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.5,
+             f"n={n}", ha="center", va="bottom", fontsize=9)
+
+ax1.legend()
+ax1.set_title("Accuracy par tranche de budget (hors 98/99)")
+plt.tight_layout()
+plt.show()
+```
+
+### Confiance moyenne par tranche de budget
+
+```{python}
+#| label: fig-budget-confidence
+#| fig-cap: "Confiance moyenne par tranche de budget (hors codes 98/99)"
+
+budget_conf = df_clean[df_clean["budget_tranche"].notna()].groupby("budget_tranche", observed=True).agg(
+    mean_conf=("confidence", "mean"),
+    median_conf=("confidence", "median"),
+    n=("confidence", "size"),
+).reset_index()
+
+fig, ax = plt.subplots(figsize=(8, 5))
+ax.bar(budget_conf["budget_tranche"].astype(str), budget_conf["mean_conf"], alpha=0.7, label="Moyenne")
+ax.plot(budget_conf["budget_tranche"].astype(str), budget_conf["median_conf"], "ro-", label="Mediane")
+ax.set_xlabel("Tranche de budget (EUR)")
+ax.set_ylabel("Score de confiance")
+ax.legend()
+ax.set_title("Confiance par tranche de budget (hors 98/99)")
+plt.tight_layout()
+plt.show()
+```
+
+### Heatmap accuracy par tranche de budget et niveau COICOP
+
+```{python}
+#| label: fig-budget-heatmap
+#| fig-cap: "Heatmap accuracy par tranche de budget et niveau COICOP (hors 98/99)"
+
+budget_heat_rows = []
+for tranche in labels_budget:
+    group = df_clean[df_clean["budget_tranche"] == tranche]
+    if len(group) == 0:
+        continue
+    row = {"Tranche": tranche}
+    for lvl in range(1, 5):
+        true_col = f"true_level{lvl}"
+        pred_col = f"predicted_level{lvl}"
+        valid = group[true_col].notna() & group[pred_col].notna()
+        sub = group[valid]
+        row[f"Niveau {lvl}"] = accuracy_score(sub[true_col], sub[pred_col]) * 100 if len(sub) > 0 else np.nan
+    budget_heat_rows.append(row)
+budget_heat = pd.DataFrame(budget_heat_rows).set_index("Tranche")
+
+fig, ax = plt.subplots(figsize=(8, 5))
+sns.heatmap(budget_heat, annot=True, fmt=".1f", cmap="RdYlGn", ax=ax, vmin=0, vmax=100, linewidths=0.5)
+ax.set_title("Accuracy (%) par tranche de budget et niveau COICOP (hors 98/99)")
+plt.tight_layout()
+plt.show()
+```
+
+L'analyse par tranche de budget révèle si le montant d'un achat est corrélé à la difficulté de classification. Les achats à faible montant peuvent correspondre à des produits simples (pain, boissons) ou à des articles dont le libellé de caisse est insuffisant (abréviations, codes internes). Les achats à fort montant concernent souvent des produits plus complexes (électroménager, vêtements) dont les libellés peuvent être ambigus. Le score de confiance par tranche de budget permet de détecter si le modèle est conscient de ses incertitudes sur certaines gammes de prix.
+
+## Analyse des erreurs
+
+### Propagation hierarchique des erreurs
+
+```{python}
+#| label: fig-error-cascade
+#| fig-cap: "Propagation des erreurs : impact d'une erreur au niveau 1 sur les niveaux suivants"
+
+# Flags d'erreur par niveau
+for lvl in range(1, 5):
+    true_col = f"true_level{lvl}"
+    pred_col = f"predicted_level{lvl}"
+    df[f"err_l{lvl}"] = (df[true_col] != df[pred_col]) & df[true_col].notna()
+    df_clean[f"err_l{lvl}"] = (df_clean[true_col] != df_clean[pred_col]) & df_clean[true_col].notna()
+
+# Cascade : taux d'erreur L2/L3/L4 conditionne a L1 correct/incorrect
+sub = df_clean[df_clean["true_level4"].notna()].copy()
+l1_ok = sub[~sub["err_l1"]]
+l1_ko = sub[sub["err_l1"]]
+
+cascade_data = {"Niveau": [], "L1 correcte": [], "L1 incorrecte": []}
+for lvl in range(2, 5):
+    cascade_data["Niveau"].append(f"Niveau {lvl}")
+    cascade_data["L1 correcte"].append(l1_ok[f"err_l{lvl}"].mean() * 100)
+    cascade_data["L1 incorrecte"].append(l1_ko[f"err_l{lvl}"].mean() * 100)
+
+fig, axes = plt.subplots(1, 2, figsize=(13, 5))
+
+# Bar chart conditionnel
+x = np.arange(3)
+width = 0.35
+axes[0].bar(x - width/2, cascade_data["L1 correcte"], width, label=f"L1 correcte (n={len(l1_ok)})", color="#4CAF50")
+axes[0].bar(x + width/2, cascade_data["L1 incorrecte"], width, label=f"L1 incorrecte (n={len(l1_ko)})", color="#F44336")
+axes[0].set_xticks(x)
+axes[0].set_xticklabels(cascade_data["Niveau"])
+axes[0].set_ylabel("Taux d'erreur (%)")
+axes[0].set_title("Taux d'erreur selon la justesse du niveau 1")
+axes[0].legend()
+
+for i, (ok, ko) in enumerate(zip(cascade_data["L1 correcte"], cascade_data["L1 incorrecte"])):
+    axes[0].text(i - width/2, ok + 1, f"{ok:.1f}%", ha="center", fontsize=9)
+    axes[0].text(i + width/2, ko + 1, f"{ko:.1f}%", ha="center", fontsize=9)
+
+# Repartition des types d'erreur
+categories = []
+for _, row in sub.iterrows():
+    errs = [row[f"err_l{l}"] for l in range(1, 5)]
+    if not any(errs):
+        categories.append("Tout correct")
+    elif errs[0]:
+        categories.append("Erreur des L1")
+    elif errs[1]:
+        categories.append("L1 ok, erreur des L2")
+    elif errs[2]:
+        categories.append("L1-2 ok, erreur des L3")
+    else:
+        categories.append("L1-3 ok, erreur L4 seul")
+
+cat_counts = pd.Series(categories).value_counts()
+order = ["Tout correct", "L1-3 ok, erreur L4 seul", "L1-2 ok, erreur des L3", "L1 ok, erreur des L2", "Erreur des L1"]
+cat_counts = cat_counts.reindex(order).fillna(0)
+colors_pie = ["#4CAF50", "#8BC34A", "#FFC107", "#FF9800", "#F44336"]
+axes[1].pie(cat_counts, labels=[f"{k}\n({int(v)}, {v/len(sub)*100:.1f}%)" for k, v in cat_counts.items()],
+            colors=colors_pie, startangle=90, textprops={"fontsize": 9})
+axes[1].set_title("Repartition des types d'erreur (hors 98/99)")
+
+plt.tight_layout()
+plt.show()
+```
+
+::: {.callout-important}
+Quand le **niveau 1 est faux**, les niveaux suivants sont **systematiquement faux** (taux d'erreur ~100%). L'amelioration de la precision au niveau 1 est donc le levier le plus important.
+:::
+
+**Implication pratique :** toute action visant à améliorer la précision globale au niveau 4 doit d'abord passer par la réduction des erreurs au niveau 1. Une erreur de division (ex : confondre "Alimentation" et "Loisirs") est impossible à corriger aux niveaux inférieurs, quelle que soit la qualité du reste du modèle. Prioriser l'enrichissement des données d'entraînement sur les divisions difficiles est donc la voie la plus efficace.
+
+### Matrice de confusion (niveau 1)
+
+```{python}
+#| label: fig-confusion-l1
+#| fig-cap: "Matrice de confusion au niveau 1 (hors codes 98/99)"
+
+from sklearn.metrics import confusion_matrix
+
+sub_l1 = df_clean[df_clean["true_level1"].notna()].copy()
+labels_l1 = sorted(sub_l1["true_level1"].unique())
+cm = confusion_matrix(sub_l1["true_level1"], sub_l1["predicted_level1"], labels=labels_l1)
+
+# Normaliser par ligne (rappel)
+cm_norm = cm.astype(float) / cm.sum(axis=1, keepdims=True) * 100
+
+fig, ax = plt.subplots(figsize=(10, 8))
+sns.heatmap(cm_norm, annot=True, fmt=".1f", cmap="Blues", ax=ax,
+            xticklabels=labels_l1, yticklabels=labels_l1,
+            linewidths=0.5, annot_kws={"fontsize": 9})
+ax.set_xlabel("Predit")
+ax.set_ylabel("Vrai")
+ax.set_title("Matrice de confusion normalisee (%) — Niveau 1 (hors 98/99)")
+plt.tight_layout()
+plt.show()
+```
+
+### Paires de confusion les plus frequentes (niveau 4)
+
+```{python}
+#| label: fig-confusion-pairs-l4
+#| fig-cap: "Top-20 des paires de confusion au niveau 4 (hors codes 98/99)"
+
+l4_errors = df_clean[df_clean["err_l4"] & df_clean["true_level4"].notna()]
+confusion_pairs = l4_errors.groupby(["true_level4", "predicted_level4"]).size().sort_values(ascending=False).head(20)
+confusion_pairs = confusion_pairs.reset_index()
+confusion_pairs.columns = ["Vrai", "Predit", "Nombre"]
+confusion_pairs["label"] = confusion_pairs["Vrai"] + " → " + confusion_pairs["Predit"]
+confusion_pairs = confusion_pairs.sort_values("Nombre", ascending=True)
+
+fig, ax = plt.subplots(figsize=(10, 8))
+colors = plt.cm.Reds(np.linspace(0.3, 0.9, len(confusion_pairs)))
+ax.barh(confusion_pairs["label"], confusion_pairs["Nombre"], color=colors)
+ax.set_xlabel("Nombre d'erreurs")
+ax.set_title("Top-20 des paires de confusion (niveau 4, hors 98/99)")
+for i, v in enumerate(confusion_pairs["Nombre"]):
+    ax.text(v + 0.5, i, str(v), va="center", fontsize=9)
+plt.tight_layout()
+plt.show()
+```
+
+Les paires de confusion les plus fréquentes au niveau 4 révèlent les ambiguïtés sémantiques intrinsèques : certains produits appartiennent à des catégories voisines (ex : boissons alcoolisées vs non-alcoolisées, vêtements pour adultes vs enfants) dont la distinction repose sur des informations absentes du libellé de caisse. Ces confusions récurrentes peuvent guider l'enrichissement ciblé des données d'entraînement ou l'ajout de règles métier en post-traitement.
+
+### Erreurs a haute confiance
+
+```{python}
+#| label: fig-high-conf-errors
+#| fig-cap: "Analyse des erreurs a haute confiance (>= 0.8)"
+
+sub_l4 = df_clean[df_clean["true_level4"].notna()].copy()
+high_conf = sub_l4[sub_l4["confidence"] >= 0.8]
+hc_errors = high_conf[high_conf["err_l4"]]
+
+print(f"Observations avec confiance >= 0.8 : {len(high_conf):,} ({len(high_conf)/len(sub_l4)*100:.1f}%)")
+print(f"  dont erreurs L4 : {len(hc_errors):,} ({len(hc_errors)/len(high_conf)*100:.1f}% du sous-ensemble)")
+print(f"\nTop-10 paires de confusion a haute confiance :")
+
+hc_pairs = hc_errors.groupby(["true_level4", "predicted_level4"]).size().sort_values(ascending=False).head(10)
+for (true, pred), n in hc_pairs.items():
+    print(f"  {true} → {pred} : {n} erreurs")
+
+fig, axes = plt.subplots(1, 2, figsize=(13, 5))
+
+# Distribution de confiance des erreurs
+axes[0].hist(sub_l4.loc[sub_l4["err_l4"], "confidence"], bins=40, alpha=0.6, label="Erreurs", color="red", density=True)
+axes[0].hist(sub_l4.loc[~sub_l4["err_l4"], "confidence"], bins=40, alpha=0.6, label="Corrects", color="green", density=True)
+axes[0].set_xlabel("Score de confiance")
+axes[0].set_ylabel("Densite")
+axes[0].set_title("Distribution de confiance : corrects vs erreurs")
+axes[0].legend()
+
+# Taux d'erreur par bin de confiance (zoom haute confiance)
+hc_bins = np.arange(0.5, 1.01, 0.05)
+hc_labels = [f"{hc_bins[i]:.2f}-{hc_bins[i+1]:.2f}" for i in range(len(hc_bins) - 1)]
+sub_l4["hc_bin"] = pd.cut(sub_l4["confidence"], bins=hc_bins, labels=hc_labels)
+hc_stats = sub_l4.groupby("hc_bin", observed=True).agg(
+    error_rate=("err_l4", "mean"),
+    n=("err_l4", "size"),
+).reset_index()
+
+bars = axes[1].bar(hc_stats["hc_bin"].astype(str), hc_stats["error_rate"] * 100, color="salmon", edgecolor="white")
+axes[1].set_xlabel("Tranche de confiance")
+axes[1].set_ylabel("Taux d'erreur (%)")
+axes[1].set_title("Taux d'erreur par tranche (confiance >= 0.5)")
+for bar, n in zip(bars, hc_stats["n"]):
+    axes[1].text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.5,
+                 f"n={n}", ha="center", va="bottom", fontsize=8, rotation=45)
+axes[1].tick_params(axis="x", rotation=45)
+
+plt.tight_layout()
+plt.show()
+```
+
+::: {.callout-warning}
+## Erreurs à haute confiance : un risque opérationnel
+
+Les erreurs commises avec un score de confiance élevé (≥ 0,8) sont les plus problématiques en production : le modèle est "certain" mais faux, ce qui peut induire en erreur un utilisateur ou un système automatique qui se fie au score. Ces cas nécessitent une attention particulière et ne peuvent pas être filtrés par un simple seuil de confiance. Ils témoignent d'ambiguïtés structurelles dans les données que le modèle ne peut pas résoudre sans informations supplémentaires.
+:::
+
+### Severite des erreurs : near-miss vs far-miss
+
+```{python}
+#| label: fig-error-severity
+#| fig-cap: "Severite des erreurs : a quel niveau hierarchique se produit la premiere erreur"
+
+l4_errs = df_clean[df_clean["err_l4"] & df_clean["true_level4"].notna()].copy()
+
+def classify_error(row):
+    if row["err_l1"]:
+        return "L1 faux (far-miss)"
+    elif row["err_l2"]:
+        return "L2 faux (L1 ok)"
+    elif row["err_l3"]:
+        return "L3 faux (L1-2 ok)"
+    else:
+        return "L4 faux seul (near-miss)"
+
+l4_errs["severity"] = l4_errs.apply(classify_error, axis=1)
+sev_counts = l4_errs["severity"].value_counts()
+order_sev = ["L4 faux seul (near-miss)", "L3 faux (L1-2 ok)", "L2 faux (L1 ok)", "L1 faux (far-miss)"]
+sev_counts = sev_counts.reindex(order_sev).fillna(0)
+
+fig, axes = plt.subplots(1, 2, figsize=(13, 5))
+
+# Pie chart
+colors_sev = ["#8BC34A", "#FFC107", "#FF9800", "#F44336"]
+axes[0].pie(sev_counts, labels=[f"{k}\n({int(v)})" for k, v in sev_counts.items()],
+            colors=colors_sev, autopct="%1.1f%%", startangle=90, textprops={"fontsize": 9})
+axes[0].set_title(f"Repartition par severite ({len(l4_errs)} erreurs L4)")
+
+# Confiance moyenne par severite
+sev_conf = l4_errs.groupby("severity")["confidence"].mean().reindex(order_sev)
+bars = axes[1].bar(range(len(sev_conf)), sev_conf, color=colors_sev)
+axes[1].set_xticks(range(len(sev_conf)))
+axes[1].set_xticklabels([s.split(" (")[0] for s in order_sev], rotation=15, ha="right", fontsize=9)
+axes[1].set_ylabel("Confiance moyenne")
+axes[1].set_title("Confiance moyenne par type d'erreur")
+for bar, v in zip(bars, sev_conf):
+    axes[1].text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.01, f"{v:.2f}", ha="center", fontsize=10)
+
+plt.tight_layout()
+plt.show()
+```
+
+La répartition near-miss / far-miss est cruciale pour évaluer la récupérabilité des erreurs :
+
+- Les **near-miss** (erreur uniquement au niveau 4, niveaux 1 à 3 corrects) sont des erreurs "bénignes" : le modèle a bien identifié la catégorie générale du produit mais s'est trompé sur le code fin. Elles sont potentiellement récupérables par une approche top-k ou une validation légère.
+- Les **far-miss** (erreur dès le niveau 1) sont des erreurs "graves" : le modèle a attribué le produit à une division COICOP complètement différente. Elles ont un impact fort sur les analyses économiques et nécessitent un retraitement plus profond.
+
+La confiance moyenne par type d'erreur indique si le modèle est plus ou moins assuré selon la gravité de son erreur — une confiance élevée sur les far-miss est un signal d'alerte.
+
+### Codes les plus et les moins bien predits
+
+```{python}
+#| label: fig-worst-best-codes
+#| fig-cap: "Codes COICOP les plus et les moins bien predits (niveau 4, n >= 10, hors 98/99)"
+
+code_stats = df_clean[df_clean["true_level4"].notna()].groupby("true_level4").agg(
+    n=("err_l4", "size"),
+    error_rate=("err_l4", "mean"),
+    mean_conf=("confidence", "mean"),
+).query("n >= 10")
+
+worst = code_stats.sort_values("error_rate", ascending=False).head(15).sort_values("error_rate", ascending=True)
+best = code_stats.sort_values("error_rate", ascending=True).head(15).sort_values("error_rate", ascending=False)
+
+fig, axes = plt.subplots(1, 2, figsize=(14, 7))
+
+# Pires codes
+colors_w = plt.cm.Reds(np.linspace(0.3, 0.9, len(worst)))
+axes[0].barh([f"{idx} (n={int(row['n'])})" for idx, row in worst.iterrows()],
+             worst["error_rate"] * 100, color=colors_w)
+axes[0].set_xlabel("Taux d'erreur (%)")
+axes[0].set_title("15 codes les plus mal predits")
+for i, v in enumerate(worst["error_rate"] * 100):
+    axes[0].text(v + 0.5, i, f"{v:.0f}%", va="center", fontsize=9)
+
+# Meilleurs codes
+colors_b = plt.cm.Greens(np.linspace(0.3, 0.9, len(best)))
+axes[1].barh([f"{idx} (n={int(row['n'])})" for idx, row in best.iterrows()],
+             (1 - best["error_rate"]) * 100, color=colors_b)
+axes[1].set_xlabel("Accuracy (%)")
+axes[1].set_title("15 codes les mieux predits")
+for i, v in enumerate((1 - best["error_rate"]) * 100):
+    axes[1].text(v + 0.5, i, f"{v:.0f}%", va="center", fontsize=9)
+
+plt.tight_layout()
+plt.show()
+```
+
+Les codes les mieux prédits correspondent généralement à des catégories bien délimitées sémantiquement et bien représentées dans les données d'entraînement (produits alimentaires courants, par exemple). Les codes les moins bien prédits sont souvent soit très rares dans l'entraînement, soit sémantiquement proches d'autres codes, soit correspondants à des libellés de caisse peu informatifs. L'analyse de ces codes "difficiles" peut guider une stratégie d'augmentation ciblée des données.
+
+### Analyse par longueur de texte
+
+```{python}
+#| label: fig-text-length
+#| fig-cap: "Impact de la longueur du texte sur la precision"
+
+df_clean["text_len"] = df_clean["l_pr_product"].str.len()
+df_clean["text_words"] = df_clean["l_pr_product"].str.split().str.len()
+
+sub_len = df_clean[df_clean["true_level4"].notna()].copy()
+
+len_bins = [0, 5, 10, 15, 20, 30, 50, float("inf")]
+len_labels = ["0-5", "5-10", "10-15", "15-20", "20-30", "30-50", "50+"]
+sub_len["len_bin"] = pd.cut(sub_len["text_len"], bins=len_bins, labels=len_labels)
+
+len_stats = sub_len.groupby("len_bin", observed=True).agg(
+    n=("err_l4", "size"),
+    error_rate=("err_l4", "mean"),
+    mean_conf=("confidence", "mean"),
+).reset_index()
+
+fig, axes = plt.subplots(1, 2, figsize=(13, 5))
+
+# Taux d'erreur par longueur
+colors_len = plt.cm.RdYlGn_r(len_stats["error_rate"])
+bars = axes[0].bar(len_stats["len_bin"].astype(str), len_stats["error_rate"] * 100, color=colors_len, edgecolor="white")
+axes[0].set_xlabel("Longueur du texte (caracteres)")
+axes[0].set_ylabel("Taux d'erreur (%)")
+axes[0].set_title("Taux d'erreur par longueur de texte")
+for bar, (_, row) in zip(bars, len_stats.iterrows()):
+    axes[0].text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.5,
+                 f"n={row['n']}", ha="center", va="bottom", fontsize=9)
+
+# Distribution des longueurs
+axes[1].hist(sub_len["text_len"], bins=50, edgecolor="white", alpha=0.8, color="steelblue")
+axes[1].set_xlabel("Longueur du texte (caracteres)")
+axes[1].set_ylabel("Nombre d'observations")
+axes[1].set_title("Distribution des longueurs de texte")
+axes[1].axvline(sub_len["text_len"].median(), color="red", linestyle="--", label=f"Mediane ({sub_len['text_len'].median():.0f})")
+axes[1].legend()
+
+plt.tight_layout()
+plt.show()
+```
+
+La longueur du texte est un proxy de la richesse informationnelle du libellé. Les textes très courts (< 5 caractères) sont souvent des codes ou abréviations que le modèle ne peut pas interpréter correctement. Les textes de longueur intermédiaire (10–30 caractères) correspondent aux libellés de caisse typiques et représentent le cœur des données. Les textes très longs peuvent inclure des descriptions redondantes ou des informations parasites qui n'aident pas la classification. Le score de confiance par longueur confirme si le modèle est conscient de ses incertitudes face aux textes extrêmes.
+
+### Taux d'erreur par categorie COICOP (niveau 1) et lien avec les donnees d'entrainement
+
+```{python}
+#| label: fig-error-vs-train
+#| fig-cap: "Taux d'erreur par categorie COICOP vs representation dans les donnees d'entrainement"
+
+# Compter les occurrences dans le jeu d'entrainement par L1
+train = pd.read_parquet("../../raw_train_processed.parquet")
+train["train_l1"] = train["code"].apply(lambda x: str(x).split(".")[0].zfill(2))
+train_counts = train["train_l1"].value_counts()
+
+# Taux d'erreur par L1 dans les predictions (toutes obs, y compris 98/99)
+l1_stats = df.groupby("true_level1").agg(
+    n_test=("err_l1", "size"),
+    error_rate_l1=("err_l1", "mean"),
+).reset_index()
+l1_stats["n_train"] = l1_stats["true_level1"].map(train_counts).fillna(0).astype(int)
+l1_stats["pct_train"] = l1_stats["n_train"] / len(train) * 100
+
+fig, ax1 = plt.subplots(figsize=(10, 6))
+
+x = np.arange(len(l1_stats))
+width = 0.35
+
+# Taux d'erreur
+colors_err = plt.cm.RdYlGn_r(l1_stats["error_rate_l1"])
+bars1 = ax1.bar(x - width/2, l1_stats["error_rate_l1"] * 100, width, color=colors_err, edgecolor="white", label="Taux d'erreur L1 (%)")
+ax1.set_ylabel("Taux d'erreur L1 (%)")
+ax1.set_xlabel("Code COICOP niveau 1")
+ax1.set_xticks(x)
+ax1.set_xticklabels(l1_stats["true_level1"])
+
+# Part dans les donnees d'entrainement
+ax2 = ax1.twinx()
+ax2.bar(x + width/2, l1_stats["pct_train"], width, alpha=0.5, color="steelblue", label="% donnees entrainement")
+ax2.set_ylabel("Part dans l'entrainement (%)", color="steelblue")
+ax2.tick_params(axis="y", labelcolor="steelblue")
+
+lines1, labels1 = ax1.get_legend_handles_labels()
+lines2, labels2 = ax2.get_legend_handles_labels()
+ax1.legend(lines1 + lines2, labels1 + labels2, loc="upper right")
+
+ax1.set_title("Taux d'erreur vs representation dans l'entrainement (par L1)")
+plt.tight_layout()
+plt.show()
+
+# Tableau
+l1_stats_display = l1_stats.rename(columns={
+    "true_level1": "L1", "n_test": "N test", "error_rate_l1": "Erreur L1 (%)",
+    "n_train": "N train", "pct_train": "% train",
+})
+l1_stats_display["Erreur L1 (%)"] = (l1_stats_display["Erreur L1 (%)"] * 100).round(1)
+l1_stats_display["% train"] = l1_stats_display["% train"].round(2)
+l1_stats_display.style.hide(axis="index")
+```
+
+::: {.callout-important}
+## Lien sous-représentation ↔ erreurs
+
+Le graphique ci-dessus met en évidence un phénomène classique en apprentissage automatique : **les catégories peu représentées dans les données d'entraînement tendent à générer plus d'erreurs**. Ce lien n'est pas systématique (un code rare mais sémantiquement distinct peut être bien prédit), mais il constitue le principal levier d'amélioration : enrichir les données d'entraînement sur les divisions sous-représentées et difficiles permet généralement des gains significatifs. Les codes 98 et 99, absents de l'entraînement, illustrent le cas extrême.
+:::
+
+## Analyse du chiffre d'affaires
+
+```{python}
+#| label: ca-prep
+#| code-summary: "Preparation des donnees de chiffre d'affaires"
+
+ca = df_clean[df_clean["budget_clean"].notna() & df_clean["true_level4"].notna()].copy()
+ca_total = ca["budget_clean"].sum()
+ca_correct = ca.loc[ca["correct_l4"], "budget_clean"].sum()
+ca_incorrect = ca_total - ca_correct
+
+print(f"Observations avec budget et code niveau 4 (hors 98/99) : {len(ca):,}")
+print(f"Chiffre d'affaires total : {ca_total:,.2f} EUR")
+print(f"  - Bien code : {ca_correct:,.2f} EUR ({ca_correct/ca_total*100:.1f}%)")
+print(f"  - Mal code  : {ca_incorrect:,.2f} EUR ({ca_incorrect/ca_total*100:.1f}%)")
+```
+
+### Part du chiffre d'affaires bien codee
+
+```{python}
+#| label: fig-ca-pie
+#| fig-cap: "Repartition du chiffre d'affaires selon la justesse du codage (niveau 4)"
+
+fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+
+# Pie chart CA
+axes[0].pie(
+    [ca_correct, ca_incorrect],
+    labels=["Bien code", "Mal code"],
+    autopct="%1.1f%%",
+    colors=["#4CAF50", "#F44336"],
+    startangle=90,
+    textprops={"fontsize": 12},
+)
+axes[0].set_title(f"Part du CA bien codee\n(total : {ca_total:,.0f} EUR)")
+
+# Pie chart par nombre d'observations (pour comparaison)
+n_correct = ca["correct_l4"].sum()
+n_incorrect = len(ca) - n_correct
+axes[1].pie(
+    [n_correct, n_incorrect],
+    labels=["Bien code", "Mal code"],
+    autopct="%1.1f%%",
+    colors=["#4CAF50", "#F44336"],
+    startangle=90,
+    textprops={"fontsize": 12},
+)
+axes[1].set_title(f"Part des observations bien codees\n(total : {len(ca):,})")
+
+plt.tight_layout()
+plt.show()
+```
+
+### Chiffre d'affaires par niveau COICOP 1
+
+```{python}
+#| label: fig-ca-level1
+#| fig-cap: "Chiffre d'affaires et part bien codee par division COICOP (niveau 1)"
+
+ca_l1 = ca.groupby("true_level1").agg(
+    ca_total=("budget_clean", "sum"),
+    ca_correct=("budget_clean", lambda x: x[ca.loc[x.index, "correct_l4"]].sum()),
+    n=("budget_clean", "size"),
+).sort_values("ca_total", ascending=True)
+ca_l1["pct_correct"] = ca_l1["ca_correct"] / ca_l1["ca_total"] * 100
+
+fig, axes = plt.subplots(1, 2, figsize=(14, 7))
+
+# CA total par division
+axes[0].barh(ca_l1.index, ca_l1["ca_total"], color="steelblue")
+axes[0].set_xlabel("Chiffre d'affaires (EUR)")
+axes[0].set_title("CA par division COICOP")
+for i, (idx, row) in enumerate(ca_l1.iterrows()):
+    axes[0].text(row["ca_total"] + ca_l1["ca_total"].max() * 0.01, i, f"{row['ca_total']:,.0f}", va="center", fontsize=8)
+
+# Part bien codee
+colors = plt.cm.RdYlGn(ca_l1["pct_correct"] / 100)
+axes[1].barh(ca_l1.index, ca_l1["pct_correct"], color=colors)
+axes[1].set_xlabel("Part du CA bien codee (%)")
+axes[1].set_title("Part du CA bien codee par division")
+axes[1].axvline(ca_correct / ca_total * 100, color="red", linestyle="--", label=f"Moyenne ({ca_correct/ca_total*100:.1f}%)")
+axes[1].legend()
+
+plt.tight_layout()
+plt.show()
+```
+
+### Chiffre d'affaires par source
+
+```{python}
+#| label: fig-ca-source
+#| fig-cap: "Chiffre d'affaires et part bien codee par source"
+
+ca_src = ca.groupby("source").agg(
+    ca_total=("budget_clean", "sum"),
+    ca_correct=("budget_clean", lambda x: x[ca.loc[x.index, "correct_l4"]].sum()),
+    n=("budget_clean", "size"),
+).sort_values("ca_total", ascending=False)
+ca_src["pct_correct"] = ca_src["ca_correct"] / ca_src["ca_total"] * 100
+
+fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+
+# CA par source
+bars = axes[0].bar(ca_src.index, ca_src["ca_total"], color="steelblue")
+axes[0].set_ylabel("Chiffre d'affaires (EUR)")
+axes[0].set_title("CA par source")
+for bar, val in zip(bars, ca_src["ca_total"]):
+    axes[0].text(bar.get_x() + bar.get_width() / 2, bar.get_height() + ca_src["ca_total"].max() * 0.01,
+                 f"{val:,.0f}", ha="center", va="bottom", fontsize=9)
+axes[0].tick_params(axis="x", rotation=15)
+
+# Part bien codee par source
+colors_src = plt.cm.RdYlGn(ca_src["pct_correct"] / 100)
+bars2 = axes[1].bar(ca_src.index, ca_src["pct_correct"], color=colors_src)
+axes[1].set_ylabel("Part du CA bien codee (%)")
+axes[1].set_title("Part du CA bien codee par source")
+axes[1].axhline(ca_correct / ca_total * 100, color="red", linestyle="--", label=f"Moyenne ({ca_correct/ca_total*100:.1f}%)")
+axes[1].legend()
+axes[1].tick_params(axis="x", rotation=15)
+
+plt.tight_layout()
+plt.show()
+```
+
+### Chiffre d'affaires par tranche de confiance
+
+```{python}
+#| label: fig-ca-confidence
+#| fig-cap: "Part du CA bien codee par tranche de confiance"
+
+conf_bins_ca = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+conf_labels_ca = [f"{conf_bins_ca[i]:.1f}-{conf_bins_ca[i+1]:.1f}" for i in range(len(conf_bins_ca) - 1)]
+ca["conf_tranche"] = pd.cut(ca["confidence"], bins=conf_bins_ca, labels=conf_labels_ca, include_lowest=True)
+
+ca_conf = ca.groupby("conf_tranche", observed=True).agg(
+    ca_total=("budget_clean", "sum"),
+    ca_correct=("budget_clean", lambda x: x[ca.loc[x.index, "correct_l4"]].sum()),
+    n=("budget_clean", "size"),
+).reset_index()
+ca_conf["pct_correct"] = ca_conf["ca_correct"] / ca_conf["ca_total"] * 100
+
+fig, ax1 = plt.subplots(figsize=(10, 6))
+
+# Barres : CA total par tranche
+ax1.bar(ca_conf["conf_tranche"].astype(str), ca_conf["ca_total"], alpha=0.3, color="steelblue", label="CA total")
+ax1.bar(ca_conf["conf_tranche"].astype(str), ca_conf["ca_correct"], alpha=0.7, color="#4CAF50", label="CA bien code")
+ax1.set_xlabel("Tranche de confiance")
+ax1.set_ylabel("Chiffre d'affaires (EUR)")
+ax1.tick_params(axis="x", rotation=45)
+
+ax2 = ax1.twinx()
+ax2.plot(ca_conf["conf_tranche"].astype(str), ca_conf["pct_correct"], "ro-", linewidth=2, markersize=8, label="% CA bien code")
+ax2.set_ylabel("Part du CA bien codee (%)", color="red")
+ax2.tick_params(axis="y", labelcolor="red")
+
+lines1, labels1 = ax1.get_legend_handles_labels()
+lines2, labels2 = ax2.get_legend_handles_labels()
+ax1.legend(lines1 + lines2, labels1 + labels2, loc="upper left")
+
+plt.title("Chiffre d'affaires par tranche de confiance")
+plt.tight_layout()
+plt.show()
+```
+
+### Tableau recapitulatif du CA
+
+```{python}
+#| label: tbl-ca-summary
+#| tbl-cap: "Recapitulatif du chiffre d'affaires par tranche de confiance"
+
+ca_conf_tbl = ca_conf.copy()
+ca_conf_tbl["pct_ca_total"] = ca_conf_tbl["ca_total"] / ca_total * 100
+ca_conf_tbl = ca_conf_tbl.rename(columns={
+    "conf_tranche": "Confiance",
+    "ca_total": "CA total (EUR)",
+    "ca_correct": "CA bien code (EUR)",
+    "pct_correct": "% bien code",
+    "pct_ca_total": "% du CA total",
+    "n": "N obs.",
+})
+ca_conf_tbl[["Confiance", "N obs.", "CA total (EUR)", "CA bien code (EUR)", "% bien code", "% du CA total"]].style.format({
+    "CA total (EUR)": "{:,.0f}",
+    "CA bien code (EUR)": "{:,.0f}",
+    "% bien code": "{:.1f}",
+    "% du CA total": "{:.1f}",
+}).hide(axis="index")
+```
+
+## Synthese
+
+### Métriques clés
+
+```{python}
+#| label: summary
+#| code-summary: "Resume des metriques cles"
+
+print("=" * 60)
+print("RESUME DES METRIQUES CLES")
+print("=" * 60)
+
+print(f"\nNombre total d'observations : {len(df):,}")
+print(f"  dont codes techniques (98/99) : {df['is_technical'].sum():,}")
+print(f"  observations hors 98/99 : {len(df_clean):,}")
+print(f"Codes COICOP distincts (vrais, hors 98/99) : {df_clean['code'].nunique()}")
+
+print("\n--- Accuracy globale par niveau (HORS 98/99) ---")
+for _, row in global_acc_clean.iterrows():
+    print(f"  {row['Niveau']} : {row['Accuracy (%)']:.2f}% (F1={row['F1 weighted']:.4f}, {row['Nb classes (vrai)']} classes, n={row['N']})")
+
+topk_1 = topk_clean.loc[topk_clean["k"] == 1, "Top-k Accuracy"].values[0]
+topk_5 = topk_clean.loc[topk_clean["k"] == 5, "Top-k Accuracy"].values[0]
+topk_10 = topk_clean.loc[topk_clean["k"] == 10, "Top-k Accuracy"].values[0]
+print(f"\n--- Top-k accuracy niveau 4 (hors 98/99) ---")
+print(f"  Top-1 : {topk_1*100:.2f}%")
+print(f"  Top-5 : {topk_5*100:.2f}%")
+print(f"  Top-10 : {topk_10*100:.2f}%")
+
+sub_l4 = df_clean[df_clean["true_level4"].notna()]
+print(f"\n--- Confiance (hors 98/99) ---")
+print(f"  Moyenne : {sub_l4['confidence'].mean():.3f}")
+print(f"  Mediane : {sub_l4['confidence'].median():.3f}")
+```
+
+### Bilan qualitatif
+
+Le classifieur COICOP démontre une **capacité réelle à automatiser la codification** des produits de consommation. La performance est nettement meilleure aux niveaux hiérarchiques supérieurs (divisions, groupes) qu'aux niveaux fins (classes, sous-classes), ce qui est cohérent avec la difficulté intrinsèque du problème : les niveaux fins comptent plusieurs centaines de classes souvent sémantiquement proches.
+
+Les principales forces du modèle sont :
+
+- Une **classification de premier niveau (L1) fiable**, qui conditionne la justesse de toute la chaîne hiérarchique.
+- Un **score de confiance informatif** permettant de distinguer les prédictions sûres des prédictions incertaines.
+- Une **stabilité temporelle** satisfaisante : les performances ne montrent pas de dérive notable entre les années.
+- Un **impact financier positif** : la grande majorité du chiffre d'affaires est correctement codée, en particulier pour les prédictions à haute confiance.
+
+### Recommandations opérationnelles
+
+::: {.callout-tip}
+## Mode d'emploi recommandé
+
+1. **Définir un seuil de confiance opérationnel** à partir de la courbe couverture/accuracy. Au-delà du seuil, les prédictions peuvent être acceptées automatiquement. En dessous, une validation humaine est recommandée.
+
+2. **Utiliser le mode top-k pour l'assistance humaine.** Plutôt qu'une prédiction unique, proposer 3 à 5 candidats à un annotateur réduit considérablement l'effort de correction tout en maintenant un taux de couverture élevé.
+
+3. **Prioriser l'amélioration du niveau 1.** Toute erreur au niveau 1 se propage irrémédiablement. Les divisions COICOP à fort taux d'erreur et faible représentation dans l'entraînement sont les cibles prioritaires pour l'augmentation de données.
+
+4. **Surveiller les codes à forte valeur économique.** Les produits à budget élevé représentent un risque financier plus important en cas de mauvaise classification. Un contrôle renforcé sur les prédictions à faible confiance dans ces tranches est conseillé.
+
+5. **Traiter les codes 98/99 à part.** Ces codes techniques sont systématiquement mal classifiés car absents de l'entraînement. Ils nécessitent soit un traitement ad hoc (règles métier), soit une intégration dans les données d'entraînement si leur volume le justifie.
+:::
+
+### Limites du rapport
+
+- L'évaluation porte sur un **jeu de données spécifique** (prédictions issues d'un modèle fine-tuné) ; les performances peuvent différer sur d'autres corpus ou périodes.
+- Les **libellés textuels prétraités** (`l_pr_product`) peuvent différer des libellés bruts ; la qualité du prétraitement influence les résultats.
+- La comparaison entre sources est potentiellement biaisée par des **différences de composition des catégories** (certaines sources couvrent davantage certaines divisions COICOP).
+- L'analyse financière est limitée aux observations disposant d'un **budget renseigné** ; les observations sans budget sont exclues de cette partie.

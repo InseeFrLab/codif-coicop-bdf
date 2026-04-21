@@ -1,0 +1,467 @@
+---
+title: "Classification COICOP : comparaison des approches"
+subtitle: "Classifieur plat, hiérarchique et multi-tête"
+author: "Équipe classification BDF"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    theme: cosmo
+    code-fold: true
+lang: fr
+---
+
+## Introduction
+
+L'enquête Budget de Famille (BDF) de l'INSEE vise à mesurer la consommation des ménages français. Une étape clé consiste à classer les descriptions de produits issues de tickets de caisse dans la nomenclature **eCOICOP v2** (*Classification of Individual Consumption According to Purpose*).
+
+La nomenclature COICOP est **hiérarchique** à 4 niveaux, encodée sous forme de codes pointés :
+
+| Niveau | Code | Exemple |
+|--------|------|---------|
+| 1 | `01` | Produits alimentaires et boissons non alcoolisées |
+| 2 | `01.1` | Produits alimentaires |
+| 3 | `01.1.2` | Viandes |
+| 4 | `01.1.2.1` | Viande de bœuf |
+
+L'objectif de ce document est de comparer trois approches de classification automatique :
+
+1. **Classifieur plat** (*flat*) : prédit directement le code COICOP de niveau 4 parmi 298 classes.
+2. **Classifieur hiérarchique** : exploite la structure arborescente en entraînant un classifieur par niveau, chaque niveau recevant la prédiction du niveau précédent comme variable catégorielle.
+3. **Classifieur multi-tête** : un backbone partagé (embedding + transformer) avec des têtes de classification par niveau, entraîné conjointement sur tous les niveaux.
+
+
+## Données
+
+### Sources de données
+
+#### Données de caisse (DDC)
+
+Les **données de caisse (DDC)** sont des données de transactions en point de vente, extraites depuis des tables Iceberg stockées sur S3 via DuckDB. Chaque enregistrement contient une description produit (`description_ean`) et un identifiant famille Circana (`id_famille`), qui est ensuite mappé vers un code COICOP via une table de correspondance (`data/famille_circana.csv`).
+
+L'extraction est pilotée par la commande CLI `extract-ddc`, qui :
+
+1. Interroge les tables Iceberg DDC sur S3 pour les années/mois spécifiés
+2. Joint les descriptions avec la table `famille_circana` pour obtenir les codes COICOP
+3. Filtre les codes techniques (préfixe `99`) et ne conserve que les codes de longueur suffisante
+4. Écrit le résultat en parquet sur S3
+
+#### Données synthétiques (LLM)
+
+Pour enrichir la couverture des catégories sous-représentées, des descriptions de produits synthétiques sont générées par un LLM (`src/data_generator.py`). Un prompt instruit le modèle de générer des descriptions réalistes de produits français, avec de vrais noms de marques (Nestlé, Danone, Carrefour, etc.), en variant les formulations (marque seule, marque + produit, produit générique). Les descriptions générées sont courtes (1 à 5 mots), similaires à ce que l'on trouve sur un ticket de caisse.
+
+La génération s'appuie sur le fichier de définitions COICOP (`data/coicop-2018_envoi_rmes_20251022.csv`), qui fournit pour chaque catégorie un libellé, une description du contenu central et des notes d'exclusion. Environ **10 exemples** sont générés par catégorie.
+
+### Construction du jeu d'entraînement
+
+La commande CLI `build-training-data` (`src/build_training_data.py`) combine les données DDC et synthétiques en un jeu d'entraînement équilibré :
+
+1. **Prétraitement textuel** : application de `preprocess_text()` sur les deux sources (voir section ci-dessous)
+2. **Déduplication** par paire `(produit, code)` — élimine les doublons exacts
+3. **Alignement des codes** : seuls les codes DDC présents également dans les données synthétiques sont conservés, assurant une couverture cohérente
+4. **Équilibrage par code de niveau 4** : pour chaque code COICOP de niveau 4, si les données DDC dépassent `max_per_code` (défaut : 1 000), un sous-échantillonnage aléatoire est appliqué et les données synthétiques sont exclues ; sinon, toutes les données DDC et synthétiques sont conservées
+
+```{mermaid}
+flowchart LR
+    S3["🗄️ S3 DDC<br/>(Iceberg)"] --> EXT["extract-ddc"]
+    FC["famille_circana.csv"] --> EXT
+    EXT --> DDC["DDC parquet"]
+
+    LLM["🤖 LLM"] --> GEN["data_generator"]
+    COICOP["Définitions COICOP"] --> GEN
+    GEN --> SYN["synthetic_data.csv"]
+
+    DDC --> BUILD["build-training-data"]
+    SYN --> BUILD
+    BUILD --> |"prétraitement<br/>déduplication<br/>équilibrage"| OUT["📊 Training parquet<br/>(équilibré)"]
+
+    style S3 fill:#e3f2fd,stroke:#2196F3
+    style LLM fill:#f3e5f5,stroke:#9C27B0
+    style OUT fill:#e8f5e9,stroke:#4CAF50
+```
+
+### Données de validation
+
+Les données de validation sont issues du **pilote de l'enquête BDF 2025**, annotées indépendamment des données d'entraînement. Elles représentent un domaine légèrement différent (tickets de caisse réels vs données DDC).
+
+### Prétraitement
+
+Le prétraitement textuel est appliqué uniformément via `preprocess_text()` (`src/data_preparation.py`) :
+
+1. **Translittération** : suppression des accents (unidecode)
+2. **Mise en minuscules**
+3. **Suppression du bruit** : ponctuation, caractères spéciaux
+4. **Déduplication** des tokens
+5. **Suppression des mots vides** (liste dans `data/text/stopwords.json`)
+
+### Structure hiérarchique
+
+La hiérarchie COICOP est dérivée des codes de niveau 4 :
+
+| Niveau | Nombre de classes | Exemples |
+|--------|-------------------|----------|
+| 1 | 13 | `01`, `02`, `03`, ... |
+| 2 | 52 | `01.1`, `01.2`, `02.1`, ... |
+| 3 | 146 | `01.1.1`, `01.1.2`, ... |
+| 4 | 298 | `01.1.1.1`, `01.1.1.2`, ... |
+
+
+## Approche 1 : Classifieur plat (baseline)
+
+### Architecture
+
+Le modèle de base est un classifieur de type **fastText** : un tokenizer à n-grammes de caractères suivi d'un embedding puis d'une tête de classification linéaire.
+
+```{mermaid}
+flowchart TD
+    subgraph "NGramTokenizer"
+        A["'riz basmati'"] --> B["character n-grams<br/>'&lt;ri', 'riz', 'iz&gt;', ..."]
+        B --> C["hash → token IDs"]
+    end
+    C --> D["TextEmbedder"]
+    D --> E["ClassificationHead"]
+    E --> F["COICOP level 4"]
+
+    style A fill:#e8f4f8,stroke:#2196F3
+    style D fill:#f3e5f5,stroke:#9C27B0
+    style E fill:#e8f5e9,stroke:#4CAF50
+    style F fill:#fce4ec,stroke:#E91E63
+```
+
+**Configuration :**
+
+- **Tokenizer** : `NGramTokenizer` — n-grammes de caractères (3 à 5), vocabulaire de 39 000 tokens
+- **Embedding** : dimension 10
+- **Tête de classification** : couche linéaire (10 → 298)
+- **Entraînement** : 5 époques, batch_size=64, lr=1e-3
+
+Le modèle total compte environ 393 000 paramètres. Sa simplicité est un atout en termes de rapidité d'entraînement, mais il doit distinguer **298 classes en un seul passage**, sans exploiter la structure hiérarchique.
+
+### Variante WordPiece
+
+Une variante a été testée avec un tokenizer **WordPiece** (vocabulaire de 10 000 tokens, séquence max 32) en remplacement du NGramTokenizer. Ce tokenizer découpe les mots en sous-mots appris sur le corpus d'entraînement.
+
+**Résultat** : la variante WordPiece obtient une accuracy de **13,35 %** au niveau 4, nettement inférieure au NGramTokenizer (**23,66 %**). Les n-grammes de caractères capturent mieux les motifs sous-lexicaux des descriptions de produits français (noms de marques, abréviations, codes) que les sous-mots appris.
+
+
+## Approche 2 : Classifieur hiérarchique
+
+### Architecture globale
+
+L'approche hiérarchique décompose le problème de classification en **4 sous-problèmes séquentiels**, un par niveau de la hiérarchie COICOP. Chaque classifieur de niveau N reçoit en entrée le texte et la prédiction du niveau N-1.
+
+```{mermaid}
+flowchart TB
+    TEXT["📄 Receipt text"]
+
+    TEXT --> C1["🧠 Classifier Level 1"]
+    C1 -->|"pred: 01"| P1["Level 1 prediction"]
+
+    TEXT --> C2["🧠 Classifier Level 2"]
+    P1 -->|"as categorical feature"| C2
+    C2 -->|"pred: 01.1"| P2["Level 2 prediction"]
+
+    TEXT --> C3["🧠 Classifier Level 3"]
+    P2 -->|"as categorical feature"| C3
+    C3 -->|"pred: 01.1.2"| P3["Level 3 prediction"]
+
+    TEXT --> C4["🧠 Classifier Level 4"]
+    P3 -->|"as categorical feature"| C4
+    C4 -->|"pred: 01.1.2.1"| P4["🏷️ Final COICOP code"]
+
+    style TEXT fill:#e8f4f8,stroke:#2196F3
+    style C1 fill:#e8f5e9,stroke:#4CAF50
+    style C2 fill:#e8f5e9,stroke:#4CAF50
+    style C3 fill:#e8f5e9,stroke:#4CAF50
+    style C4 fill:#e8f5e9,stroke:#4CAF50
+    style P4 fill:#fce4ec,stroke:#E91E63
+```
+
+**Avantages :**
+
+- Chaque classifieur se concentre sur un sous-problème plus simple (moins de classes)
+- Les prédictions des niveaux supérieurs réduisent l'espace de recherche
+- L'architecture reflète la structure logique de la nomenclature
+
+### Entrées mixtes : texte + variable catégorielle
+
+Pour les niveaux 2 à 4, chaque classifieur reçoit deux types d'entrées :
+
+```{mermaid}
+flowchart LR
+    subgraph "Input for Level k"
+        T["Text<br/>(column 0)"]
+        P["Pred Level k-1<br/>(column 1, integer)"]
+    end
+
+    subgraph "Model"
+        TE["TextEmbedder"]
+        CVN["CategoricalVariableNet"]
+        CH["ClassificationHead"]
+    end
+
+    T --> TE
+    P --> CVN
+    TE --> CH
+    CVN --> CH
+
+    style T fill:#e3f2fd,stroke:#2196F3
+    style P fill:#fff3e0,stroke:#FF9800
+    style CVN fill:#f1f8e9,stroke:#8BC34A
+```
+
+Le module `CategoricalVariableNet` encode la prédiction du niveau parent via :
+
+- Un **embedding du code parent** (dimension 8)
+- Concaténation avec l'embedding textuel (dimension 10)
+- La tête de classification opère sur le vecteur concaténé (18 → nombre de classes du niveau)
+
+### Teacher forcing
+
+Pendant l'entraînement, les labels *ground truth* du niveau parent sont utilisés comme entrée catégorielle (au lieu des prédictions du modèle). Cela correspond à un **teacher forcing** qui :
+
+- Accélère la convergence
+- Rend le modèle plus robuste aux erreurs de cascade
+- Le ratio de teacher forcing par défaut est de **0.8** dans l'implémentation complète (`src/hierarchical_classifier.py`)
+
+À l'évaluation et en production, ce sont les prédictions réelles du modèle qui sont propagées d'un niveau à l'autre.
+
+### Entraînement
+
+Chaque niveau est entraîné séquentiellement et indépendamment :
+
+- **Tokenizer** : `NGramTokenizer` (100 000 tokens, n-grammes 3 à 5)
+- **Embedding textuel** : dimension 10
+- **Entraînement** : 5 époques, batch_size=64, lr=1e-3, early stopping (patience=3)
+
+Le diagramme complet du pipeline hiérarchique est disponible dans `docs/pipeline_hierarchique.excalidraw`.
+
+
+## Approche 3 : Classifieur multi-tête
+
+### Architecture globale
+
+Le classifieur multi-tête adopte une stratégie fondamentalement différente des deux approches précédentes : au lieu de modèles indépendants par niveau, un **backbone unique partagé** (embedding + blocs transformer) alimente simultanément **une tête de classification par niveau** COICOP. L'ensemble est entraîné conjointement en optimisant une somme pondérée de pertes cross-entropy.
+
+```{mermaid}
+flowchart TB
+    TEXT["📄 Texte produit"]
+
+    subgraph "Backbone partagé"
+        TOK["NGramTokenizer<br/>(3-6 grams, 100k tokens)"]
+        EMB["Embedding<br/>(dim 128)"]
+        TR["Transformer Blocks<br/>(×2, self-attention + MLP)"]
+    end
+
+    subgraph "Têtes de classification"
+        H1["🏷️ Tête Niveau 1<br/>(13 classes)"]
+        H2["🏷️ Tête Niveau 2<br/>(~52 classes)"]
+        H3["🏷️ Tête Niveau 3<br/>(~146 classes)"]
+        H4["🏷️ Tête Niveau 4<br/>(~298 classes)"]
+    end
+
+    TEXT --> TOK --> EMB --> TR
+    TR --> H1
+    TR --> H2
+    TR --> H3
+    TR --> H4
+
+    H1 --> P1["01"]
+    H2 --> P2["01.1"]
+    H3 --> P3["01.1.2"]
+    H4 --> P4["01.1.2.1"]
+
+    style TEXT fill:#e8f4f8,stroke:#2196F3
+    style TR fill:#f3e5f5,stroke:#9C27B0
+    style H1 fill:#e8f5e9,stroke:#4CAF50
+    style H2 fill:#e8f5e9,stroke:#4CAF50
+    style H3 fill:#e8f5e9,stroke:#4CAF50
+    style H4 fill:#e8f5e9,stroke:#4CAF50
+```
+
+**Avantages par rapport au hiérarchique :**
+
+- **Partage de représentations** : le backbone apprend des features utiles pour tous les niveaux simultanément
+- **Pas de propagation d'erreurs** : les niveaux ne dépendent pas les uns des autres pendant l'entraînement
+- **Inférence en une passe** : toutes les prédictions sont produites en parallèle, sans séquentialité
+
+### Backbone partagé (Transformer)
+
+Le backbone est constitué de blocs transformer avec **self-attention** et **MLP** (feed-forward). Chaque bloc utilise :
+
+- **RoPE** (*Rotary Position Embeddings*) pour encoder la position des tokens dans la séquence
+- **GQA** (*Grouped Query Attention*) : le nombre de têtes clé-valeur (`n_kv_heads`) peut être inférieur au nombre de têtes d'attention (`n_attention_heads`), réduisant le coût mémoire
+
+Les paramètres du backbone sont configurables :
+
+- `n_attention_layers` : profondeur du transformer (défaut : 2)
+- `n_attention_heads` : nombre de têtes d'attention (défaut : 4)
+- `n_kv_heads` : nombre de têtes clé-valeur pour GQA (défaut : 4)
+- `embedding_dim` : dimension des embeddings et des états cachés (défaut : 128)
+
+### Têtes de classification (Label Attention)
+
+Chaque tête de classification utilise un mécanisme de **Label Attention** (`LabelAttentionClassifier`). Contrairement à une simple couche linéaire appliquée sur un embedding agrégé, la Label Attention apprend une **agrégation pondérée des représentations de tokens spécifique à chaque classe** :
+
+1. Le backbone produit des embeddings de dimension `(B, seq_len, D)` pour chaque token
+2. La Label Attention applique une attention multi-tête avec `num_classes` requêtes apprises, produisant un embedding par classe : `(B, num_classes, D)`
+3. Une tête de classification (`ClassificationHead`) transforme chaque embedding de classe en un score (logit)
+
+Ce mécanisme permet à chaque classe de « regarder » les parties du texte les plus pertinentes pour sa prédiction, plutôt que de s'appuyer sur une représentation unique partagée.
+
+### Entraînement multi-tâches
+
+L'entraînement est **conjoint** : toutes les têtes sont optimisées simultanément à travers le backbone partagé. La perte totale est une somme pondérée des pertes cross-entropy par niveau :
+
+$$\mathcal{L} = \sum_{l=1}^{L} w_l \cdot \text{CrossEntropy}(\hat{y}_l, y_l)$$
+
+où $w_l$ sont les poids par niveau (`loss_weights`, défaut : 1.0 pour chaque niveau). Les échantillons sans label à un niveau donné sont ignorés via `ignore_index=-100`.
+
+**Points clés :**
+
+- **Pas de teacher forcing** : contrairement au hiérarchique, les têtes ne reçoivent pas les prédictions des niveaux parents
+- **Early stopping** sur la `val_loss` globale (patience configurable, défaut : 5)
+- **Scheduler** : `ReduceLROnPlateau` (facteur 0.5, patience 2)
+
+### Cohérence hiérarchique à l'inférence
+
+Pendant l'entraînement, chaque tête prédit indépendamment — rien ne garantit que les prédictions respectent la hiérarchie COICOP (par exemple, prédire `level1=01` et `level2=02.1`). La cohérence est imposée **uniquement à l'inférence** via un **masquage parent-enfant** :
+
+1. Pour chaque échantillon, la prédiction `argmax` du niveau N est utilisée comme parent
+2. Au niveau N+1, les probabilités des classes qui ne sont pas des enfants valides du parent sont mises à zéro
+3. Les probabilités restantes sont renormalisées
+
+La table des enfants valides est construite à partir des données d'entraînement. Si aucun enfant valide n'est trouvé pour un parent donné, une distribution uniforme est appliquée sur les enfants connus.
+
+### Comparaison avec le classifieur hiérarchique
+
+| Aspect | Hiérarchique | Multi-tête |
+|--------|-------------|-----------|
+| Architecture | 5 modèles indépendants | Backbone partagé + 5 têtes |
+| Entraînement | Séquentiel (L1 → L2 → … → L5) | Conjoint (tous les niveaux simultanément) |
+| Hiérarchie | Features catégorielles du parent | Masquage parent-enfant à l'inférence |
+| Perte | Cross-entropy par niveau (modèles séparés) | Somme pondérée de cross-entropy |
+| Teacher forcing | Oui (ratio 0.8) | Non |
+| Partage de paramètres | Aucun | Embedding + backbone |
+| Inférence | 5 passes séquentielles | 1 passe, 5 têtes en parallèle |
+
+### Configuration
+
+| Paramètre | Défaut | Description |
+|-----------|--------|-------------|
+| `embedding_dim` | 128 | Dimension des embeddings et états cachés |
+| `max_seq_length` | 64 | Longueur maximale de séquence (tokens) |
+| `n_attention_layers` | 2 | Profondeur du backbone transformer |
+| `n_attention_heads` | 4 | Têtes d'attention par bloc |
+| `n_kv_heads` | 4 | Têtes clé-valeur (GQA) |
+| `n_label_attention_heads` | 4 | Têtes dans la Label Attention par niveau |
+| `max_level` | 4 | Profondeur COICOP entraînée (1–5) |
+| `batch_size` | 32 | Taille de batch |
+| `lr` | 0.01 | Taux d'apprentissage initial (Adam) |
+| `num_epochs` | 20 | Nombre maximal d'époques |
+| `patience` | 5 | Patience early stopping |
+| `loss_weights` | `[1.0] × L` | Pondération de la perte par niveau |
+
+
+## Résultats
+
+### Accuracy par niveau
+
+Les résultats ci-dessous sont issus du notebook de démonstration (`docs/coicop_bdf(1).ipynb`), entraîné sur les données DDC et évalué sur les données annotées BDF 2025.
+
+| Modèle | Niveau 1 | Niveau 2 | Niveau 3 | Niveau 4 |
+|---|---|---|---|---|
+| Plat NGram (baseline) | — | — | — | 23,66 % |
+| Plat WordPiece | — | — | — | 13,35 % |
+| **Hiérarchique** | **81,08 %** | **71,17 %** | **55,72 %** | **45,69 %** |
+| Hiérarchique fine-tuné | — | — | — | 42,11 %* |
+
+\* Accuracy mesurée sur le jeu de validation *original* après fine-tuning sur de nouvelles données (le fine-tuning améliore la performance sur les nouvelles données de 23,96 % → 26,92 %).
+
+**Résultat clé** : l'accuracy au niveau 4 du classifieur hiérarchique (**45,69 %**) est **presque le double** de celle du classifieur plat (**23,66 %**).
+
+### Classification report — Niveau 1 (classifieur plat)
+
+À titre indicatif, le rapport de classification du classifieur plat au niveau 1 (agrégation des prédictions de niveau 4) :
+
+| Classe | Precision | Recall | F1-score | Support |
+|--------|-----------|--------|----------|---------|
+| 01 | 0,82 | 0,82 | 0,82 | 9 936 |
+| 02 | 0,30 | 0,43 | 0,35 | 341 |
+| 03 | 0,27 | 0,61 | 0,37 | 354 |
+| 04 | 0,23 | 0,08 | 0,12 | 532 |
+| 05 | 0,28 | 0,31 | 0,29 | 1 494 |
+| 06 | 0,10 | 0,26 | 0,15 | 336 |
+| 07 | 0,30 | 0,25 | 0,27 | 786 |
+| 08 | 0,17 | 0,21 | 0,19 | 263 |
+| 09 | 0,28 | 0,35 | 0,31 | 1 652 |
+| 10 | 0,60 | 0,05 | 0,09 | 59 |
+| 11 | 0,62 | 0,03 | 0,05 | 966 |
+| 12 | 0,83 | 0,54 | 0,66 | 221 |
+| 13 | 0,18 | 0,13 | 0,15 | 1 005 |
+| **accuracy** | | | **0,57** | **17 945** |
+| **macro avg** | **0,38** | **0,31** | **0,29** | **17 945** |
+
+On observe un fort déséquilibre : la classe 01 (alimentaire) domine le jeu de données et est bien classée, tandis que les classes minoritaires (06, 08, 10, 11) ont des performances faibles.
+
+### Métriques complémentaires (à compléter)
+
+Les métriques suivantes sont disponibles dans l'infrastructure d'évaluation du projet (`src/topk_accuracy.py`) et pourront être ajoutées lors d'une prochaine exécution :
+
+- **Top-k accuracy** (k=1, 3, 5) par niveau — mesure la probabilité que la bonne classe figure dans les k premières prédictions
+- **Confiance combinée** — produit des confiances par niveau, reflétant l'incertitude cumulée de la cascade
+- **Precision / Recall / F1 par catégorie** au niveau 1 pour le classifieur hiérarchique
+- **Matrice de confusion** au niveau 1
+- **Temps d'entraînement** comparé
+- **Taille des modèles** (nombre de paramètres)
+
+
+## Discussion
+
+### Pourquoi le hiérarchique fonctionne mieux
+
+Le classifieur hiérarchique décompose un problème à **298 classes** en une séquence de sous-problèmes plus simples :
+
+- Niveau 1 : 13 classes
+- Niveau 2 : ~52 classes, mais avec le contexte du niveau 1 comme signal supplémentaire
+- Niveau 3 : ~146 classes, avec le contexte du niveau 2
+- Niveau 4 : ~298 classes, avec le contexte du niveau 3
+
+À chaque niveau, la prédiction du parent **réduit l'ambiguïté** en contraignant l'espace des classes possibles. Par exemple, si le niveau 1 prédit correctement `01` (alimentaire), le classifieur de niveau 2 n'a plus qu'à distinguer entre `01.1` (produits alimentaires) et `01.2` (boissons non alcoolisées), au lieu de parcourir les 52 classes de niveau 2.
+
+### Propagation des erreurs
+
+Le principal inconvénient de l'approche en cascade est la **propagation des erreurs** : une prédiction incorrecte au niveau 1 contraint les niveaux suivants au mauvais sous-arbre. Par exemple, si un produit alimentaire est classé en `05` (ameublement), les niveaux 2 à 4 ne pourront jamais retrouver le bon code.
+
+Le **teacher forcing** atténue ce problème pendant l'entraînement : en présentant parfois les vrais labels parents, le modèle apprend à fonctionner même avec des entrées partiellement incorrectes.
+
+### NGram vs WordPiece
+
+Les n-grammes de caractères surpassent nettement le tokenizer WordPiece sur cette tâche. Cela s'explique par la nature des descriptions de produits :
+
+- **Noms de marques** : souvent des mots inventés ou des abréviations (`SONICARE`, `TNB`)
+- **Abréviations** : fréquentes sur les tickets de caisse (`BT` pour bluetooth, `HYDROPUL` pour hydropulseur)
+- **Codes produits** : séquences alphanumériques sans signification lexicale
+
+Les n-grammes de caractères capturent ces motifs sous-lexicaux de manière robuste, tandis qu'un vocabulaire WordPiece appris sur un petit corpus tend à sur-segmenter ces termes inhabituels.
+
+
+## Pistes d'amélioration
+
+Plusieurs axes d'amélioration sont envisageables :
+
+- **Augmenter les données d'entraînement** : intégrer plus de données DDC, scraper des catalogues produits en ligne pour enrichir la couverture des classes sous-représentées.
+
+- **Top-k au niveau parent** : au lieu de propager uniquement le top-1, propager les top-k prédictions du parent et effectuer un *beam search* pour explorer plusieurs chemins dans l'arbre.
+
+- **Seuil de confiance adaptatif** : s'arrêter au niveau le plus profond où la confiance dépasse un seuil. Cette fonctionnalité est déjà implémentée via le paramètre `confidence_threshold` dans `predict()`.
+
+- **Embeddings pré-entraînés** : utiliser CamemBERT ou FlauBERT comme encodeur textuel au lieu du NGramTokenizer, pour bénéficier de représentations contextuelles pré-entraînées sur un large corpus français.
+
+- **Augmentation textuelle** : paraphrase, back-translation, ou ajout de bruit pour les classes sous-représentées afin de rééquilibrer le jeu d'entraînement.
+
+- **Calibration des probabilités** : appliquer un *temperature scaling* ou *Platt scaling* pour que les scores de confiance reflètent la probabilité réelle de la prédiction.
+
+- **Évaluation sur données BDF réelles** : mesurer la performance sur les tickets de caisse réels de l'enquête BDF, dont le domaine est légèrement différent des données DDC utilisées pour l'entraînement.
