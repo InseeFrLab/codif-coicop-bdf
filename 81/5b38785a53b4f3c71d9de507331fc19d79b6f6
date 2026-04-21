@@ -1,0 +1,59 @@
+coicop-rag/scripts/0_create_vector_db.py
+  2f8a7e91f7e91c8b 1-256
+coicop-rag/scripts/0_prunning_coicop.py
+  2f8a7e91f7e91c8b 1-78
+coicop-rag/config/config.yaml
+  2f8a7e91f7e91c8b 1-59
+coicop-rag/src/coicop_rag/data/pruning.py
+  2f8a7e91f7e91c8b 1-460
+coicop-rag/src/coicop_rag/eval/metrics.py
+  2f8a7e91f7e91c8b 1-900
+coicop-rag/pyproject.toml
+  2f8a7e91f7e91c8b 1-28
+coicop-rag/LICENSE
+  2f8a7e91f7e91c8b 1-21
+coicop-rag/scripts/1_prune_annotations.py
+  2f8a7e91f7e91c8b 1-115
+coicop-rag/.python-version
+  2f8a7e91f7e91c8b 1
+coicop-rag/README.md
+  2f8a7e91f7e91c8b 1-56
+coicop-rag/src/coicop_rag/data/coicop_document.py
+  2f8a7e91f7e91c8b 1-121
+coicop-rag/src/coicop_rag/eval/test_metrics.py
+  2f8a7e91f7e91c8b 1-180
+coicop-rag/src/coicop_rag/utils.py
+  2f8a7e91f7e91c8b 1-111
+coicop-rag/src/coicop_rag/data/parsing.py
+  2f8a7e91f7e91c8b 1-41
+coicop-rag/.gitignore
+  2f8a7e91f7e91c8b 1-213
+coicop-rag/tests/test_llms.py
+  2f8a7e91f7e91c8b 1-109
+coicop-rag/scripts/2_run_rag.py
+  2f8a7e91f7e91c8b 1-1154
+coicop-rag/scripts/eval.py
+  2f8a7e91f7e91c8b 1-310
+coicop-rag/src/coicop_rag/generation_tools.py
+  2f8a7e91f7e91c8b 1-232
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.2",
+  "base_commit_sha": "815b38785a53b4f3c71d9de507331fc19d79b6f6",
+  "prompts": {
+    "2f8a7e91f7e91c8b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c3c1e12e-edd7-4b8c-873e-b60b2932e5d0",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "h4njlg",
+      "messages": [],
+      "total_additions": 8941,
+      "total_deletions": 4496,
+      "accepted_lines": 4542,
+      "overriden_lines": 0
+    }
+  }
+}
