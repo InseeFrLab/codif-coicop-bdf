@@ -16,9 +16,22 @@ if(!"arrow" %in% installed.packages()) install.packages("arrow")
 if(!"future" %in% installed.packages()) install.packages("future")
 if(!"furrr" %in% installed.packages()) install.packages("furrr")
 
+# Parse CLI args: --run-id=<id> --run-date=<YYYY-MM-DD>
+args <- commandArgs(trailingOnly = TRUE)
+parse_arg <- function(name) {
+  hit <- grep(paste0("^--", name, "="), args, value = TRUE)
+  if (length(hit) == 0) stop(sprintf("Missing required arg: --%s", name))
+  sub(paste0("^--", name, "="), "", hit[1])
+}
+run_id <- parse_arg("run-id")
+run_date <- parse_arg("run-date")
+message(sprintf("run_id=%s, run_date=%s", run_id, run_date))
+
 BUCKET <- "projet-budget-famille"
-path <- "data/regex/output/raw_test_without_regex.parquet"
-sug_path <- "data/regex/output/raw_train_without_regex.parquet"
+run_root <- glue::glue("data/workflow_runs/{run_date}/{run_id}")
+path <- glue::glue("{run_root}/codif-regex/raw_test_without_regex.parquet")
+sug_path <- glue::glue("{run_root}/codif-regex/raw_train_without_regex.parquet")
+lcs_output_dir <- glue::glue("{run_root}/codif-lcs")
   
 source("R/fonctions.R", encoding = "UTF-8")
 

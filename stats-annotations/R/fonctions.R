@@ -287,7 +287,7 @@ export_liste_df <- function(df, output_names){
   aws.s3::s3write_using(
     x = df,
     FUN = arrow::write_parquet,
-    object = stringr::str_glue("data/lcs/eval/{output_names}.parquet"),
+    object = stringr::str_glue("{lcs_output_dir}/eval/{output_names}.parquet"),
     bucket = BUCKET,
     opts = list("region" = "")
   )

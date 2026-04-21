@@ -78,7 +78,7 @@ output_lcs <- extract_res |>
 aws.s3::s3write_using(
   x = output_lcs,
   FUN = arrow::write_parquet,
-  object = "data/lcs/raw_test_LCS.parquet",
+  object = glue::glue("{lcs_output_dir}/raw_test_LCS.parquet"),
   bucket = BUCKET,
   opts = list("region" = "")
 )
@@ -105,7 +105,7 @@ comparaison[is.na(comparaison$predict_ok),] |> nrow() # 2887 NA
 aws.s3::s3write_using(
   x = comparaison,
   FUN = arrow::write_parquet,
-  object = "data/lcs/analyse_codif_LCS.parquet",
+  object = glue::glue("{lcs_output_dir}/analyse_codif_LCS.parquet"),
   bucket = BUCKET,
   opts = list("region" = "")
 )

@@ -228,7 +228,7 @@ spec:
           - |
             set -e
             git clone --branch main https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/stats-annotations
-            Rscript R/main.R
+            Rscript R/main.R --run-id={{inputs.parameters.run_id}} --run-date={{inputs.parameters.run_date}}
         env:
           - name: AWS_ACCESS_KEY_ID
             valueFrom:
