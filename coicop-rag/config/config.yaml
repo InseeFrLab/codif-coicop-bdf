@@ -1,0 +1,59 @@
+# config.yaml
+
+annotations:
+  s3_path: "s3://projet-budget-famille/data/regex/output/raw_test_without_regex.parquet"
+  s3_path_rag: "s3://projet-budget-famille/data/workflow_outputs/prunning/raw_test_without_regex_pruned.parquet"
+  sample_size: null
+  features:
+    - id
+    - l_pr_product
+    - annee
+    - code
+    - coicop
+    - shop
+    - shop_type_name
+    - budget
+    - n_obs
+    - source
+  nature: null
+
+qdrant:
+  strategy: "with_hierarchy"
+  collection_name: "coicop_lineage"
+  upload_batch_size: 56
+
+embedding:
+  model_name: Qwen/Qwen3-Embedding-8B
+  model_len: 4096
+
+retrieval:
+  size: 10
+
+llm:
+  prompt_name: prompt-multi-level
+  prompt_version: "12"
+  model_name: gemma4-26b-moe #openai/gpt-oss-120b #google/gemma-3-27b-it
+  temperature: 0.1
+  max_tokens: 2048
+  concurrency: 32
+  # guided_decoding_backend: xgrammar  # uncomment if vLLM >= 0.6 (outlines removed)
+
+coicop:
+  path_raw: "s3://projet-budget-famille/data/coicop-2018_envoi_rmes_20251022.csv"
+  path_prunned_lvl4: "s3://projet-budget-famille/data/workflow_outputs/prunning/coicop-2018_envoi_rmes_20251022_prunned_lvl4.parquet"
+  path_mapping_lvl4: "s3://projet-budget-famille/data/workflow_outputs/prunning/coicop-2018_envoi_rmes_20251022_mapping_prunning_lvl4.parquet"
+  vectors:
+    truncate_level: 4  # null = no truncation, integer = keep codes with depth <= truncate_level
+    prune: true  # true = keep only canonical codes (code == code_parent_equivalent)
+
+predictions:
+  s3_path: "s3://projet-budget-famille/data/workflow_outputs/outputs_rag/predictions_{timestamp}.parquet"
+  s3_path_retrieved_codes: "s3://projet-budget-famille/data/workflow_outputs/outputs_rag/retrieved_codes_{timestamp}.parquet"
+
+eval:
+  threshold_confidence: 0.7
+  rules_path: config/rules.yaml
+  prune: true
+
+mlflow:
+  experiment_name: test
