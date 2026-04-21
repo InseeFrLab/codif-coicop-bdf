@@ -1,0 +1,115 @@
+coicop-bdf-classifier/docs/dashboard/predictions_explorer.qmd
+  2f8a7e91f7e91c8b 1-1439
+coicop-bdf-classifier/docs/report/index.qmd
+  2f8a7e91f7e91c8b 1-467
+coicop-bdf-classifier/data/synthetic_data.csv
+  2f8a7e91f7e91c8b 1-88385
+coicop-bdf-classifier/data/table_passage_coicop.csv
+  2f8a7e91f7e91c8b 1-743
+coicop-bdf-classifier/src/evaluation/evaluation_metrics.py
+  2f8a7e91f7e91c8b 1-293
+coicop-bdf-classifier/data/annotated/depenses_manuelles_carnets.csv
+  2f8a7e91f7e91c8b 1-7557
+coicop-bdf-classifier/data/coicop_with_descriptions.csv
+  2f8a7e91f7e91c8b 1-703
+coicop-bdf-classifier/docs/report/accuracy_analysis.qmd
+  2f8a7e91f7e91c8b 1-1529
+coicop-bdf-classifier/src/decide_coicop.py
+  2f8a7e91f7e91c8b 1-846
+coicop-bdf-classifier/src/predict.py
+  2f8a7e91f7e91c8b 1-451
+coicop-bdf-classifier/src/preprocessing/data_preparation.py
+  2f8a7e91f7e91c8b 1-220
+coicop-bdf-classifier/data/annotated/ajouts_manuels_application.csv
+  2f8a7e91f7e91c8b 1-477
+coicop-bdf-classifier/Dockerfile
+  2f8a7e91f7e91c8b 1-35
+coicop-bdf-classifier/CLAUDE.md
+  2f8a7e91f7e91c8b 1-85
+coicop-bdf-classifier/src/data/build_training_data.py
+  2f8a7e91f7e91c8b 1-187
+coicop-bdf-classifier/src/evaluation/evaluation_report.py
+  2f8a7e91f7e91c8b 1-575
+coicop-bdf-classifier/data/famille_circana.csv
+  2f8a7e91f7e91c8b 1-794
+coicop-bdf-classifier/pyproject.toml
+  2f8a7e91f7e91c8b 1-28
+coicop-bdf-classifier/src/classifiers/llm_classifier.py
+  2f8a7e91f7e91c8b 1-431
+coicop-bdf-classifier/data/20260203-liste_produits_copain.csv
+  2f8a7e91f7e91c8b 1-6641
+coicop-bdf-classifier/src/tracking/mlflow_model_hierarchical.py
+  2f8a7e91f7e91c8b 1-7
+coicop-bdf-classifier/src/tracking/mlflow_utils.py
+  2f8a7e91f7e91c8b 1-178
+coicop-bdf-classifier/src/data/extract_ddc.py
+  2f8a7e91f7e91c8b 1-199
+coicop-bdf-classifier/src/train.py
+  2f8a7e91f7e91c8b 1-1025
+coicop-bdf-classifier/tests/test_hierarchical_pyfunc.py
+  2f8a7e91f7e91c8b 1-211
+coicop-bdf-classifier/src/classifiers/multihead_classifier.py
+  2f8a7e91f7e91c8b 1-952
+coicop-bdf-classifier/src/evaluation/topk_accuracy.py
+  2f8a7e91f7e91c8b 1-233
+coicop-bdf-classifier/src/evaluation/evaluate_predictions.py
+  2f8a7e91f7e91c8b 1-230
+coicop-bdf-classifier/data/text/stopwords.json
+  2f8a7e91f7e91c8b 1-509
+coicop-bdf-classifier/.gitignore
+  2f8a7e91f7e91c8b 1-28
+coicop-bdf-classifier/data/20260130-coicop_et_codes_techniques.csv
+  2f8a7e91f7e91c8b 1-703
+coicop-bdf-classifier/src/classifiers/basic_classifier.py
+  2f8a7e91f7e91c8b 1-426
+coicop-bdf-classifier/.python-version
+  2f8a7e91f7e91c8b 1
+coicop-bdf-classifier/src/classifiers/hierarchical_classifier.py
+  2f8a7e91f7e91c8b 1-1370
+coicop-bdf-classifier/src/data/data_generator.py
+  2f8a7e91f7e91c8b 1-675
+coicop-bdf-classifier/src/tracking/mlflow_model_multihead.py
+  2f8a7e91f7e91c8b 1-7
+coicop-bdf-classifier/data/synthetic_data_9899.csv
+  2f8a7e91f7e91c8b 1-92024
+coicop-bdf-classifier/src/__init__.py
+  2f8a7e91f7e91c8b 1-17
+coicop-bdf-classifier/src/api.py
+  2f8a7e91f7e91c8b 1-265
+coicop-bdf-classifier/main.py
+  2f8a7e91f7e91c8b 1-1898
+coicop-bdf-classifier/src/data/scrape_insee_coicop.py
+  2f8a7e91f7e91c8b 1-301
+coicop-bdf-classifier/data/coicop-2018_envoi_rmes_20251022.csv
+  2f8a7e91f7e91c8b 1-6147
+coicop-bdf-classifier/data/synthetic+gtin.csv
+  2f8a7e91f7e91c8b 1-1018925
+coicop-bdf-classifier/data/annotated/tickets_application.csv
+  2f8a7e91f7e91c8b 1-8143
+coicop-bdf-classifier/data/coicop_et_codes_techniques.csv
+  2f8a7e91f7e91c8b 1-701
+coicop-bdf-classifier/src/tracking/mlflow_model_basic.py
+  2f8a7e91f7e91c8b 1-7
+coicop-bdf-classifier/README.md
+  2f8a7e91f7e91c8b 1-453
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.2",
+  "base_commit_sha": "f4bf65db85782be47ae61561ee58a3ee607e15de",
+  "prompts": {
+    "2f8a7e91f7e91c8b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c3c1e12e-edd7-4b8c-873e-b60b2932e5d0",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "h4njlg",
+      "messages": [],
+      "total_additions": 1478003,
+      "total_deletions": 228632,
+      "accepted_lines": 1249451,
+      "overriden_lines": 0
+    }
+  }
+}
