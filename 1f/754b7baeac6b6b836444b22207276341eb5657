@@ -1,0 +1,45 @@
+regex-codif/.gitignore
+  2f8a7e91f7e91c8b 1-6
+regex-codif/src/main.py
+  2f8a7e91f7e91c8b 1-113
+regex-codif/config/config.yaml
+  2f8a7e91f7e91c8b 1-12
+regex-codif/config/rules.yaml
+  2f8a7e91f7e91c8b 1-129
+regex-codif/src/data/save_data.py
+  2f8a7e91f7e91c8b 1-24
+regex-codif/src/utils/load_config.py
+  2f8a7e91f7e91c8b 1-16
+regex-codif/src/utils/init_duckdb.py
+  2f8a7e91f7e91c8b 1-33
+regex-codif/README.md
+  2f8a7e91f7e91c8b 1-93
+regex-codif/pyproject.toml
+  2f8a7e91f7e91c8b 1-13
+regex-codif/src/data/apply_regex.py
+  2f8a7e91f7e91c8b 1-20
+regex-codif/src/utils/logging.py
+  2f8a7e91f7e91c8b 1-17
+regex-codif/src/utils/load_rules.py
+  2f8a7e91f7e91c8b 1-28
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.2",
+  "base_commit_sha": "1f754b7baeac6b6b836444b22207276341eb5657",
+  "prompts": {
+    "2f8a7e91f7e91c8b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c3c1e12e-edd7-4b8c-873e-b60b2932e5d0",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "h4njlg",
+      "messages": [],
+      "total_additions": 1062,
+      "total_deletions": 558,
+      "accepted_lines": 592,
+      "overriden_lines": 0
+    }
+  }
+}
