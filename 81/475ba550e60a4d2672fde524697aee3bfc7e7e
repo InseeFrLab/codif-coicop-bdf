@@ -1,0 +1,27 @@
+preprocessing/main.py
+  2f8a7e91f7e91c8b 3,25-31,35,173-174,176-178,214-215
+preprocessing/config.yaml
+  2f8a7e91f7e91c8b 12
+argo/pipeline.yaml
+  2f8a7e91f7e91c8b 130
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.2",
+  "base_commit_sha": "81475ba550e60a4d2672fde524697aee3bfc7e7e",
+  "prompts": {
+    "2f8a7e91f7e91c8b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c3c1e12e-edd7-4b8c-873e-b60b2932e5d0",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "h4njlg",
+      "messages": [],
+      "total_additions": 254,
+      "total_deletions": 17,
+      "accepted_lines": 308,
+      "overriden_lines": 0
+    }
+  }
+}
