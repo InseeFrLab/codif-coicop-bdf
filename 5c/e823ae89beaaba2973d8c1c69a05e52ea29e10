@@ -1,0 +1,31 @@
+coicop-rag/src/coicop_rag/utils.py
+  2f8a7e91f7e91c8b 2,7-17
+coicop-rag/scripts/1_prune_annotations.py
+  2f8a7e91f7e91c8b 15,26-27,32
+argo/pipeline.yaml
+  2f8a7e91f7e91c8b 33-39,59,69,94,331,452
+coicop-rag/config/config.yaml
+  2f8a7e91f7e91c8b 4-5,50-51
+coicop-rag/scripts/2_run_rag.py
+  2f8a7e91f7e91c8b 26,54,58-59,62-63,364-375,964,967,972-973,980-982
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.2",
+  "base_commit_sha": "5ce823ae89beaaba2973d8c1c69a05e52ea29e10",
+  "prompts": {
+    "2f8a7e91f7e91c8b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c3c1e12e-edd7-4b8c-873e-b60b2932e5d0",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "h4njlg",
+      "messages": [],
+      "total_additions": 1223,
+      "total_deletions": 30,
+      "accepted_lines": 349,
+      "overriden_lines": 0
+    }
+  }
+}
