@@ -105,7 +105,7 @@ spec:
                   value: "{{workflow.parameters.run_date}}"
 
           - name: run-ttc
-            dependencies: [codif-regex]
+            dependencies: [preprocessing]
             template: run-ttc
             arguments:
               parameters:
@@ -580,9 +580,9 @@ spec:
           - "--model"
           - "mlflow-artifacts:/10/cacf2603514b4887bbfb77e2654c9bc1/artifacts/model"
           - "--file"
-          - "s3://projet-budget-famille/data/output-annotation-consolidated/annotations-consolidated-2026-04-15/raw_test.parquet"
+          - "s3://projet-budget-famille/data/workflow_runs/{{inputs.parameters.run_date}}/{{inputs.parameters.run_id}}/preprocessing/raw_test.parquet"
           - "--output"
-          - 's3://projet-budget-famille/data/workflow_outputs/outputs_ttc/predictions_{{= sprig.date "20060102150405" sprig.now }}.parquet'
+          - "s3://projet-budget-famille/data/workflow_runs/{{inputs.parameters.run_date}}/{{inputs.parameters.run_id}}/run-ttc/predictions.parquet"
           - "--text-column"
           - "l_pr_product"
           - "--top-k"
