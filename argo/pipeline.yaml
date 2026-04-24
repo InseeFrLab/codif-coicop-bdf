@@ -24,17 +24,22 @@ spec:
       - name: run_id
         value: "{{workflow.name}}"
       - name: run_date
-        value: "{{workflow.creationTimestamp.Y}}-{{workflow.creationTimestamp.m}}-{{workflow.creationTimestamp.d}}"
+        value: "{{workflow.creationTimestamp.Y}}-{{workflow.creationTimestamp.m}}-{{wor\
+          kflow.creationTimestamp.d}}"
+      - name: decide-model
+        value: "gemma4-26b-moe"
+      - name: decide-concurrency
+        value: "5"
 
   templates:
     # -----------------------------------------------------------------------
     # Main pipeline: DAG with parallelism
     #
     #                    ┌──→ prune-coicop ──→ create-vector-db ─────────────┐  (skippable)
-    #   preprocessing ──┤                                                    ├──→ run-rag
-    #                    └──→ codif-regex ──→ prune-annotations ─────────────┘
-    #                                    ├──→ codif-lcs
-    #                                    └──→ run-ttc
+    #   preprocessing ──┤                                                    ├──→ run-rag ──┐
+    #                    └──→ codif-regex ──→ prune-annotations ─────────────┘              │
+    #                                    ├──→ codif-lcs ─────────────────────────────────────┼──→ decide-coicop
+    #                                    └──→ run-ttc ──────────────────────────────────────┘
     # -----------------------------------------------------------------------
     - name: pipeline
       dag:
@@ -49,12 +54,12 @@ spec:
                   value: "{{workflow.parameters.run_date}}"
 
           - name: prune-coicop
-            dependencies: [preprocessing]
+            dependencies: [ preprocessing ]
             template: prune-coicop
-            when: '"{{workflow.parameters.skip-vector-db}}" != "true"'
+            when: "\"{{workflow.parameters.skip-vector-db}}\" != \"true\""
 
           - name: codif-regex
-            dependencies: [preprocessing]
+            dependencies: [ preprocessing ]
             template: codif-regex
             arguments:
               parameters:
@@ -64,7 +69,7 @@ spec:
                   value: "{{workflow.parameters.run_date}}"
 
           - name: prune-annotations
-            dependencies: [codif-regex]
+            dependencies: [ codif-regex ]
             template: prune-annotations
             arguments:
               parameters:
@@ -74,7 +79,7 @@ spec:
                   value: "{{workflow.parameters.run_date}}"
 
           - name: codif-lcs
-            dependencies: [codif-regex]
+            dependencies: [ codif-regex ]
             template: codif-lcs
             arguments:
               parameters:
@@ -84,12 +89,12 @@ spec:
                   value: "{{workflow.parameters.run_date}}"
 
           - name: create-vector-db
-            dependencies: [prune-coicop]
+            dependencies: [ prune-coicop ]
             template: create-vector-db
-            when: '"{{workflow.parameters.skip-vector-db}}" != "true"'
+            when: "\"{{workflow.parameters.skip-vector-db}}\" != \"true\""
 
           - name: run-rag
-            dependencies: [create-vector-db, prune-annotations]
+            dependencies: [ create-vector-db, prune-annotations ]
             template: run-rag
             arguments:
               parameters:
@@ -103,10 +108,24 @@ spec:
                   value: "{{workflow.parameters.run_date}}"
 
           - name: run-ttc
-            dependencies: [codif-regex]
+            dependencies: [ codif-regex ]
             template: run-ttc
             arguments:
               parameters:
+                - name: run_id
+                  value: "{{workflow.parameters.run_id}}"
+                - name: run_date
+                  value: "{{workflow.parameters.run_date}}"
+
+          - name: decide-coicop
+            dependencies: [ codif-lcs, run-rag, run-ttc ]
+            template: decide-coicop
+            arguments:
+              parameters:
+                - name: model
+                  value: "{{workflow.parameters.decide-model}}"
+                - name: concurrency
+                  value: "{{workflow.parameters.decide-concurrency}}"
                 - name: run_id
                   value: "{{workflow.parameters.run_id}}"
                 - name: run_date
@@ -122,7 +141,7 @@ spec:
           - name: run_date
       container:
         image: inseefrlab/onyxia-vscode-python:py3.13.12
-        command: [sh, -c]
+        command: [ sh, -c ]
         args:
           - |
             set -e
@@ -173,7 +192,7 @@ spec:
           - name: run_date
       container:
         image: inseefrlab/onyxia-vscode-python:py3.13.12
-        command: [sh, -c]
+        command: [ sh, -c ]
         args:
           - |
             set -e
@@ -224,7 +243,7 @@ spec:
           - name: run_date
       container:
         image: inseefrlab/onyxia-vscode-r-python-julia:r4.5.3-py3.13.12
-        command: [sh, -c]
+        command: [ sh, -c ]
         args:
           - |
             set -e
@@ -274,7 +293,7 @@ spec:
             value: config/config.yaml
       container:
         image: inseefrlab/onyxia-vscode-python:py3.13.12
-        command: [sh, -c]
+        command: [ sh, -c ]
         args:
           - |
             set -e
@@ -321,7 +340,7 @@ spec:
           - name: run_date
       container:
         image: inseefrlab/onyxia-vscode-python:py3.13.12
-        command: [sh, -c]
+        command: [ sh, -c ]
         args:
           - |
             set -e
@@ -366,7 +385,7 @@ spec:
             value: config/config.yaml
       container:
         image: inseefrlab/onyxia-vscode-python:py3.13.12
-        command: [sh, -c]
+        command: [ sh, -c ]
         args:
           - |
             set -e
@@ -440,7 +459,7 @@ spec:
           - name: run_date
       container:
         image: inseefrlab/onyxia-vscode-python:py3.13.12
-        command: [sh, -c]
+        command: [ sh, -c ]
         args:
           - |
             set -e
@@ -572,15 +591,19 @@ spec:
           - name: run_date
       container:
         image: ghcr.io/micedre/coicop_bdf_classifier:latest
-        command: ["python", "main.py"]
+        command: [ "python", "main.py" ]
         args:
           - predict-basic
           - "--model"
-          - "mlflow-artifacts:/10/cacf2603514b4887bbfb77e2654c9bc1/artifacts/model"
+          - "mlflow-artifacts:/10/cacf2603514b4887bbfb77e2654c9bc1/artifacts/mo\
+            del"
           - "--file"
-          - "s3://projet-budget-famille/data/workflow_runs/{{inputs.parameters.run_date}}/{{inputs.parameters.run_id}}/codif-regex/raw_test_without_regex.parquet"
+          - "s3://projet-budget-famille/data/workflow_runs/{{inputs.parameters.\
+            run_date}}/{{inputs.parameters.run_id}}/codif-regex/raw_test_withou\
+            t_regex.parquet"
           - "--output"
-          - "s3://projet-budget-famille/data/workflow_runs/{{inputs.parameters.run_date}}/{{inputs.parameters.run_id}}/run-ttc/predictions.parquet"
+          - "s3://projet-budget-famille/data/workflow_runs/{{inputs.parameters.\
+            run_date}}/{{inputs.parameters.run_id}}/run-ttc/predictions.parquet"
           - "--text-column"
           - "l_pr_product"
           - "--top-k"
@@ -621,6 +644,82 @@ spec:
         resources:
           requests:
             memory: 500Mi
+            cpu: 100m
+          limits:
+            memory: 50Gi
+            cpu: 15000m
+
+    # -----------------------------------------------------------------------
+    # Step 5: LLM-as-judge reconciliation of LCS / RAG / TTC predictions
+    # -----------------------------------------------------------------------
+    - name: decide-coicop
+      inputs:
+        parameters:
+          - name: model
+          - name: concurrency
+          - name: run_id
+          - name: run_date
+      container:
+        image: inseefrlab/onyxia-vscode-python:py3.13.12
+        command: [ sh, -c ]
+        args:
+          - |
+            set -e
+            git clone --branch main https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/coicop-bdf-classifier
+            uv sync
+
+            RUN_ROOT="s3://projet-budget-famille/data/workflow_runs/{{inputs.parameters.run_date}}/{{inputs.parameters.run_id}}"
+            ARGS="--lcs-file $RUN_ROOT/codif-lcs/raw_test_LCS.parquet \
+                  --rag-file $RUN_ROOT/run-rag/predictions.parquet \
+                  --ttc-file $RUN_ROOT/run-ttc/predictions.parquet \
+                  --output-file $RUN_ROOT/decide-coicop/predictions.parquet \
+                  --concurrency {{inputs.parameters.concurrency}}"
+
+            if [ -n "{{inputs.parameters.model}}" ]; then
+              ARGS="$ARGS --model {{inputs.parameters.model}}"
+            fi
+
+            uv run main.py decide-coicop $ARGS
+        env:
+          - name: OPENAI_API_KEY
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: OPENAI_API_KEY
+          - name: OPENAI_BASE_URL
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: OPENAI_BASE_URL
+                optional: true
+          - name: AWS_ACCESS_KEY_ID
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_ACCESS_KEY_ID
+          - name: AWS_SECRET_ACCESS_KEY
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_SECRET_ACCESS_KEY
+          - name: AWS_SESSION_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_SESSION_TOKEN
+          - name: AWS_S3_ENDPOINT
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_S3_ENDPOINT
+          - name: AWS_ENDPOINT_URL
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_ENDPOINT_URL
+        resources:
+          requests:
+            memory: 2Gi
             cpu: 100m
           limits:
             memory: 50Gi

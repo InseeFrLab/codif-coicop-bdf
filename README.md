@@ -7,10 +7,11 @@ Pipeline d'orchestration pour la codification automatique des produits de l'enqu
 Le pipeline est orchestré via Argo Workflows (`argo/pipeline.yaml`) selon le DAG suivant :
 
 ```
-                   ┌──→ prune-coicop ──→ create-vector-db ──┐  (skippable)
-preprocessing ─────┤                                         ├──→ run-rag
-                   └──→ prune-annotations ──→ codif-regex ───┘
-                                                └──→ codif-lcs
+                   ┌──→ prune-coicop ──→ create-vector-db ─────────────┐  (skippable)
+   preprocessing ──┤                                                   ├──→ run-rag ─┐
+                   └──→ codif-regex ──→ prune-annotations ─────────────┘             │
+                                 ├──→ codif-lcs ─────────────────────────────────────┼──→ decide-coicop
+                                 └──→ run-ttc  ──────────────────────────────────────┘
 ```
 
 ### preprocessing
@@ -72,6 +73,21 @@ Prédictions TTC via un classifieur pré-entraîné.
 - L'étape argo utilise actuellement l'image pré-construite `ghcr.io/micedre/coicop_bdf_classifier:latest`
 - Étape destinée à être supprimée à terme
 
+### decide-coicop
+
+Arbitrage final des prédictions par un LLM-as-judge : fusionne les sorties de `codif-lcs`, `run-rag` et `run-ttc` et sélectionne le meilleur code COICOP par observation.
+
+- Code dans [`coicop-bdf-classifier/`](./coicop-bdf-classifier/) (sous-commande `uv run main.py decide-coicop`)
+- Entrées :
+  - `s3://.../codif-lcs/raw_test_LCS.parquet`
+  - `s3://.../run-rag/predictions.parquet`
+  - `s3://.../run-ttc/predictions.parquet`
+- Sortie : `s3://.../decide-coicop/predictions.parquet`
+- Utilise un endpoint OpenAI-compatible (`OPENAI_API_KEY`, optionnellement `OPENAI_BASE_URL` pour un backend non-OpenAI)
+- Court-circuit consensus : si les trois sources convergent (et que la confiance TTC ≥ 0.90), aucune requête LLM n'est émise
+- Filtrage de nomenclature : seules les sections COICOP pertinentes sont envoyées au prompt (réduction ×4–10 du nombre de tokens)
+- Reprise automatique : relancer l'étape avec le même `run_id`/`run_date` reprend les observations non traitées depuis le fichier de sortie existant
+
 ## Structure du dépôt
 
 Ce dépôt rassemble le code de toutes les étapes du pipeline, auparavant dispersé dans plusieurs repos.
@@ -102,7 +118,8 @@ QDRANT_URL, QDRANT_API_KEY, QDRANT_API_PORT,
 LANGFUSE_BASE_URL, LANGFUSE_PUBLIC_KEY, LANGFUSE_SECRET_KEY,
 MLFLOW_TRACKING_URI, MLFLOW_TRACKING_USERNAME, MLFLOW_TRACKING_PASSWORD,
 OLLAMA_URL, OLLAMA_API_KEY,
-DDC_ENCRYPTION_KEY
+DDC_ENCRYPTION_KEY,
+OPENAI_API_KEY, OPENAI_BASE_URL   # requis pour decide-coicop (OPENAI_BASE_URL optionnel)
 ```
 
 ### Avec la CLI Argo
@@ -148,3 +165,5 @@ print(yaml.dump(w, default_flow_style=False))
 | `sample_size` | *(vide)* | Nombre d'annotations à traiter (toutes si vide) |
 | `model-name` | *(vide)* | Modèle LLM à utiliser pour `run-rag` (défaut du config si vide) |
 | `skip-vector-db` | `false` | Si `true`, saute `prune-coicop` et `create-vector-db` |
+| `decide-model` | `gemma4-26b-moe` | Modèle LLM utilisé par `decide-coicop` (vide → défaut `gpt-4o` de la commande) |
+| `decide-concurrency` | `5` | Nombre d'appels LLM parallèles de `decide-coicop` |
