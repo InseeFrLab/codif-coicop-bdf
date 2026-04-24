@@ -170,9 +170,9 @@ plt.tight_layout()
 plt.show()
 ```
 
-## Accuracy par `shop`, `shop_type_name`, et quartile de `budget`
+## Accuracy par groupe (niveau COICOP, `shop`, `shop_type_name`, décile de `budget`)
 
-Les groupes comptant moins de 30 observations sont masqués pour éviter les lectures bruyantes.
+Les groupes comptant moins de 30 observations sont masqués pour éviter les lectures bruyantes. L'accuracy rapportée ici est au niveau 4 (le niveau cible de l'enquête).
 
 ```{python}
 # | tags: [helpers-group]
@@ -202,6 +202,46 @@ def render_group_table(data: pd.DataFrame, group_col: str, k: int = 4) -> pd.Dat
     return view
 ```
 
+### Par niveau 1 du code COICOP (vérité terrain)
+
+Regroupe les observations par le premier segment de `code` (ex. `01`, `02`, …).
+
+```{python}
+# | label: tbl-coicop-lvl1
+_lvl = scorable.assign(
+    truth_lvl1=scorable["code"].map(
+        lambda c: code_parts(c)[0] if code_parts(c) else None
+    )
+).dropna(subset=["truth_lvl1"])
+tbl_l1 = render_group_table(_lvl, "truth_lvl1", k=4)
+tbl_l1 = tbl_l1.sort_values("truth_lvl1")
+Markdown(
+    tbl_l1.to_markdown(index=False, disable_numparse=True)
+    if len(tbl_l1)
+    else "_Pas assez d'observations par niveau 1._"
+)
+```
+
+### Par niveau 2 du code COICOP (vérité terrain)
+
+Regroupe par les deux premiers segments de `code` (ex. `01.1`, `01.2`, …).
+
+```{python}
+# | label: tbl-coicop-lvl2
+_lvl = scorable.assign(
+    truth_lvl2=scorable["code"].map(
+        lambda c: ".".join(code_parts(c)[:2]) if len(code_parts(c)) >= 2 else None
+    )
+).dropna(subset=["truth_lvl2"])
+tbl_l2 = render_group_table(_lvl, "truth_lvl2", k=4)
+tbl_l2 = tbl_l2.sort_values("truth_lvl2")
+Markdown(
+    tbl_l2.to_markdown(index=False, disable_numparse=True)
+    if len(tbl_l2)
+    else "_Pas assez d'observations par niveau 2._"
+)
+```
+
 ### Par `shop`
 
 ```{python}
@@ -224,20 +264,44 @@ Markdown(
 )
 ```
 
-### Par quartile de `budget`
+### Par décile de `budget`
+
+Déciles de la distribution de `budget` (vide exclu). Les montants affichés sont les bornes de chaque décile.
 
 ```{python}
 # | label: tbl-budget
 scored_b = scorable.dropna(subset=["budget"]).copy()
-if len(scored_b) >= 4:
-    scored_b["budget_quartile"] = pd.qcut(
-        scored_b["budget"], q=4, duplicates="drop",
-        labels=["Q1 (bas)", "Q2", "Q3", "Q4 (haut)"],
-    )
-    tbl_budget = render_group_table(scored_b, "budget_quartile", k=4)
-    md = tbl_budget.to_markdown(index=False)
+
+
+def _fmt_amount(v: float) -> str:
+    return f"{v:,.2f} €".replace(",", " ").replace(".", ",")
+
+
+if len(scored_b) >= 10:
+    try:
+        _, edges = pd.qcut(
+            scored_b["budget"], q=10, duplicates="drop", retbins=True
+        )
+        labels = [
+            f"D{i + 1} ({_fmt_amount(edges[i])} – {_fmt_amount(edges[i + 1])})"
+            for i in range(len(edges) - 1)
+        ]
+        scored_b["budget_decile"] = pd.qcut(
+            scored_b["budget"], q=10, duplicates="drop", labels=labels,
+        )
+        tbl_budget = render_group_table(scored_b, "budget_decile", k=4)
+        # Sort D1..D10 rather than by group size
+        tbl_budget = tbl_budget.assign(
+            _order=tbl_budget["budget_decile"]
+            .astype(str)
+            .str.extract(r"D(\d+)", expand=False)
+            .astype(int)
+        ).sort_values("_order").drop(columns="_order")
+        md = tbl_budget.to_markdown(index=False)
+    except ValueError:
+        md = "_Pas assez de variation dans `budget` pour former 10 déciles distincts._"
 else:
-    md = "_Pas assez de valeurs non-nulles de `budget` pour former des quartiles._"
+    md = "_Pas assez de valeurs non-nulles de `budget` pour former des déciles._"
 Markdown(md)
 ```
 
