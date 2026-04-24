@@ -1,0 +1,23 @@
+report/report.qmd
+  3a6a4ef8805eac1c 173,175,205-244,267-269,274-302,304
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.4",
+  "base_commit_sha": "506d7b0eb34a206cd9e68542a5abf39706ca4d82",
+  "prompts": {
+    "3a6a4ef8805eac1c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d71bd0f7-a1bc-4aa7-8941-c1ee97da0479",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "h4njlg",
+      "messages": [],
+      "total_additions": 3924,
+      "total_deletions": 3860,
+      "accepted_lines": 75,
+      "overriden_lines": 0
+    }
+  }
+}
