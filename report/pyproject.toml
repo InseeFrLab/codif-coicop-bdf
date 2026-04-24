@@ -1,0 +1,22 @@
+[project]
+name = "coicop-report"
+version = "0.1.0"
+description = "Quarto accuracy report for the COICOP BDF pipeline"
+requires-python = ">=3.13"
+dependencies = [
+    "boto3>=1.35",
+    "duckdb>=1.4.4",
+    "ipykernel>=6.29",
+    "jupyter>=1.1",
+    "matplotlib>=3.9",
+    "nbformat>=5.10",
+    "pandas>=2.2",
+    "pyarrow>=16",
+    "seaborn>=0.13",
+    "tabulate>=0.9",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.6",
+]

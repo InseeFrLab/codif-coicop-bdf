@@ -10,7 +10,7 @@ Le pipeline est orchestré via Argo Workflows (`argo/pipeline.yaml`) selon le DA
                    ┌──→ prune-coicop ──→ create-vector-db ─────────────┐  (skippable)
    preprocessing ──┤                                                   ├──→ run-rag ─┐
                    └──→ codif-regex ──→ prune-annotations ─────────────┘             │
-                                 ├──→ codif-lcs ─────────────────────────────────────┼──→ decide-coicop
+                                 ├──→ codif-lcs ─────────────────────────────────────┼──→ decide-coicop ──→ report  (opt-in)
                                  └──→ run-ttc  ──────────────────────────────────────┘
 ```
 
@@ -88,6 +88,22 @@ Arbitrage final des prédictions par un LLM-as-judge : fusionne les sorties de `
 - Filtrage de nomenclature : seules les sections COICOP pertinentes sont envoyées au prompt (réduction ×4–10 du nombre de tokens)
 - Reprise automatique : relancer l'étape avec le même `run_id`/`run_date` reprend les observations non traitées depuis le fichier de sortie existant
 
+### report *(opt-in)*
+
+Rapport d'exactitude Quarto (HTML auto-contenu) sur la sortie de `decide-coicop`.
+
+- Code dans [`report/`](./report/) — Quarto + Python (pandas, duckdb, matplotlib, seaborn)
+- Déclenché par `skip-report=false` ; désactivé par défaut
+- Entrée : `s3://.../decide-coicop/predictions.parquet`
+- Sortie : `s3://.../report/report.html`
+- Contenu :
+  - Accuracy globale par niveau COICOP (1 à 5) pour **LCS, RAG, TTC, LLM**
+  - Accuracy par `shop`, `shop_type_name` et **quartile de `budget`**
+  - Matrice de confusion (top 20 paires `code` vs `llm_code` au niveau 4)
+  - Calibration : accuracy par bucket de `llm_confiance`
+  - Consensus vs désaccord des sources amont : apport de l'arbitrage LLM
+- Méthodologie *accuracy par niveau* : tronquer `code` et la prédiction aux `k` premiers segments ; les observations dont la vérité a moins de `k` niveaux sont exclues du dénominateur à ce niveau
+
 ## Structure du dépôt
 
 Ce dépôt rassemble le code de toutes les étapes du pipeline, auparavant dispersé dans plusieurs repos.
@@ -100,6 +116,7 @@ Ce dépôt rassemble le code de toutes les étapes du pipeline, auparavant dispe
 | [`coicop-rag/`](./coicop-rag/) | `coicop-rag` | Étapes `prune-coicop`, `prune-annotations`, `create-vector-db`, `run-rag` |
 | [`stats-annotations/`](./stats-annotations/) | `stats-annotations` | Étape `codif-lcs` (R) |
 | [`coicop-bdf-classifier/`](./coicop-bdf-classifier/) | `coicop_bdf_classifier` | Classifieur TTC (source vendorisée, image pré-construite encore utilisée par `run-ttc`) |
+| [`report/`](./report/) | — | Rapport Quarto d'exactitude (étape `report`, opt-in) |
 
 Chaque sous-dossier Python conserve son propre `pyproject.toml` / `uv.lock` et peut être développé et exécuté indépendamment.
 
@@ -139,6 +156,9 @@ argo submit argo/pipeline.yaml -p skip-vector-db=true
 
 # Combinaison de paramètres
 argo submit argo/pipeline.yaml -p skip-vector-db=true -p sample_size=100
+
+# Activer le rapport d'exactitude (désactivé par défaut)
+argo submit argo/pipeline.yaml -p skip-report=false
 ```
 
 ### Avec kubectl (sans CLI Argo)
@@ -167,3 +187,4 @@ print(yaml.dump(w, default_flow_style=False))
 | `skip-vector-db` | `false` | Si `true`, saute `prune-coicop` et `create-vector-db` |
 | `decide-model` | `gemma4-26b-moe` | Modèle LLM utilisé par `decide-coicop` (vide → défaut `gpt-4o` de la commande) |
 | `decide-concurrency` | `5` | Nombre d'appels LLM parallèles de `decide-coicop` |
+| `skip-report` | `true` | Si `false`, génère le rapport Quarto d'exactitude après `decide-coicop` |

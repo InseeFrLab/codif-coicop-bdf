@@ -30,6 +30,8 @@ spec:
         value: "gemma4-26b-moe"
       - name: decide-concurrency
         value: "5"
+      - name: skip-report
+        value: "false"
 
   templates:
     # -----------------------------------------------------------------------
@@ -38,7 +40,7 @@ spec:
     #                    ┌──→ prune-coicop ──→ create-vector-db ─────────────┐  (skippable)
     #   preprocessing ──┤                                                    ├──→ run-rag ──┐
     #                    └──→ codif-regex ──→ prune-annotations ─────────────┘              │
-    #                                    ├──→ codif-lcs ─────────────────────────────────────┼──→ decide-coicop
+    #                                    ├──→ codif-lcs ─────────────────────────────────────┼──→ decide-coicop ──→ report  (opt-in)
     #                                    └──→ run-ttc ──────────────────────────────────────┘
     # -----------------------------------------------------------------------
     - name: pipeline
@@ -131,6 +133,17 @@ spec:
                 - name: run_date
                   value: "{{workflow.parameters.run_date}}"
 
+          - name: report
+            dependencies: [ decide-coicop ]
+            template: report
+            when: "\"{{workflow.parameters.skip-report}}\" != \"true\""
+            arguments:
+              parameters:
+                - name: run_id
+                  value: "{{workflow.parameters.run_id}}"
+                - name: run_date
+                  value: "{{workflow.parameters.run_date}}"
+
     # -----------------------------------------------------------------------
     # Step 0: Preprocessing — construction du dataset
     # -----------------------------------------------------------------------
@@ -145,7 +158,7 @@ spec:
         args:
           - |
             set -e
-            git clone --branch main https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/preprocessing
+            git clone --branch merge-all-repos https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/preprocessing
             uv sync
             uv run main.py --run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}
         env:
@@ -196,7 +209,7 @@ spec:
         args:
           - |
             set -e
-            git clone --branch main https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/regex-codif
+            git clone --branch merge-all-repos https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/regex-codif
             uv sync
             uv run src/main.py --run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}
         env:
@@ -247,7 +260,7 @@ spec:
         args:
           - |
             set -e
-            git clone --branch main https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/stats-annotations
+            git clone --branch merge-all-repos https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/stats-annotations
             Rscript R/main.R --run-id={{inputs.parameters.run_id}} --run-date={{inputs.parameters.run_date}}
         env:
           - name: AWS_ACCESS_KEY_ID
@@ -297,7 +310,7 @@ spec:
         args:
           - |
             set -e
-            git clone --branch main https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/coicop-rag
+            git clone --branch merge-all-repos https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/coicop-rag
             uv run scripts/0_prunning_coicop.py --config {{inputs.parameters.config}}
         env:
           - name: AWS_ACCESS_KEY_ID
@@ -344,7 +357,7 @@ spec:
         args:
           - |
             set -e
-            git clone --branch main https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/coicop-rag
+            git clone --branch merge-all-repos https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/coicop-rag
             uv run scripts/1_prune_annotations.py --config {{inputs.parameters.config}} --run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}
         env:
           - name: AWS_ACCESS_KEY_ID
@@ -389,7 +402,7 @@ spec:
         args:
           - |
             set -e
-            git clone --branch main https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/coicop-rag
+            git clone --branch merge-all-repos https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/coicop-rag
             uv run scripts/0_create_vector_db.py --config {{inputs.parameters.config}}
         env:
           - name: AWS_ACCESS_KEY_ID
@@ -463,7 +476,7 @@ spec:
         args:
           - |
             set -e
-            git clone --branch main https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/coicop-rag
+            git clone --branch merge-all-repos https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/coicop-rag
             mkdir -p logs prompts
 
             ARGS="--config {{inputs.parameters.config}} --run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}"
@@ -665,7 +678,7 @@ spec:
         args:
           - |
             set -e
-            git clone --branch main https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/coicop-bdf-classifier
+            git clone --branch merge-all-repos https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/coicop-bdf-classifier
             uv sync
 
             RUN_ROOT="s3://projet-budget-famille/data/workflow_runs/{{inputs.parameters.run_date}}/{{inputs.parameters.run_id}}"
@@ -724,3 +737,54 @@ spec:
           limits:
             memory: 50Gi
             cpu: 15000m
+
+    # -----------------------------------------------------------------------
+    # Step 6 (opt-in): accuracy report (Quarto HTML on S3)
+    # -----------------------------------------------------------------------
+    - name: report
+      inputs:
+        parameters:
+          - name: run_id
+          - name: run_date
+      container:
+        image: inseefrlab/onyxia-vscode-python:py3.13.12
+        command: [ sh, -c ]
+        args:
+          - |
+            set -e
+            git clone --branch merge-all-repos https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/report
+            uv sync
+            uv run main.py --run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}
+        env:
+          - name: AWS_ACCESS_KEY_ID
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_ACCESS_KEY_ID
+          - name: AWS_SECRET_ACCESS_KEY
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_SECRET_ACCESS_KEY
+          - name: AWS_SESSION_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_SESSION_TOKEN
+          - name: AWS_S3_ENDPOINT
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_S3_ENDPOINT
+          - name: AWS_ENDPOINT_URL
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_ENDPOINT_URL
+        resources:
+          requests:
+            memory: 2Gi
+            cpu: 100m
+          limits:
+            memory: 20Gi
+            cpu: 4000m
