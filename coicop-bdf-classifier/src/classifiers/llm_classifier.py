@@ -153,8 +153,8 @@ def _count_output_rows(path: str) -> int:
 
 def _build_client() -> openai.AsyncOpenAI:
     """Create AsyncOpenAI client from environment variables."""
-    base_url = os.environ.get("OPENAI_BASE_URL")
-    api_key = os.environ.get("OPENAI_API_KEY")
+    base_url = os.environ.get("LLMLAB_URL")
+    api_key = os.environ.get("LLMLAB_API_KEY")
     if not api_key:
         return openai.AsyncOpenAI(base_url=base_url)
     return openai.AsyncOpenAI(api_key=api_key, base_url=base_url)
@@ -299,7 +299,7 @@ async def classify_llm(
     logger.info(
         f"Starting classification — model={model!r}, batch={batch_size}, "
         f"concurrency={concurrency}, rows={total_rows}, "
-        f"base_url={os.environ.get('OPENAI_BASE_URL')!r}"
+        f"base_url={os.environ.get('LLMLAB_URL')!r}"
     )
 
     # Build list of (index_in_df, text) so we can match results back

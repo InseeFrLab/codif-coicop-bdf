@@ -36,19 +36,19 @@ def get_llm_from_env(model_name: str | None = None) -> ChatOpenAI:
         model_name: Model name override. If None, uses OPENAI_MODEL env var.
 
     Environment variables:
-        OPENAI_API_KEY: API key for OpenAI-compatible endpoint
-        OPENAI_BASE_URL: Base URL for API (optional, defaults to OpenAI)
+        LLMLAB_API_KEY: API key for OpenAI-compatible endpoint
+        LLMLAB_URL: Base URL for API (optional, defaults to OpenAI)
         OPENAI_MODEL: Model name (optional, defaults to gpt-oss:20b)
 
     Returns:
         Configured ChatOpenAI instance
     """
-    api_key = os.environ.get("OPENAI_API_KEY")
+    api_key = os.environ.get("LLMLAB_API_KEY")
     if not api_key:
-        msg = "OPENAI_API_KEY environment variable is required"
+        msg = "LLMLAB_API_KEY environment variable is required"
         raise ValueError(msg)
 
-    base_url = os.environ.get("OPENAI_BASE_URL")
+    base_url = os.environ.get("LLMLAB_URL")
     model_name = os.environ.get("OPENAI_MODEL", "gpt-oss:20b")
 
     logger.info(f"Configuring llm: {base_url} with model : {model_name}")
@@ -563,8 +563,8 @@ def generate_and_save(
     """Generate synthetic data and save to file.
 
     Uses environment variables for LLM configuration:
-        OPENAI_API_KEY: API key (required)
-        OPENAI_BASE_URL: Base URL for API (optional)
+        LLMLAB_API_KEY: API key (required)
+        LLMLAB_URL: Base URL for API (optional)
         OPENAI_MODEL: Model name (optional, defaults to gpt-oss:20b)
 
     Args:

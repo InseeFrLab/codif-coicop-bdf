@@ -83,7 +83,7 @@ Arbitrage final des prédictions par un LLM-as-judge : fusionne les sorties de `
   - `s3://.../run-rag/predictions.parquet`
   - `s3://.../run-ttc/predictions.parquet`
 - Sortie : `s3://.../decide-coicop/predictions.parquet`
-- Utilise un endpoint OpenAI-compatible (`OPENAI_API_KEY`, optionnellement `OPENAI_BASE_URL` pour un backend non-OpenAI)
+- Utilise un endpoint OpenAI-compatible (`LLMLAB_API_KEY`, optionnellement `LLMLAB_URL` pour un backend non-OpenAI)
 - Court-circuit consensus : si les trois sources convergent (et que la confiance TTC ≥ 0.90), aucune requête LLM n'est émise
 - Filtrage de nomenclature : seules les sections COICOP pertinentes sont envoyées au prompt (réduction ×4–10 du nombre de tokens)
 - Reprise automatique : relancer l'étape avec le même `run_id`/`run_date` reprend les observations non traitées depuis le fichier de sortie existant
@@ -136,7 +136,7 @@ LANGFUSE_BASE_URL, LANGFUSE_PUBLIC_KEY, LANGFUSE_SECRET_KEY,
 MLFLOW_TRACKING_URI, MLFLOW_TRACKING_USERNAME, MLFLOW_TRACKING_PASSWORD,
 OLLAMA_URL, OLLAMA_API_KEY,
 DDC_ENCRYPTION_KEY,
-OPENAI_API_KEY, OPENAI_BASE_URL   # requis pour decide-coicop (OPENAI_BASE_URL optionnel)
+LLMLAB_API_KEY, LLMLAB_URL   # requis pour decide-coicop (LLMLAB_URL optionnel)
 ```
 
 ### Avec la CLI Argo

@@ -433,7 +433,7 @@ def call_llm_sync(prompt: str, model: str, client: OpenAI) -> DecisionCoicop:
             max_tokens=512,
         )
     except openai.AuthenticationError as exc:
-        logger.error("Authentification échouée (vérifiez OPENAI_API_KEY) : %s", exc)
+        logger.error("Authentification échouée (vérifiez LLMLAB_API_KEY) : %s", exc)
         raise
     except openai.RateLimitError as exc:
         logger.warning("Rate limit après %.2fs : %s", time.perf_counter() - t0, exc)
@@ -730,11 +730,11 @@ async def run_batch(
     )
 
     # ── Client async ──
-    api_key = os.environ["OPENAI_API_KEY"]
+    api_key = os.environ["LLMLAB_API_KEY"]
     kwargs: dict = {"api_key": api_key}
-    if base_url := os.environ.get("OPENAI_BASE_URL"):
+    if base_url := os.environ.get("LLMLAB_URL"):
         kwargs["base_url"] = base_url
-        logger.debug("OPENAI_BASE_URL=%s", base_url)
+        logger.debug("LLMLAB_URL=%s", base_url)
     client = AsyncOpenAI(**kwargs)
 
     semaphore = asyncio.Semaphore(concurrency)
