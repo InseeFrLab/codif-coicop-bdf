@@ -1,0 +1,14 @@
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+
+.html
+.log
+
+/.quarto/
+**/*.quarto_ipynb
+public/*
+
+rcpp_cache/*
+

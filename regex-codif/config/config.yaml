@@ -1,0 +1,12 @@
+paths:
+  train_set: "s3://projet-budget-famille/data/workflow_runs/{run_date}/{run_id}/preprocessing/raw_train.parquet"
+  test_set:  "s3://projet-budget-famille/data/workflow_runs/{run_date}/{run_id}/preprocessing/raw_test.parquet"
+  error_pred: "s3://projet-budget-famille/data/workflow_runs/{run_date}/{run_id}/codif-regex/error_regex_pred.parquet"
+  output:
+    pred:      "s3://projet-budget-famille/data/workflow_runs/{run_date}/{run_id}/codif-regex/REGEX_pred.parquet"
+    test_set:  "s3://projet-budget-famille/data/workflow_runs/{run_date}/{run_id}/codif-regex/raw_test_without_regex.parquet"
+    train_set: "s3://projet-budget-famille/data/workflow_runs/{run_date}/{run_id}/codif-regex/raw_train_without_regex.parquet"
+
+S3:
+  BUCKET: "projet-budget-famille"
+  export: True

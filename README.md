@@ -7,23 +7,25 @@ Pipeline d'orchestration pour la codification automatique des produits de l'enqu
 Le pipeline est orchestré via Argo Workflows (`argo/pipeline.yaml`) selon le DAG suivant :
 
 ```
-                   ┌──→ prune-coicop ──→ create-vector-db ──┐  (skippable)
-preprocessing ─────┤                                         ├──→ run-rag
-                   └──→ prune-annotations ──→ codif-regex ───┘
-                                                └──→ codif-lcs
+                   ┌──→ prune-coicop ──→ create-vector-db ─────────────┐  (skippable)
+   preprocessing ──┤                                                   ├──→ run-rag ─┐
+                   └──→ codif-regex ──→ prune-annotations ─────────────┘             │
+                                 ├──→ codif-lcs ─────────────────────────────────────┼──→ decide-coicop ──→ report  (opt-in)
+                                 └──→ run-ttc  ──────────────────────────────────────┘
 ```
 
 ### preprocessing
 
 Construit le dataset d'annotations à partir des sources brutes (COPAIN, historique, suggester).
 
-- Clone et exécute le repo [`construction-dataset`](https://git.lab.sspcloud.fr/ssplab/experimentation-bdf/construction-dataset)
+- Code dans [`preprocessing/`](./preprocessing/) (ex-repo `construction-dataset`)
 - Exporte le dataset consolidé sur S3
 
 ### prune-coicop *(skippable)*
 
 Élague les hiérarchies linéaires de la nomenclature COICOP brute.
 
+- Code dans [`coicop-rag/`](./coicop-rag/) (`scripts/0_prunning_coicop.py`)
 - Supprime le niveau 5 (Poste) de la nomenclature
 - Produit les notices prunées et la table de mapping niveau 4 sur S3
 
@@ -31,6 +33,7 @@ Construit le dataset d'annotations à partir des sources brutes (COPAIN, histori
 
 Encode les notices COICOP dans une base vectorielle Qdrant.
 
+- Code dans [`coicop-rag/`](./coicop-rag/) (`scripts/0_create_vector_db.py`)
 - Génère les embeddings via le modèle VLLM (`VLLM_EMBEDDING_URL`)
 - Indexe les vecteurs dans Qdrant (`QDRANT_URL`)
 
@@ -38,26 +41,84 @@ Encode les notices COICOP dans une base vectorielle Qdrant.
 
 Tronque les codes d'annotation au niveau 4 et normalise les codes de vérité terrain via la table de mapping COICOP.
 
+- Code dans [`coicop-rag/`](./coicop-rag/) (`scripts/1_prune_annotations.py`)
+
 ### codif-regex
 
 Codification des libellés produits par approche regex.
 
-- Clone et exécute le repo [`regex_codif`](https://git.lab.sspcloud.fr/ssplab/experimentation-bdf/regex_codif)
+- Code dans [`regex-codif/`](./regex-codif/) (ex-repo `regex_codif`)
 
 ### codif-lcs
 
 Codification des libellés produits par approche LCS (Longest Common Subsequence) en R.
 
-- Clone et exécute le repo [`stats-annotations`](https://git.lab.sspcloud.fr/ssplab/experimentation-bdf/stats-annotations)
+- Code dans [`stats-annotations/`](./stats-annotations/)
 
 ### run-rag
 
 Classifie les annotations via un pipeline RAG (Retrieval-Augmented Generation).
 
+- Code dans [`coicop-rag/`](./coicop-rag/) (`scripts/2_run_rag.py`)
 - Récupère les contextes pertinents depuis Qdrant
 - Génère les codes COICOP via le modèle VLLM (`VLLM_GENERATION_URL`)
 - Enregistre les métriques dans MLflow (`MLFLOW_TRACKING_URI`)
 - Trace les expériences dans Langfuse (`LANGFUSE_BASE_URL`)
+
+### run-ttc
+
+Prédictions TTC via un classifieur pré-entraîné.
+
+- Code dans [`coicop-bdf-classifier/`](./coicop-bdf-classifier/) (ex-repo `coicop_bdf_classifier`, bientôt archivé en amont)
+- L'étape argo utilise actuellement l'image pré-construite `ghcr.io/micedre/coicop_bdf_classifier:latest`
+- Étape destinée à être supprimée à terme
+
+### decide-coicop
+
+Arbitrage final des prédictions par un LLM-as-judge : fusionne les sorties de `codif-lcs`, `run-rag` et `run-ttc` et sélectionne le meilleur code COICOP par observation.
+
+- Code dans [`coicop-bdf-classifier/`](./coicop-bdf-classifier/) (sous-commande `uv run main.py decide-coicop`)
+- Entrées :
+  - `s3://.../codif-lcs/raw_test_LCS.parquet`
+  - `s3://.../run-rag/predictions.parquet`
+  - `s3://.../run-ttc/predictions.parquet`
+- Sortie : `s3://.../decide-coicop/predictions.parquet`
+- Utilise un endpoint OpenAI-compatible (`OPENAI_API_KEY`, optionnellement `OPENAI_BASE_URL` pour un backend non-OpenAI)
+- Court-circuit consensus : si les trois sources convergent (et que la confiance TTC ≥ 0.90), aucune requête LLM n'est émise
+- Filtrage de nomenclature : seules les sections COICOP pertinentes sont envoyées au prompt (réduction ×4–10 du nombre de tokens)
+- Reprise automatique : relancer l'étape avec le même `run_id`/`run_date` reprend les observations non traitées depuis le fichier de sortie existant
+
+### report *(opt-in)*
+
+Rapport d'exactitude Quarto (HTML auto-contenu) sur la sortie de `decide-coicop`.
+
+- Code dans [`report/`](./report/) — Quarto + Python (pandas, duckdb, matplotlib, seaborn)
+- Déclenché par `skip-report=false` ; désactivé par défaut
+- Entrée : `s3://.../decide-coicop/predictions.parquet`
+- Sortie : `s3://.../report/report.html`
+- Contenu :
+  - Accuracy globale par niveau COICOP (1 à 5) pour **LCS, RAG, TTC, LLM**
+  - Accuracy par `shop`, `shop_type_name` et **quartile de `budget`**
+  - Matrice de confusion (top 20 paires `code` vs `llm_code` au niveau 4)
+  - Calibration : accuracy par bucket de `llm_confiance`
+  - Consensus vs désaccord des sources amont : apport de l'arbitrage LLM
+- Méthodologie *accuracy par niveau* : tronquer `code` et la prédiction aux `k` premiers segments ; les observations dont la vérité a moins de `k` niveaux sont exclues du dénominateur à ce niveau
+
+## Structure du dépôt
+
+Ce dépôt rassemble le code de toutes les étapes du pipeline, auparavant dispersé dans plusieurs repos.
+
+| Dossier | Origine | Rôle |
+|---|---|---|
+| [`argo/`](./argo/) | — | Workflows Argo (`pipeline.yaml`, `ttc-pipeline.yaml`, `rbac.yaml`) |
+| [`preprocessing/`](./preprocessing/) | `construction-dataset` | Étape `preprocessing` |
+| [`regex-codif/`](./regex-codif/) | `regex_codif` | Étape `codif-regex` |
+| [`coicop-rag/`](./coicop-rag/) | `coicop-rag` | Étapes `prune-coicop`, `prune-annotations`, `create-vector-db`, `run-rag` |
+| [`stats-annotations/`](./stats-annotations/) | `stats-annotations` | Étape `codif-lcs` (R) |
+| [`coicop-bdf-classifier/`](./coicop-bdf-classifier/) | `coicop_bdf_classifier` | Classifieur TTC (source vendorisée, image pré-construite encore utilisée par `run-ttc`) |
+| [`report/`](./report/) | — | Rapport Quarto d'exactitude (étape `report`, opt-in) |
+
+Chaque sous-dossier Python conserve son propre `pyproject.toml` / `uv.lock` et peut être développé et exécuté indépendamment.
 
 ## Lancer le workflow
 
@@ -74,7 +135,8 @@ QDRANT_URL, QDRANT_API_KEY, QDRANT_API_PORT,
 LANGFUSE_BASE_URL, LANGFUSE_PUBLIC_KEY, LANGFUSE_SECRET_KEY,
 MLFLOW_TRACKING_URI, MLFLOW_TRACKING_USERNAME, MLFLOW_TRACKING_PASSWORD,
 OLLAMA_URL, OLLAMA_API_KEY,
-DDC_ENCRYPTION_KEY
+DDC_ENCRYPTION_KEY,
+OPENAI_API_KEY, OPENAI_BASE_URL   # requis pour decide-coicop (OPENAI_BASE_URL optionnel)
 ```
 
 ### Avec la CLI Argo
@@ -94,6 +156,9 @@ argo submit argo/pipeline.yaml -p skip-vector-db=true
 
 # Combinaison de paramètres
 argo submit argo/pipeline.yaml -p skip-vector-db=true -p sample_size=100
+
+# Activer le rapport d'exactitude (désactivé par défaut)
+argo submit argo/pipeline.yaml -p skip-report=false
 ```
 
 ### Avec kubectl (sans CLI Argo)
@@ -120,3 +185,6 @@ print(yaml.dump(w, default_flow_style=False))
 | `sample_size` | *(vide)* | Nombre d'annotations à traiter (toutes si vide) |
 | `model-name` | *(vide)* | Modèle LLM à utiliser pour `run-rag` (défaut du config si vide) |
 | `skip-vector-db` | `false` | Si `true`, saute `prune-coicop` et `create-vector-db` |
+| `decide-model` | `gemma4-26b-moe` | Modèle LLM utilisé par `decide-coicop` (vide → défaut `gpt-4o` de la commande) |
+| `decide-concurrency` | `5` | Nombre d'appels LLM parallèles de `decide-coicop` |
+| `skip-report` | `true` | Si `false`, génère le rapport Quarto d'exactitude après `decide-coicop` |

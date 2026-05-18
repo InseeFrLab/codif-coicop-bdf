@@ -1,0 +1,1439 @@
+---
+title: "Explorateur de Prédictions COICOP"
+subtitle: "Analyse interactive des résultats du classifieur — BDF INSEE"
+format:
+  dashboard:
+    theme: cosmo
+    scrolling: true
+    nav-buttons: []
+lang: fr
+---
+
+```{ojs}
+//| output: false
+/* Custom CSS injected once */
+html`<style>
+  /* General dashboard readability */
+  .dashboard-page { font-family: "Inter", system-ui, sans-serif; }
+
+  /* Metric cards */
+  .metric-card {
+    border-radius: 10px;
+    padding: 1rem 0.75rem;
+    text-align: center;
+    color: white;
+    box-shadow: 0 2px 8px rgba(0,0,0,.10);
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+  }
+  .metric-card .value {
+    font-size: 1.7em;
+    font-weight: 800;
+    line-height: 1.15;
+    letter-spacing: -0.02em;
+  }
+  .metric-card .label {
+    font-size: 0.78em;
+    opacity: 0.92;
+    margin-top: 0.2rem;
+  }
+
+  /* Tables */
+  .dash-table {
+    font-size: 0.85em;
+    width: 100%;
+    border-collapse: separate;
+    border-spacing: 0;
+  }
+  .dash-table thead th {
+    background: #f1f3f5;
+    font-weight: 600;
+    font-size: 0.8em;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: #495057;
+    padding: 0.55rem 0.6rem;
+    border-bottom: 2px solid #dee2e6;
+    position: sticky;
+    top: 0;
+    z-index: 1;
+  }
+  .dash-table tbody td {
+    padding: 0.45rem 0.6rem;
+    border-bottom: 1px solid #f1f3f5;
+    vertical-align: middle;
+  }
+  .dash-table tbody tr:hover {
+    background: #e8f4fd !important;
+  }
+
+  /* Section titles inside cards */
+  .section-title {
+    font-size: 0.82em;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: #6c757d;
+    margin-bottom: 0.8rem;
+    padding-bottom: 0.3rem;
+    border-bottom: 2px solid #e9ecef;
+  }
+
+  /* Progress bars */
+  .acc-bar-bg {
+    background: #e9ecef;
+    border-radius: 6px;
+    height: 10px;
+    overflow: hidden;
+  }
+  .acc-bar-fill { height: 100%; border-radius: 6px; transition: width 0.3s; }
+
+  /* Sidebar tweaks */
+  .sidebar h5, .sidebar h6 { font-size: 0.85em !important; }
+  .sidebar hr { margin: 0.6rem 0; border-color: #e9ecef; }
+
+  /* Filter pills */
+  .filter-stat {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    padding: 0.2rem 0.6rem;
+    border-radius: 20px;
+    font-size: 0.8em;
+    font-weight: 600;
+  }
+
+  /* Error explorer table row colors */
+  .sev-correct   { background: #d8f3dc !important; }
+  .sev-nearmiss  { background: #e8f5e9 !important; }
+  .sev-l3faux    { background: #fff8e1 !important; }
+  .sev-l2faux    { background: #fff3e0 !important; }
+  .sev-farmiss   { background: #fce4ec !important; }
+
+  /* Code badges */
+  .code-badge {
+    display: inline-block;
+    font-family: monospace;
+    font-size: 0.82em;
+    padding: 0.1rem 0.4rem;
+    border-radius: 4px;
+    background: #f1f3f5;
+    color: #212529;
+  }
+</style>`
+```
+
+
+# {.sidebar}
+
+```{ojs}
+//| output: false
+db = DuckDBClient.of({})
+```
+
+```{ojs}
+//| output: false
+fmt_n   = d3.format(",")
+fmt_pct = d3.format(".1f")
+fmt_conf = d3.format(".3f")
+```
+
+```{ojs}
+html`<h5 style="margin:0 0 .4rem; color:#4361ee; font-weight:700">Fichier de predictions</h5>`
+
+viewof predictions_url = Inputs.text({
+  label: "URL HTTPS ou S3 (parquet)",
+  placeholder: "https://…/predictions.parquet",
+  value: ""
+})
+
+viewof load_btn = Inputs.button("Charger les donnees", {
+  value: 0,
+  reduce: (v) => v + 1
+})
+```
+
+```{ojs}
+{
+  load_btn;
+  if (!predictions_url?.trim())
+    return html`<span style="color:#8d99ae; font-size:.82em">En attente d'une URL</span>`
+  if (data_ready?.status === "loading")
+    return html`<span style="color:#f77f00; font-size:.82em">Chargement…</span>`
+  if (data_ready?.status === "error")
+    return html`<span style="color:#d62828; font-size:.82em">Erreur : ${data_ready.message?.slice(0,80)}</span>`
+  if (data_ready?.status === "ok")
+    return html`<span style="color:#2ec4b6; font-size:.82em">${fmt_n(data_ready.n)} observations chargees</span>`
+  return html`<span style="color:#8d99ae; font-size:.82em">Inactif</span>`
+}
+```
+
+```{ojs}
+html`<hr>`
+html`<h6 style="color:#495057; font-weight:700">Filtres globaux</h6>`
+
+viewof global_exclude_tech = Inputs.toggle({
+  label: "Exclure codes 98/99",
+  value: true
+})
+
+viewof global_source = Inputs.select(
+  available_sources,
+  { label: "Source", value: "Toutes" }
+)
+
+viewof global_year = Inputs.select(
+  available_years,
+  { label: "Annee", value: "Toutes" }
+)
+
+viewof global_conf_min = Inputs.range([0, 1], {
+  label: "Confiance min.",
+  step: 0.05,
+  value: 0
+})
+```
+
+
+# Vue d'ensemble
+
+```{ojs}
+//| output: false
+
+/* ================================================================
+   DATA LOADING
+   ================================================================ */
+
+data_ready = {
+  load_btn;
+  if (!predictions_url?.trim()) return { status: "empty" };
+
+  const url = predictions_url.trim();
+
+  try {
+    const resp = await fetch(url);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status} — ${resp.statusText}`);
+    const buf = new Uint8Array(await resp.arrayBuffer());
+
+    await db._db.registerFileBuffer("predictions.parquet", buf);
+
+    await db.query(`
+      CREATE OR REPLACE VIEW preds AS
+      WITH base AS (
+        SELECT * FROM read_parquet('predictions.parquet')
+      ),
+      leveled AS (
+        SELECT *,
+          lpad(split_part(CAST(code AS VARCHAR), '.', 1), 2, '0')
+            AS true_level1,
+          CASE WHEN len(string_split(CAST(code AS VARCHAR), '.')) >= 2
+            THEN lpad(split_part(CAST(code AS VARCHAR), '.', 1), 2, '0')
+                 || '.' || split_part(CAST(code AS VARCHAR), '.', 2)
+            ELSE NULL END AS true_level2,
+          CASE WHEN len(string_split(CAST(code AS VARCHAR), '.')) >= 3
+            THEN lpad(split_part(CAST(code AS VARCHAR), '.', 1), 2, '0')
+                 || '.' || split_part(CAST(code AS VARCHAR), '.', 2)
+                 || '.' || split_part(CAST(code AS VARCHAR), '.', 3)
+            ELSE NULL END AS true_level3,
+          CASE WHEN len(string_split(CAST(code AS VARCHAR), '.')) >= 4
+            THEN lpad(split_part(CAST(code AS VARCHAR), '.', 1), 2, '0')
+                 || '.' || split_part(CAST(code AS VARCHAR), '.', 2)
+                 || '.' || split_part(CAST(code AS VARCHAR), '.', 3)
+                 || '.' || split_part(CAST(code AS VARCHAR), '.', 4)
+            ELSE NULL END AS true_level4,
+          lpad(split_part(CAST(code AS VARCHAR), '.', 1), 2, '0')
+            IN ('98', '99') AS is_technical,
+          len(string_split(CAST(code AS VARCHAR), '.')) AS code_depth,
+          TRY_CAST(confidence AS DOUBLE) AS confidence_num,
+          TRY_CAST(budget AS DOUBLE) AS budget_num,
+          TRY_CAST(annee AS INTEGER) AS annee_int,
+          len(COALESCE(l_pr_product, '')) AS text_len
+        FROM base
+      ),
+      with_errors AS (
+        SELECT *,
+          (true_level1 IS NOT NULL AND predicted_level1 IS NOT NULL
+           AND true_level1 <> predicted_level1) AS err_l1,
+          (true_level2 IS NOT NULL AND predicted_level2 IS NOT NULL
+           AND true_level2 <> predicted_level2) AS err_l2,
+          (true_level3 IS NOT NULL AND predicted_level3 IS NOT NULL
+           AND true_level3 <> predicted_level3) AS err_l3,
+          (true_level4 IS NOT NULL AND predicted_level4 IS NOT NULL
+           AND true_level4 <> predicted_level4) AS err_l4,
+          CASE
+            WHEN true_level4 IS NULL OR predicted_level4 IS NULL THEN NULL
+            WHEN true_level1 IS NOT NULL
+             AND true_level1 <> predicted_level1 THEN 'far-miss'
+            WHEN true_level2 IS NOT NULL
+             AND true_level2 <> predicted_level2 THEN 'L2 faux'
+            WHEN true_level3 IS NOT NULL
+             AND true_level3 <> predicted_level3 THEN 'L3 faux'
+            WHEN true_level4 <> predicted_level4 THEN 'near-miss'
+            ELSE 'correct'
+          END AS error_severity,
+          CASE
+            WHEN TRY_CAST(budget AS DOUBLE) BETWEEN 0 AND 2    THEN '0-2 €'
+            WHEN TRY_CAST(budget AS DOUBLE) BETWEEN 2 AND 5    THEN '2-5 €'
+            WHEN TRY_CAST(budget AS DOUBLE) BETWEEN 5 AND 10   THEN '5-10 €'
+            WHEN TRY_CAST(budget AS DOUBLE) BETWEEN 10 AND 20  THEN '10-20 €'
+            WHEN TRY_CAST(budget AS DOUBLE) BETWEEN 20 AND 50  THEN '20-50 €'
+            WHEN TRY_CAST(budget AS DOUBLE) BETWEEN 50 AND 100 THEN '50-100 €'
+            WHEN TRY_CAST(budget AS DOUBLE) > 100              THEN '100+ €'
+            ELSE NULL
+          END AS budget_tranche
+        FROM leveled
+      )
+      SELECT * FROM with_errors
+    `);
+
+    const cols = await db.query(`
+      SELECT column_name FROM information_schema.columns
+      WHERE table_name = 'preds'
+        AND column_name LIKE 'predicted_level4_top%'
+      ORDER BY column_name
+    `);
+    const topk_available = cols.map(c => c.column_name);
+
+    const test = await db.query("SELECT CAST(COUNT(*) AS INTEGER) AS n FROM preds");
+    return { status: "ok", n: Number(test[0].n), topk_cols: topk_available };
+  } catch(e) {
+    return { status: "error", message: e.message };
+  }
+}
+
+available_sources = {
+  if (data_ready?.status !== "ok") return ["Toutes"];
+  const rows = await db.query(`
+    SELECT DISTINCT source FROM preds WHERE source IS NOT NULL ORDER BY source
+  `);
+  return ["Toutes", ...rows.map(r => r.source)];
+}
+
+available_years = {
+  if (data_ready?.status !== "ok") return ["Toutes"];
+  const rows = await db.query(`
+    SELECT DISTINCT annee_int FROM preds WHERE annee_int IS NOT NULL ORDER BY annee_int
+  `);
+  return ["Toutes", ...rows.map(r => String(r.annee_int))];
+}
+
+available_shop_types = {
+  if (data_ready?.status !== "ok") return ["Tous"];
+  const rows = await db.query(`
+    SELECT DISTINCT shop_type_name FROM preds
+    WHERE shop_type_name IS NOT NULL ORDER BY shop_type_name
+  `);
+  return ["Tous", ...rows.map(r => r.shop_type_name)];
+}
+
+global_where = {
+  const parts = ["1=1"];
+  if (global_exclude_tech) parts.push("NOT is_technical");
+  if (global_source !== "Toutes") parts.push(`source = '${global_source.replace(/'/g,"''")}'`);
+  if (global_year !== "Toutes") parts.push(`annee_int = ${global_year}`);
+  if (global_conf_min > 0) parts.push(`confidence_num >= ${global_conf_min}`);
+  return parts.join(" AND ");
+}
+```
+
+## Row {height="130px"}
+
+```{ojs}
+{
+  if (data_ready?.status !== "ok") {
+    return html`<div style="color:#8d99ae; padding:1.5rem; text-align:center">
+      Chargez un fichier parquet pour afficher les metriques.
+    </div>`
+  }
+
+  const stats = await db.query(`
+    SELECT
+      CAST(COUNT(*) AS INTEGER) AS n_total,
+      CAST(SUM(CASE WHEN is_technical THEN 1 ELSE 0 END) AS INTEGER) AS n_tech,
+      AVG(CASE WHEN NOT is_technical AND true_level1 IS NOT NULL
+               AND predicted_level1 IS NOT NULL
+               AND true_level1 = predicted_level1 THEN 1.0 ELSE 0.0 END) * 100 AS acc_l1,
+      AVG(CASE WHEN NOT is_technical AND true_level4 IS NOT NULL
+               AND predicted_level4 IS NOT NULL
+               AND true_level4 = predicted_level4 THEN 1.0 ELSE 0.0 END) * 100 AS acc_l4,
+      AVG(CASE WHEN NOT is_technical THEN confidence_num END) AS mean_conf
+    FROM preds
+    WHERE ${global_where}
+  `);
+  const s = stats[0];
+
+  const card = (val, lbl, bg) => html`
+    <div class="metric-card" style="background:${bg}">
+      <div class="value">${val}</div>
+      <div class="label">${lbl}</div>
+    </div>`;
+
+  return html`<div style="display:grid; grid-template-columns:repeat(5,1fr); gap:.6rem; height:100%">
+    ${card(fmt_n(s.n_total), "Observations", "#4361ee")}
+    ${card(fmt_pct(s.n_tech / s.n_total * 100) + "%", "Codes techniques 98/99", "#8d99ae")}
+    ${card(fmt_pct(s.acc_l1) + "%", "Accuracy Niveau 1", s.acc_l1 >= 90 ? "#2ec4b6" : s.acc_l1 >= 70 ? "#f77f00" : "#d62828")}
+    ${card(fmt_pct(s.acc_l4) + "%", "Accuracy Niveau 4", s.acc_l4 >= 80 ? "#2ec4b6" : s.acc_l4 >= 60 ? "#f77f00" : "#d62828")}
+    ${card(fmt_conf(s.mean_conf ?? 0), "Confiance moyenne", "#6c63ff")}
+  </div>`;
+}
+```
+
+## Row
+
+### Accuracy par niveau {width="45%"}
+
+```{ojs}
+{
+  if (data_ready?.status !== "ok") return html`<p style="color:#8d99ae">…</p>`
+
+  const rows = [];
+  for (const lvl of [1,2,3,4]) {
+    const r = await db.query(`
+      SELECT
+        ${lvl} AS niveau,
+        CAST(COUNT(*) AS INTEGER) AS n,
+        AVG(CASE WHEN true_level${lvl} = predicted_level${lvl} THEN 1.0 ELSE 0.0 END) * 100 AS accuracy,
+        CAST(COUNT(DISTINCT true_level${lvl}) AS INTEGER) AS n_classes
+      FROM preds
+      WHERE ${global_where}
+        AND true_level${lvl} IS NOT NULL
+        AND predicted_level${lvl} IS NOT NULL
+    `);
+    if (r.length) rows.push(r[0]);
+  }
+
+  const levelColors = ["#4361ee", "#2ec4b6", "#f77f00", "#d62828"];
+
+  return html`
+    <div class="section-title">Performance par niveau hierarchique</div>
+    <table class="dash-table">
+      <thead><tr>
+        <th>Niveau</th>
+        <th style="text-align:right">Observations</th>
+        <th style="text-align:right">Classes</th>
+        <th style="text-align:right">Accuracy</th>
+        <th style="width:140px"></th>
+      </tr></thead>
+      <tbody>
+      ${rows.map((r, i) => {
+        const acc = Number(r.accuracy ?? 0);
+        const color = levelColors[i] || "#4361ee";
+        return html`<tr>
+          <td><span style="display:inline-block; width:10px; height:10px; border-radius:50%; background:${color}; margin-right:.4rem"></span><strong>Niveau ${r.niveau}</strong></td>
+          <td style="text-align:right; font-variant-numeric:tabular-nums">${fmt_n(r.n)}</td>
+          <td style="text-align:right; font-variant-numeric:tabular-nums">${r.n_classes}</td>
+          <td style="text-align:right"><strong style="font-variant-numeric:tabular-nums">${fmt_pct(acc)}%</strong></td>
+          <td>
+            <div class="acc-bar-bg">
+              <div class="acc-bar-fill" style="width:${acc}%; background:${color}"></div>
+            </div>
+          </td>
+        </tr>`;
+      })}
+      </tbody>
+    </table>`;
+}
+```
+
+### Top-k accuracy (niveau 4) {width="55%"}
+
+```{ojs}
+{
+  if (data_ready?.status !== "ok") return html`<p style="color:#8d99ae">…</p>`
+
+  const topk_cols = data_ready?.topk_cols ?? [];
+  const topk_data = [];
+
+  for (let k = 1; k <= 10; k++) {
+    const candidates = ["predicted_level4"];
+    for (let r = 2; r <= k; r++) {
+      const col = `predicted_level4_top${r}`;
+      if (topk_cols.includes(col)) candidates.push(col);
+    }
+    const in_clause = candidates.map(c => `CAST(${c} AS VARCHAR)`).join(", ");
+    const res = await db.query(`
+      SELECT ${k} AS k,
+        AVG(CASE WHEN CAST(true_level4 AS VARCHAR) IN (${in_clause}) THEN 1.0 ELSE 0.0 END) * 100 AS accuracy
+      FROM preds
+      WHERE ${global_where} AND true_level4 IS NOT NULL AND predicted_level4 IS NOT NULL
+    `);
+    topk_data.push({ k, accuracy: Number(res[0]?.accuracy ?? 0), available: candidates.length });
+  }
+
+  return Plot.plot({
+    height: 260,
+    marginLeft: 55,
+    marginBottom: 40,
+    style: { fontSize: "12px" },
+    x: { label: "k (top-k)", tickFormat: d => `${d}` },
+    y: { label: "Accuracy (%)", domain: [0, 100], grid: true },
+    marks: [
+      Plot.ruleY([0]),
+      Plot.areaY(topk_data, {
+        x: "k", y: "accuracy",
+        fill: "#4361ee", fillOpacity: 0.08
+      }),
+      Plot.line(topk_data, {
+        x: "k", y: "accuracy",
+        stroke: "#4361ee", strokeWidth: 2.5
+      }),
+      Plot.dot(topk_data, {
+        x: "k", y: "accuracy",
+        fill: d => d.available > 1 ? "#4361ee" : "#adb5bd",
+        r: 5, stroke: "white", strokeWidth: 1.5,
+        tip: true,
+        title: d => `Top-${d.k} : ${fmt_pct(d.accuracy)}%`
+      }),
+      Plot.text(topk_data.filter(d => [1,3,5,10].includes(d.k)), {
+        x: "k", y: "accuracy",
+        text: d => `${fmt_pct(d.accuracy)}%`,
+        dy: -14, fontSize: 11, fill: "#4361ee", fontWeight: "600"
+      })
+    ]
+  });
+}
+```
+
+## Row
+
+### Distribution des scores de confiance {width="50%"}
+
+```{ojs}
+{
+  if (data_ready?.status !== "ok") return html`<p style="color:#8d99ae">…</p>`
+
+  const bins = await db.query(`
+    SELECT
+      ROUND(confidence_num * 20) / 20 AS conf_bin,
+      CAST(COUNT(*) AS INTEGER) AS n,
+      AVG(CASE WHEN true_level4 = predicted_level4 THEN 1.0 ELSE 0.0 END) AS acc
+    FROM preds
+    WHERE ${global_where} AND confidence_num IS NOT NULL AND true_level4 IS NOT NULL
+    GROUP BY 1 ORDER BY 1
+  `);
+
+  return Plot.plot({
+    height: 240,
+    marginLeft: 55,
+    marginBottom: 40,
+    style: { fontSize: "12px" },
+    x: { label: "Score de confiance", domain: [0, 1] },
+    y: { label: "Nombre d'observations", grid: true },
+    marks: [
+      Plot.rectY(bins, {
+        x1: d => d.conf_bin - 0.025,
+        x2: d => d.conf_bin + 0.025,
+        y: "n",
+        fill: d => d.acc >= 0.9 ? "#2ec4b6" : d.acc >= 0.7 ? "#f77f00" : "#d62828",
+        rx: 2,
+        tip: true,
+        title: d => `Confiance ~ ${fmt_pct(d.conf_bin * 100)}%\nN = ${fmt_n(d.n)}\nAccuracy = ${fmt_pct(d.acc * 100)}%`
+      })
+    ]
+  });
+}
+```
+
+### Couverture vs Accuracy par seuil {width="50%"}
+
+```{ojs}
+{
+  if (data_ready?.status !== "ok") return html`<p style="color:#8d99ae">…</p>`
+
+  const tdata = await db.query(`
+    WITH base AS (
+      SELECT confidence_num AS c,
+             (true_level4 = predicted_level4)::INT AS correct
+      FROM preds
+      WHERE ${global_where}
+        AND true_level4 IS NOT NULL AND predicted_level4 IS NOT NULL
+    ),
+    thresholds AS (
+      SELECT unnest(generate_series(0, 20)) / 20.0 AS seuil
+    )
+    SELECT
+      t.seuil,
+      AVG(CASE WHEN b.c >= t.seuil THEN 1.0 ELSE 0.0 END) AS couverture,
+      COALESCE(
+        AVG(CASE WHEN b.c >= t.seuil THEN b.correct::DOUBLE ELSE NULL END),
+        0
+      ) AS accuracy
+    FROM base b CROSS JOIN thresholds t
+    GROUP BY t.seuil
+    ORDER BY t.seuil
+  `);
+
+  return Plot.plot({
+    height: 240,
+    marginLeft: 55,
+    marginBottom: 40,
+    style: { fontSize: "12px" },
+    x: { label: "Seuil de confiance", domain: [0, 1] },
+    y: { label: "(%)", domain: [0, 100], grid: true },
+    color: {
+      legend: true,
+      domain: ["Couverture", "Accuracy"],
+      range: ["#ff6b35", "#4361ee"]
+    },
+    marks: [
+      Plot.areaY(tdata, {
+        x: "seuil", y: d => d.couverture * 100,
+        fill: "#ff6b35", fillOpacity: 0.06
+      }),
+      Plot.areaY(tdata, {
+        x: "seuil", y: d => d.accuracy * 100,
+        fill: "#4361ee", fillOpacity: 0.06
+      }),
+      Plot.line(tdata, { x: "seuil", y: d => d.couverture * 100, stroke: "#ff6b35", strokeWidth: 2.5 }),
+      Plot.line(tdata, { x: "seuil", y: d => d.accuracy * 100, stroke: "#4361ee", strokeWidth: 2.5 }),
+      Plot.tip(tdata, Plot.pointerX({
+        x: "seuil",
+        title: d => `Seuil : ${fmt_pct(d.seuil * 100)}%\nCouverture : ${fmt_pct(d.couverture * 100)}%\nAccuracy : ${fmt_pct(d.accuracy * 100)}%`
+      }))
+    ]
+  });
+}
+```
+
+
+# Analyse par Criteres
+
+## Row {height="50px"}
+
+```{ojs}
+viewof analysis_dim = Inputs.select(
+  ["source", "annee", "shop_type_name", "budget_tranche"],
+  {
+    label: "Dimension d'analyse",
+    format: d => ({
+      source: "Source de donnees",
+      annee: "Annee",
+      shop_type_name: "Type de magasin",
+      budget_tranche: "Tranche de budget"
+    })[d]
+  }
+)
+```
+
+## Row
+
+### Accuracy par dimension et niveau {width="60%"}
+
+```{ojs}
+{
+  if (data_ready?.status !== "ok") return html`<p style="color:#8d99ae">Chargez un fichier.</p>`
+
+  const dim = analysis_dim;
+  const rows = await db.query(`
+    SELECT
+      COALESCE(CAST(${dim} AS VARCHAR), 'N/A') AS dim_val,
+      CAST(COUNT(*) AS INTEGER) AS n_total,
+      AVG(CASE WHEN true_level1 IS NOT NULL AND predicted_level1 IS NOT NULL
+               AND true_level1 = predicted_level1 THEN 1.0 ELSE 0.0 END) * 100 AS acc_l1,
+      AVG(CASE WHEN true_level2 IS NOT NULL AND predicted_level2 IS NOT NULL
+               AND true_level2 = predicted_level2 THEN 1.0 ELSE 0.0 END) * 100 AS acc_l2,
+      AVG(CASE WHEN true_level3 IS NOT NULL AND predicted_level3 IS NOT NULL
+               AND true_level3 = predicted_level3 THEN 1.0 ELSE 0.0 END) * 100 AS acc_l3,
+      AVG(CASE WHEN true_level4 IS NOT NULL AND predicted_level4 IS NOT NULL
+               AND true_level4 = predicted_level4 THEN 1.0 ELSE 0.0 END) * 100 AS acc_l4
+    FROM preds
+    WHERE ${global_where}
+    GROUP BY 1
+    ORDER BY n_total DESC
+    LIMIT 20
+  `);
+
+  const plot_data = rows.flatMap(r => [1,2,3,4].map(lvl => ({
+    dim_val: r.dim_val.length > 25 ? r.dim_val.slice(0,23) + "…" : r.dim_val,
+    niveau: `N${lvl}`,
+    accuracy: Number(r[`acc_l${lvl}`] ?? 0)
+  })));
+
+  return Plot.plot({
+    height: Math.max(300, rows.length * 32 + 60),
+    marginLeft: Math.min(200, Math.max(...rows.map(r => r.dim_val.length)) * 7 + 10),
+    marginRight: 60,
+    style: { fontSize: "12px" },
+    x: { label: "Accuracy (%)", domain: [0, 100], grid: true },
+    color: {
+      legend: true,
+      domain: ["N1","N2","N3","N4"],
+      range: ["#4361ee", "#2ec4b6", "#f77f00", "#d62828"]
+    },
+    marks: [
+      Plot.barX(plot_data, {
+        y: "dim_val",
+        x: "accuracy",
+        fill: "niveau",
+        tip: true,
+        title: d => `${d.dim_val} — ${d.niveau}\n${fmt_pct(d.accuracy)}%`
+      }),
+      Plot.ruleX([0])
+    ]
+  });
+}
+```
+
+### Volume et confiance {width="40%"}
+
+```{ojs}
+{
+  if (data_ready?.status !== "ok") return html`<p style="color:#8d99ae">…</p>`
+
+  const dim = analysis_dim;
+  const rows = await db.query(`
+    SELECT
+      COALESCE(CAST(${dim} AS VARCHAR), 'N/A') AS dim_val,
+      CAST(COUNT(*) AS INTEGER) AS n,
+      AVG(confidence_num) AS mean_conf
+    FROM preds
+    WHERE ${global_where}
+    GROUP BY 1
+    ORDER BY n DESC
+    LIMIT 20
+  `);
+
+  const ml = Math.min(180, Math.max(...rows.map(r => r.dim_val.length)) * 7 + 10);
+
+  const vol_chart = Plot.plot({
+    height: 220,
+    marginLeft: ml,
+    marginBottom: 35,
+    style: { fontSize: "11px" },
+    x: { label: "Observations", grid: true },
+    marks: [
+      Plot.barX(rows, {
+        y: d => d.dim_val.length > 22 ? d.dim_val.slice(0,20) + "…" : d.dim_val,
+        x: "n",
+        fill: "#4361ee",
+        fillOpacity: 0.8,
+        rx: 3,
+        sort: { y: "-x" },
+        tip: true,
+        title: d => `${d.dim_val}\nN = ${fmt_n(d.n)}`
+      }),
+      Plot.ruleX([0])
+    ]
+  });
+
+  const conf_chart = Plot.plot({
+    height: 220,
+    marginLeft: ml,
+    marginBottom: 35,
+    style: { fontSize: "11px" },
+    x: { label: "Confiance moyenne", domain: [0, 1], grid: true },
+    marks: [
+      Plot.barX(rows, {
+        y: d => d.dim_val.length > 22 ? d.dim_val.slice(0,20) + "…" : d.dim_val,
+        x: "mean_conf",
+        fill: "#2ec4b6",
+        fillOpacity: 0.8,
+        rx: 3,
+        sort: { y: "-x" },
+        tip: true,
+        title: d => `${d.dim_val}\nConfiance = ${fmt_conf(d.mean_conf)}`
+      }),
+      Plot.ruleX([0])
+    ]
+  });
+
+  return html`
+    <div class="section-title">Volume par dimension</div>
+    ${vol_chart}
+    <div class="section-title" style="margin-top:1rem">Confiance par dimension</div>
+    ${conf_chart}`;
+}
+```
+
+## Row {.tabset}
+
+### Heatmap accuracy x Niveau
+
+```{ojs}
+{
+  if (data_ready?.status !== "ok") return html`<p style="color:#8d99ae">…</p>`
+
+  const dim = analysis_dim;
+  const heat_data = await db.query(`
+    WITH top_vals AS (
+      SELECT COALESCE(CAST(${dim} AS VARCHAR), 'N/A') AS dim_val, CAST(COUNT(*) AS INTEGER) AS n
+      FROM preds WHERE ${global_where}
+      GROUP BY 1 ORDER BY n DESC LIMIT 15
+    )
+    SELECT
+      COALESCE(CAST(${dim} AS VARCHAR), 'N/A') AS dim_val,
+      1 AS niveau,
+      AVG(CASE WHEN true_level1 = predicted_level1 THEN 1.0 ELSE 0.0 END) * 100 AS accuracy,
+      CAST(COUNT(*) AS INTEGER) AS n
+    FROM preds JOIN top_vals ON COALESCE(CAST(${dim} AS VARCHAR), 'N/A') = top_vals.dim_val
+    WHERE ${global_where} AND true_level1 IS NOT NULL
+    GROUP BY 1, 2
+    UNION ALL
+    SELECT COALESCE(CAST(${dim} AS VARCHAR), 'N/A'), 2,
+      AVG(CASE WHEN true_level2 = predicted_level2 THEN 1.0 ELSE 0.0 END) * 100,
+      CAST(COUNT(*) AS INTEGER)
+    FROM preds JOIN top_vals ON COALESCE(CAST(${dim} AS VARCHAR), 'N/A') = top_vals.dim_val
+    WHERE ${global_where} AND true_level2 IS NOT NULL
+    GROUP BY 1, 2
+    UNION ALL
+    SELECT COALESCE(CAST(${dim} AS VARCHAR), 'N/A'), 3,
+      AVG(CASE WHEN true_level3 = predicted_level3 THEN 1.0 ELSE 0.0 END) * 100,
+      CAST(COUNT(*) AS INTEGER)
+    FROM preds JOIN top_vals ON COALESCE(CAST(${dim} AS VARCHAR), 'N/A') = top_vals.dim_val
+    WHERE ${global_where} AND true_level3 IS NOT NULL
+    GROUP BY 1, 2
+    UNION ALL
+    SELECT COALESCE(CAST(${dim} AS VARCHAR), 'N/A'), 4,
+      AVG(CASE WHEN true_level4 = predicted_level4 THEN 1.0 ELSE 0.0 END) * 100,
+      CAST(COUNT(*) AS INTEGER)
+    FROM preds JOIN top_vals ON COALESCE(CAST(${dim} AS VARCHAR), 'N/A') = top_vals.dim_val
+    WHERE ${global_where} AND true_level4 IS NOT NULL
+    GROUP BY 1, 2
+    ORDER BY 1, 2
+  `);
+
+  return Plot.plot({
+    height: Math.max(280, heat_data.filter(d => d.niveau === 1).length * 32 + 60),
+    marginLeft: 180,
+    marginRight: 40,
+    style: { fontSize: "12px" },
+    color: {
+      type: "linear", domain: [0, 100],
+      range: ["#d62828", "#f77f00", "#2ec4b6"],
+      legend: true, label: "Accuracy (%)"
+    },
+    marks: [
+      Plot.cell(heat_data, {
+        x: d => `Niveau ${d.niveau}`,
+        y: d => d.dim_val.length > 25 ? d.dim_val.slice(0,23) + "…" : d.dim_val,
+        fill: "accuracy",
+        rx: 4,
+        inset: 1.5,
+        tip: true,
+        title: d => `${d.dim_val} — Niveau ${d.niveau}\nAccuracy : ${fmt_pct(d.accuracy)}%\nN = ${fmt_n(d.n)}`
+      }),
+      Plot.text(heat_data, {
+        x: d => `Niveau ${d.niveau}`,
+        y: d => d.dim_val.length > 25 ? d.dim_val.slice(0,23) + "…" : d.dim_val,
+        text: d => `${fmt_pct(d.accuracy)}`,
+        fill: d => d.accuracy > 55 ? "white" : "#212529",
+        fontSize: 11, fontWeight: "600"
+      })
+    ]
+  });
+}
+```
+
+
+# Explorateur d'Erreurs
+
+## Row {height="100px"}
+
+```{ojs}
+html`<div class="row g-2">`
+
+viewof err_search_text = Inputs.text({
+  label: "Libelle produit",
+  placeholder: "ex: jambon, yaourt…",
+  value: ""
+})
+
+viewof err_true_code = Inputs.text({
+  label: "Code vrai (prefixe)",
+  placeholder: "ex: 01, 01.1",
+  value: ""
+})
+
+viewof err_pred_code = Inputs.text({
+  label: "Code predit (prefixe)",
+  placeholder: "ex: 02, 03.1",
+  value: ""
+})
+
+viewof err_source = Inputs.select(
+  available_sources,
+  { label: "Source", value: "Toutes" }
+)
+
+viewof err_year = Inputs.select(
+  available_years,
+  { label: "Annee", value: "Toutes" }
+)
+
+viewof err_shop_type = Inputs.select(
+  available_shop_types,
+  { label: "Type magasin", value: "Tous" }
+)
+
+viewof err_conf_min = Inputs.range([0, 1], {
+  label: "Confiance min",
+  step: 0.05,
+  value: 0
+})
+
+viewof err_conf_max = Inputs.range([0, 1], {
+  label: "Confiance max",
+  step: 0.05,
+  value: 1
+})
+
+viewof err_severity = Inputs.select(
+  ["Tout", "Erreurs seulement", "Correct seulement", "near-miss", "L2 faux", "L3 faux", "far-miss"],
+  { label: "Type d'erreur" }
+)
+
+html`</div>`
+```
+
+## Row {height="90px"}
+
+```{ojs}
+{
+  if (data_ready?.status !== "ok") return html`<p style="color:#8d99ae">…</p>`
+
+  const { where_clause } = error_filter_state;
+
+  const stats = await db.query(`
+    SELECT
+      CAST(COUNT(*) AS INTEGER) AS n_total,
+      CAST(SUM(CASE WHEN err_l4 THEN 1 ELSE 0 END) AS INTEGER) AS n_errors,
+      AVG(confidence_num) AS mean_conf,
+      CAST(COUNT(DISTINCT true_level4) AS INTEGER) AS n_codes
+    FROM preds
+    WHERE ${where_clause} AND true_level4 IS NOT NULL AND predicted_level4 IS NOT NULL
+  `);
+  const s = stats[0];
+  const err_rate = s.n_total > 0 ? s.n_errors / s.n_total : 0;
+
+  const pill = (val, lbl, bg, fg) => html`
+    <div style="
+      background:${bg}; color:${fg}; border-radius:10px;
+      padding:.6rem 1rem; text-align:center; flex:1;
+      box-shadow:0 1px 4px rgba(0,0,0,.06)
+    ">
+      <div style="font-size:1.4em; font-weight:800; line-height:1.1">${val}</div>
+      <div style="font-size:.72em; opacity:.85; margin-top:.15rem">${lbl}</div>
+    </div>`;
+
+  return html`<div style="display:flex; gap:.5rem; height:100%">
+    ${pill(fmt_n(s.n_total), "Resultats filtres", "#eef0ff", "#4361ee")}
+    ${pill(fmt_n(s.n_errors), "Erreurs N4", "#fce4ec", "#d62828")}
+    ${pill(fmt_pct(err_rate * 100) + "%", "Taux d'erreur L4",
+           err_rate < 0.1 ? "#d8f3dc" : err_rate < 0.25 ? "#fff8e1" : "#fce4ec",
+           err_rate < 0.1 ? "#2d6a4f" : err_rate < 0.25 ? "#e65100" : "#c62828")}
+    ${pill(s.n_codes, "Codes distincts", "#f1f3f5", "#495057")}
+  </div>`;
+}
+```
+
+## Row
+
+### Resultats {width="65%"}
+
+```{ojs}
+//| output: false
+error_filter_state = {
+  const parts = ["true_level4 IS NOT NULL", "predicted_level4 IS NOT NULL"];
+
+  if (global_exclude_tech) parts.push("NOT is_technical");
+
+  if (err_search_text?.trim())
+    parts.push(`LOWER(l_pr_product) LIKE '%${err_search_text.trim().toLowerCase().replace(/'/g,"''")}%'`);
+
+  if (err_true_code?.trim())
+    parts.push(`(true_level4 LIKE '${err_true_code.trim().replace(/'/g,"''")}%' OR true_level1 LIKE '${err_true_code.trim().replace(/'/g,"''")}%')`);
+
+  if (err_pred_code?.trim())
+    parts.push(`(predicted_level4 LIKE '${err_pred_code.trim().replace(/'/g,"''")}%')`);
+
+  if (err_source !== "Toutes")
+    parts.push(`source = '${err_source.replace(/'/g,"''")}'`);
+
+  if (err_year !== "Toutes")
+    parts.push(`annee_int = ${err_year}`);
+
+  if (err_shop_type !== "Tous")
+    parts.push(`shop_type_name = '${err_shop_type.replace(/'/g,"''")}'`);
+
+  parts.push(`confidence_num >= ${err_conf_min} AND confidence_num <= ${err_conf_max}`);
+
+  switch (err_severity) {
+    case "Erreurs seulement":  parts.push("err_l4 = true"); break;
+    case "Correct seulement":  parts.push("error_severity = 'correct'"); break;
+    case "near-miss":          parts.push("error_severity = 'near-miss'"); break;
+    case "L2 faux":            parts.push("error_severity = 'L2 faux'"); break;
+    case "L3 faux":            parts.push("error_severity = 'L3 faux'"); break;
+    case "far-miss":           parts.push("error_severity = 'far-miss'"); break;
+  }
+
+  return { where_clause: parts.join(" AND ") };
+}
+```
+
+```{ojs}
+{
+  if (data_ready?.status !== "ok")
+    return html`<p style="color:#8d99ae">Chargez un fichier pour explorer les erreurs.</p>`
+
+  const { where_clause } = error_filter_state;
+
+  const rows = await db.query(`
+    SELECT
+      l_pr_product                        AS produit,
+      CAST(code AS VARCHAR)               AS code_vrai,
+      CAST(true_level4 AS VARCHAR)        AS vrai_l4,
+      CAST(predicted_level4 AS VARCHAR)   AS pred_l4,
+      ROUND(confidence_num * 100, 1)      AS conf_pct,
+      error_severity                      AS severite,
+      COALESCE(source, '')                AS source,
+      COALESCE(CAST(annee_int AS VARCHAR), '') AS annee
+    FROM preds
+    WHERE ${where_clause}
+    ORDER BY confidence_num DESC
+    LIMIT 500
+  `);
+
+  if (rows.length === 0)
+    return html`<p style="color:#8d99ae; text-align:center; padding:2rem">Aucun resultat pour ces criteres.</p>`;
+
+  const sevClass = {
+    "correct": "sev-correct", "near-miss": "sev-nearmiss",
+    "L3 faux": "sev-l3faux", "L2 faux": "sev-l2faux", "far-miss": "sev-farmiss"
+  };
+
+  const table_html = html`
+    <div style="max-height:480px; overflow-y:auto">
+      <table class="dash-table">
+        <thead><tr>
+          <th style="min-width:180px">Produit</th>
+          <th>Code vrai</th>
+          <th>Predit L4</th>
+          <th style="text-align:right">Conf.</th>
+          <th>Severite</th>
+          <th>Source</th>
+          <th>Annee</th>
+        </tr></thead>
+        <tbody>
+          ${rows.map(r => html`
+            <tr class="${sevClass[r.severite] || ''}">
+              <td style="max-width:220px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap"
+                  title="${r.produit}">${r.produit}</td>
+              <td><span class="code-badge">${r.code_vrai}</span></td>
+              <td><span class="code-badge" style="background:${r.severite === 'correct' ? '#d8f3dc' : '#fce4ec'};
+                  color:${r.severite === 'correct' ? '#2d6a4f' : '#c62828'}">${r.pred_l4}</span></td>
+              <td style="text-align:right; font-variant-numeric:tabular-nums; font-weight:600">${r.conf_pct}%</td>
+              <td><span style="font-size:.78em; padding:.15rem .4rem; border-radius:4px;
+                  background:${{correct:"#2ec4b6","near-miss":"#8bc34a","L3 faux":"#f77f00","L2 faux":"#ff6b35","far-miss":"#d62828"}[r.severite] || "#8d99ae"}22;
+                  color:${{correct:"#2ec4b6","near-miss":"#8bc34a","L3 faux":"#f77f00","L2 faux":"#ff6b35","far-miss":"#d62828"}[r.severite] || "#8d99ae"}">${r.severite ?? '–'}</span></td>
+              <td style="font-size:.82em">${r.source}</td>
+              <td style="font-size:.82em">${r.annee}</td>
+            </tr>`
+          )}
+        </tbody>
+      </table>
+      ${rows.length === 500 ? html`<p style="color:#8d99ae; text-align:center; font-size:.8em; padding:.5rem">
+        Affichage limite a 500 resultats — affinez les filtres pour voir plus.</p>` : ''}
+    </div>`;
+
+  const export_btn = html`<button style="
+    border:1px solid #dee2e6; background:white; border-radius:6px;
+    padding:.35rem .8rem; font-size:.82em; cursor:pointer; margin-bottom:.5rem;
+    color:#495057; transition:all .15s
+  ">Exporter CSV (${rows.length} lignes)</button>`;
+  export_btn.onmouseenter = () => { export_btn.style.background = "#f8f9fa"; };
+  export_btn.onmouseleave = () => { export_btn.style.background = "white"; };
+  export_btn.onclick = () => {
+    const header = Object.keys(rows[0]).join(",");
+    const lines = rows.map(r => Object.values(r).map(v =>
+      typeof v === "string" && (v.includes(",") || v.includes('"'))
+        ? `"${v.replace(/"/g, '""')}"` : v
+    ).join(","));
+    const csv = [header, ...lines].join("\n");
+    const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a"); a.href = url; a.download = "erreurs_coicop.csv"; a.click();
+  };
+
+  return html`${export_btn}${table_html}`;
+}
+```
+
+### Top confusions & severite {width="35%"}
+
+```{ojs}
+{
+  if (data_ready?.status !== "ok") return html`<p style="color:#8d99ae">…</p>`
+
+  const { where_clause } = error_filter_state;
+
+  const pairs = await db.query(`
+    SELECT
+      true_level4 || ' -> ' || predicted_level4 AS paire,
+      CAST(COUNT(*) AS INTEGER) AS n
+    FROM preds
+    WHERE ${where_clause} AND err_l4 = true
+    GROUP BY 1 ORDER BY n DESC LIMIT 15
+  `);
+
+  const confusion_chart = pairs.length === 0
+    ? html`<p style="color:#8d99ae; font-size:.85em">Aucune erreur avec ces filtres.</p>`
+    : Plot.plot({
+        height: 240,
+        marginLeft: 170,
+        marginBottom: 35,
+        style: { fontSize: "11px" },
+        x: { label: "Nombre d'erreurs", grid: true },
+        marks: [
+          Plot.barX(pairs.slice().reverse(), {
+            y: "paire",
+            x: "n",
+            fill: "#d62828",
+            fillOpacity: 0.8,
+            rx: 3,
+            tip: true,
+            title: d => `${d.paire}\n${d.n} erreurs`
+          }),
+          Plot.ruleX([0])
+        ]
+      });
+
+  const sev_data = await db.query(`
+    SELECT
+      COALESCE(error_severity, 'N/A') AS severity,
+      CAST(COUNT(*) AS INTEGER) AS n
+    FROM preds
+    WHERE ${where_clause} AND true_level4 IS NOT NULL AND predicted_level4 IS NOT NULL
+    GROUP BY 1 ORDER BY n DESC
+  `);
+
+  const sev_colors = {
+    "correct": "#2ec4b6", "near-miss": "#8bc34a",
+    "L3 faux": "#f77f00", "L2 faux": "#ff6b35", "far-miss": "#d62828"
+  };
+
+  const sev_chart = Plot.plot({
+    height: 180,
+    marginLeft: 100,
+    marginBottom: 35,
+    style: { fontSize: "11px" },
+    x: { label: "Observations", grid: true },
+    color: {
+      domain: Object.keys(sev_colors),
+      range: Object.values(sev_colors)
+    },
+    marks: [
+      Plot.barX(sev_data, {
+        y: "severity",
+        x: "n",
+        fill: "severity",
+        rx: 3,
+        tip: true,
+        title: d => `${d.severity} : ${fmt_n(d.n)}`
+      }),
+      Plot.ruleX([0])
+    ]
+  });
+
+  return html`
+    <div class="section-title">Top confusions (L4)</div>
+    ${confusion_chart}
+    <div class="section-title" style="margin-top:1.2rem">Repartition par severite</div>
+    ${sev_chart}`;
+}
+```
+
+
+# Analyse Modele
+
+## Row {height="70px"}
+
+```{ojs}
+html`<div style="
+  background:linear-gradient(135deg, #eef0ff 0%, #f8f9fa 100%);
+  border:1px solid #dee2e6; border-radius:10px;
+  padding:.7rem 1.2rem; font-size:.88em; color:#495057
+">
+  <strong>Inspection client-side via Pyodide</strong> — Fournissez l'URL HTTPS du repertoire du modele.
+  Le fichier <code>*_metadata.pkl</code> sera telecharge et deserialise dans le navigateur, sans serveur.
+</div>`
+```
+
+## Row {height="50px"}
+
+```{ojs}
+viewof model_url = Inputs.text({
+  label: "URL du repertoire modele (HTTPS)",
+  placeholder: "https://minio.example.com/bucket/models/basic_model",
+  value: ""
+})
+
+viewof inspect_model_btn = Inputs.button("Inspecter le modele", {
+  value: 0,
+  reduce: v => v + 1
+})
+```
+
+```{ojs}
+{
+  if (!inspect_model_btn) return html`<span></span>`;
+  if (!pyodide_instance && inspect_model_btn)
+    return html`<span style="color:#f77f00; font-size:.82em">Chargement de Pyodide (~20 Mo, mis en cache)…</span>`;
+  if (pyodide_instance)
+    return html`<span style="color:#2ec4b6; font-size:.82em">Pyodide pret</span>`;
+}
+```
+
+## Row
+
+### Metadonnees du modele {width="55%"}
+
+```{ojs}
+//| output: false
+pyodide_instance = {
+  inspect_model_btn;
+  if (!inspect_model_btn) return null;
+  const { loadPyodide } = await import("https://cdn.jsdelivr.net/pyodide/v0.26.4/full/pyodide.mjs");
+  return await loadPyodide();
+}
+
+model_metadata = {
+  if (!pyodide_instance || !model_url?.trim()) return null;
+
+  const base = model_url.trim().replace(/\/$/, "");
+  const candidates = [
+    "basic_metadata.pkl",
+    "hierarchical_metadata.pkl",
+    "multihead_metadata.pkl"
+  ];
+
+  try {
+    for (const name of candidates) {
+      let resp;
+      try { resp = await fetch(`${base}/${name}`); } catch { continue; }
+      if (!resp.ok) continue;
+
+      const bytes = new Uint8Array(await resp.arrayBuffer());
+      pyodide_instance.globals.set("pkl_bytes", pyodide_instance.toPy(bytes));
+
+      const result = pyodide_instance.runPython(`
+import pickle, json
+
+data = pickle.loads(bytes(pkl_bytes))
+safe = {}
+config_keys = []
+label_keys = []
+other_keys = []
+
+for k, v in data.items():
+    if isinstance(v, (str, int, float, bool, type(None))):
+        safe[k] = v
+        # Heuristic: config params are scalars with short names
+        if any(p in k for p in ['lr', 'epoch', 'batch', 'dim', 'ngram', 'seq',
+                                  'patience', 'samples', 'teacher', 'bucket',
+                                  'embedding', 'level', 'workers', 'memory']):
+            config_keys.append(k)
+        else:
+            other_keys.append(k)
+    elif isinstance(v, (list, tuple)):
+        safe[f"{k}_count"] = len(v)
+        if len(v) <= 50:
+            safe[k] = [str(x) for x in v]
+        label_keys.append(k)
+    elif isinstance(v, dict):
+        safe[f"{k}_count"] = len(v)
+        safe[f"{k}_keys"] = [str(x) for x in list(v.keys())[:30]]
+        # Detect per-level structures
+        if all(isinstance(vv, dict) for vv in v.values()):
+            for sub_k, sub_v in v.items():
+                safe[f"{k}.{sub_k}_count"] = len(sub_v)
+                safe[f"{k}.{sub_k}_sample"] = [str(x) for x in list(sub_v.keys())[:15]]
+        label_keys.append(k)
+    else:
+        other_keys.append(k)
+
+safe["_config_keys"] = config_keys
+safe["_label_keys"] = label_keys
+safe["_other_keys"] = other_keys
+safe
+      `);
+
+      return {
+        metadata_file: name,
+        model_type: name.replace("_metadata.pkl", ""),
+        model_url: base,
+        metadata: result.toJs({ dict_converter: Object.fromEntries })
+      };
+    }
+    return { error: `Aucun fichier *_metadata.pkl trouve a ${base}` };
+  } catch(e) {
+    return { error: `Erreur Pyodide : ${e.message}` };
+  }
+}
+```
+
+```{ojs}
+{
+  if (!inspect_model_btn)
+    return html`<p style="color:#8d99ae">Renseignez l'URL du modele et cliquez sur Inspecter.</p>`;
+
+  if (!model_metadata)
+    return html`<p style="color:#8d99ae">Chargement en cours…</p>`;
+
+  if (model_metadata.error)
+    return html`<div style="background:#fce4ec; color:#c62828; padding:.8rem 1rem; border-radius:8px; font-size:.88em">${model_metadata.error}</div>`;
+
+  const meta = model_metadata.metadata ?? {};
+  const modelType = model_metadata.model_type;
+
+  // Type badge
+  const typeBadge = {
+    basic: { label: "Classifieur Plat", color: "#4361ee" },
+    hierarchical: { label: "Classifieur Hierarchique", color: "#2ec4b6" },
+    multihead: { label: "Classifieur Multi-tete", color: "#6c63ff" }
+  }[modelType] || { label: modelType, color: "#8d99ae" };
+
+  // Separate config params from other scalar params
+  const configKeys = meta._config_keys ?? [];
+  const otherKeys = meta._other_keys ?? [];
+
+  const config_rows = Object.entries(meta).filter(([k]) =>
+    configKeys.includes(k) && !k.startsWith("_")
+  );
+  const other_scalar_rows = Object.entries(meta).filter(([k]) =>
+    otherKeys.includes(k) && !k.startsWith("_") && typeof meta[k] !== "object"
+  );
+
+  return html`
+    <div style="display:flex; align-items:center; gap:.8rem; margin-bottom:1rem">
+      <span style="background:${typeBadge.color}; color:white; padding:.3rem .8rem; border-radius:6px; font-weight:700; font-size:.85em">
+        ${typeBadge.label}
+      </span>
+      <code style="font-size:.8em; color:#8d99ae">${model_metadata.metadata_file}</code>
+    </div>
+
+    <div class="section-title">Configuration du modele</div>
+    <table class="dash-table">
+      <thead><tr><th>Parametre</th><th>Valeur</th></tr></thead>
+      <tbody>
+        ${config_rows.map(([k, v]) => html`
+          <tr>
+            <td><code style="font-size:.85em">${k}</code></td>
+            <td style="font-variant-numeric:tabular-nums">${String(v ?? "–")}</td>
+          </tr>`)}
+      </tbody>
+    </table>
+
+    ${other_scalar_rows.length > 0 ? html`
+      <div class="section-title" style="margin-top:1rem">Autres parametres</div>
+      <table class="dash-table">
+        <thead><tr><th>Cle</th><th>Valeur</th></tr></thead>
+        <tbody>
+          ${other_scalar_rows.map(([k, v]) => html`
+            <tr>
+              <td><code style="font-size:.85em">${k}</code></td>
+              <td>${Array.isArray(v) ? v.join(", ") : String(v ?? "–")}</td>
+            </tr>`)}
+        </tbody>
+      </table>` : ''}
+  `;
+}
+```
+
+### Codes COICOP connus {width="45%"}
+
+```{ojs}
+{
+  if (!model_metadata?.metadata) {
+    if (inspect_model_btn)
+      return html`<p style="color:#8d99ae; font-size:.88em">Inspectez un modele pour voir ses codes.</p>`;
+    return html`<p style="color:#8d99ae; font-size:.88em">En attente d'une inspection.</p>`;
+  }
+
+  const m = model_metadata.metadata;
+  const modelType = model_metadata.model_type;
+
+  // For hierarchical/multihead: show per-level class counts
+  const levelEntries = Object.entries(m).filter(([k]) =>
+    k.match(/^level_label_to_idx\.\w+_count$/) ||
+    k.match(/^level_label_names\.\w+_count$/)
+  );
+
+  // For basic: show label_names or label2id
+  const basicCodes = m.label_names || m.label2id_keys || m.id2label_keys || [];
+  const basicCount = m.label_names_count || m.label2id_count || m.id2label_count || null;
+
+  // Per-level samples
+  const levelSamples = Object.entries(m).filter(([k]) =>
+    k.match(/^level_label_to_idx\.\w+_sample$/) ||
+    k.match(/^level_label_names\.\w+_sample$/)
+  );
+
+  let content;
+
+  if (modelType !== "basic" && levelEntries.length > 0) {
+    // Hierarchical or multihead: show per-level breakdown
+    const levels = {};
+    for (const [k, v] of levelEntries) {
+      const match = k.match(/\.(\w+)_count$/);
+      if (match) levels[match[1]] = v;
+    }
+    const levelSampleMap = {};
+    for (const [k, v] of levelSamples) {
+      const match = k.match(/\.(\w+)_sample$/);
+      if (match) levelSampleMap[match[1]] = v;
+    }
+
+    const levelColors = ["#4361ee", "#2ec4b6", "#f77f00", "#d62828", "#6c63ff"];
+
+    content = html`
+      <div class="section-title">Classes par niveau</div>
+      <div style="display:flex; flex-wrap:wrap; gap:.5rem; margin-bottom:1rem">
+        ${Object.entries(levels).map(([lvl, count], i) => html`
+          <div style="
+            background:${levelColors[i % levelColors.length]}15;
+            border:1px solid ${levelColors[i % levelColors.length]}40;
+            border-radius:8px; padding:.5rem .8rem; text-align:center; min-width:80px
+          ">
+            <div style="font-size:1.3em; font-weight:800; color:${levelColors[i % levelColors.length]}">${count}</div>
+            <div style="font-size:.72em; color:#495057; text-transform:uppercase; letter-spacing:.04em">${lvl}</div>
+          </div>`
+        )}
+      </div>
+
+      ${Object.entries(levelSampleMap).map(([lvl, codes], i) => html`
+        <details style="margin-bottom:.6rem">
+          <summary style="cursor:pointer; font-size:.82em; font-weight:600; color:#495057">
+            ${lvl} — exemples de codes
+          </summary>
+          <div style="font-size:.78em; line-height:2; padding:.4rem 0">
+            ${codes.map(c => html`<span class="code-badge" style="margin:.15rem">${c}</span>`)}
+          </div>
+        </details>`
+      )}
+    `;
+  } else if (basicCodes.length > 0 || basicCount) {
+    // Basic: flat code list
+    content = html`
+      <div class="section-title">
+        Codes COICOP connus
+        ${basicCount ? html`<span style="
+          background:#4361ee; color:white; font-size:.75em; padding:.15rem .5rem;
+          border-radius:10px; margin-left:.5rem; font-weight:600
+        ">${basicCount}</span>` : ""}
+      </div>
+      <div style="font-size:.8em; max-height:350px; overflow-y:auto; line-height:2">
+        ${basicCodes.map(c => html`<span class="code-badge" style="margin:.15rem">${c}</span>`)}
+        ${basicCount && basicCount > basicCodes.length
+          ? html`<span style="color:#8d99ae; font-size:.9em"> … et ${basicCount - basicCodes.length} autres</span>`
+          : ""}
+      </div>
+    `;
+  } else {
+    content = html`<p style="color:#8d99ae; font-size:.85em">Aucune information sur les codes trouvee dans les metadonnees.</p>`;
+  }
+
+  return content;
+}
+```

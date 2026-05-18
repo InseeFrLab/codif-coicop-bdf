@@ -1,0 +1,458 @@
+---
+title: "Rapport de codification COICOP"
+subtitle: "Comparaison LCS / RAG / TTC / LLM et analyse d'erreurs"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    embed-resources: true
+    code-fold: true
+    theme: cosmo
+    fig-width: 9
+    fig-height: 5
+execute:
+  echo: false
+  warning: false
+  error: false
+jupyter: python3
+---
+
+```{python}
+# | tags: [setup]
+import os
+from textwrap import dedent
+
+import duckdb
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import seaborn as sns
+from IPython.display import Markdown
+
+sns.set_theme(style="whitegrid")
+
+INPUT = os.environ["REPORT_INPUT_PATH"]
+RUN_ID = os.environ.get("REPORT_RUN_ID", "(inconnu)")
+RUN_DATE = os.environ.get("REPORT_RUN_DATE", "(inconnu)")
+
+con = duckdb.connect()
+con.sql("INSTALL httpfs; LOAD httpfs;")
+endpoint = (
+    os.environ.get("AWS_S3_ENDPOINT")
+    or os.environ.get("AWS_ENDPOINT_URL", "").replace("https://", "").replace("http://", "")
+    or "minio.lab.sspcloud.fr"
+)
+con.sql(
+    dedent(
+        f"""
+        CREATE OR REPLACE SECRET s3_secret (
+            TYPE s3,
+            KEY_ID '{os.environ.get("AWS_ACCESS_KEY_ID", "")}',
+            SECRET '{os.environ.get("AWS_SECRET_ACCESS_KEY", "")}',
+            SESSION_TOKEN '{os.environ.get("AWS_SESSION_TOKEN", "")}',
+            ENDPOINT '{endpoint}',
+            URL_STYLE 'path',
+            USE_SSL true
+        );
+        """
+    )
+)
+
+df = con.sql(f"SELECT * FROM read_parquet('{INPUT}')").df()
+
+METHODS = [
+    ("LCS", "lcs_code"),
+    ("RAG", "rag_code"),
+    ("TTC", "ttc_code_1"),
+    ("LLM", "llm_code"),
+]
+LEVELS = [1, 2, 3, 4, 5]
+
+# Keep a "scorable" view: rows with ground truth `code`
+scorable = df[df["code"].notna() & (df["code"].astype(str).str.len() > 0)].copy()
+```
+
+## Métadonnées du run
+
+| Champ | Valeur |
+|---|---|
+| Run ID | `{python} RUN_ID` |
+| Date   | `{python} RUN_DATE` |
+| Fichier source | `{python} INPUT` |
+| Observations totales | `{python} f"{len(df):,}".replace(",", " ")` |
+| Observations avec code de référence (`code` non nul) | `{python} f"{len(scorable):,}".replace(",", " ")` |
+| Erreurs LLM (`llm_error` non nul) | `{python} int(df["llm_error"].notna().sum()) if "llm_error" in df.columns else 0` |
+
+```{python}
+# | tags: [utils]
+def code_parts(s) -> list[str]:
+    if s is None or (isinstance(s, float) and np.isnan(s)):
+        return []
+    s = str(s).strip()
+    if not s:
+        return []
+    return s.split(".")
+
+
+def level_result(truth: str, pred: str, k: int):
+    """Return True/False/None.
+
+    None means the observation is not applicable at level k
+    (truth is shallower than k, so we can't evaluate that depth).
+    """
+    tp = code_parts(truth)
+    if len(tp) < k:
+        return None
+    pp = code_parts(pred)
+    if len(pp) < k:
+        return False
+    return tp[:k] == pp[:k]
+
+
+def accuracy_series(truth: pd.Series, pred: pd.Series, k: int) -> pd.Series:
+    """Series of True/False/NA indexed like truth."""
+    out = [level_result(t, p, k) for t, p in zip(truth, pred)]
+    return pd.Series(out, index=truth.index, dtype="object")
+
+
+def accuracy(truth: pd.Series, pred: pd.Series, k: int) -> tuple[int, int, float]:
+    s = accuracy_series(truth, pred, k)
+    applicable = s.notna()
+    n_app = int(applicable.sum())
+    n_ok = int((s == True).sum())  # noqa: E712
+    return n_ok, n_app, (n_ok / n_app if n_app else float("nan"))
+
+
+def accuracy_table(data: pd.DataFrame) -> pd.DataFrame:
+    rows = []
+    for name, col in METHODS:
+        row = {"méthode": name}
+        for k in LEVELS:
+            _, n_app, acc = accuracy(data["code"], data[col], k)
+            row[f"niv{k} (n={n_app})"] = acc
+        rows.append(row)
+    return pd.DataFrame(rows).set_index("méthode")
+
+
+def style_acc(tbl: pd.DataFrame):
+    return (
+        tbl.style
+        .format("{:.1%}", na_rep="—")
+        .background_gradient(cmap="RdYlGn", vmin=0, vmax=1, axis=None)
+    )
+```
+
+## Accuracy globale par niveau
+
+Pour chaque niveau `k ∈ {1..5}`, on tronque `code` (vérité terrain) et la prédiction aux `k` premiers niveaux et on compare. Les observations dont la vérité terrain a moins de `k` niveaux sont exclues du dénominateur à ce niveau (non évaluable). Les prédictions plus profondes que la vérité sont considérées correctes si le préfixe correspond. Les prédictions plus courtes que `k` comptent comme erreur à ce niveau.
+
+```{python}
+# | label: tbl-global-accuracy
+global_tbl = accuracy_table(scorable)
+Markdown(global_tbl.to_markdown(floatfmt=".1%"))
+```
+
+```{python}
+# | label: fig-global-accuracy
+long = (
+    global_tbl.reset_index()
+    .melt(id_vars="méthode", var_name="niveau", value_name="accuracy")
+)
+long["niveau"] = long["niveau"].str.extract(r"niv(\d)").astype(int)
+
+fig, ax = plt.subplots()
+sns.lineplot(long, x="niveau", y="accuracy", hue="méthode", marker="o", ax=ax)
+ax.set_ylim(0, 1)
+ax.set_title("Accuracy par niveau COICOP")
+ax.set_ylabel("Accuracy")
+ax.set_xlabel("Niveau (k)")
+plt.tight_layout()
+plt.show()
+```
+
+## Accuracy par groupe (niveau COICOP, `shop`, `shop_type_name`, décile de `budget`)
+
+Les groupes comptant moins de 30 observations sont masqués pour éviter les lectures bruyantes. L'accuracy rapportée ici est au niveau 4 (le niveau cible de l'enquête).
+
+```{python}
+# | tags: [helpers-group]
+MIN_GROUP_N = 30
+
+
+def grouped_accuracy(data: pd.DataFrame, group_col: str, k: int = 4) -> pd.DataFrame:
+    out = []
+    for grp, sub in data.groupby(group_col, dropna=False):
+        row = {group_col: grp, "n": len(sub)}
+        for name, col in METHODS:
+            _, n_app, acc = accuracy(sub["code"], sub[col], k)
+            row[name] = acc
+            row[f"{name}_n"] = n_app
+        out.append(row)
+    res = pd.DataFrame(out)
+    res = res[res["n"] >= MIN_GROUP_N].sort_values("n", ascending=False)
+    return res
+
+
+def render_group_table(data: pd.DataFrame, group_col: str, k: int = 4) -> pd.DataFrame:
+    tbl = grouped_accuracy(data, group_col, k=k)
+    cols = [group_col, "n"] + [m[0] for m in METHODS]
+    view = tbl[cols].copy()
+    for name, _ in METHODS:
+        view[name] = view[name].map(lambda v: "—" if pd.isna(v) else f"{v:.1%}")
+    return view
+```
+
+### Par niveau 1 du code COICOP (vérité terrain)
+
+Regroupe les observations par le premier segment de `code` (ex. `01`, `02`, …).
+
+```{python}
+# | label: tbl-coicop-lvl1
+_lvl = scorable.assign(
+    truth_lvl1=scorable["code"].map(
+        lambda c: code_parts(c)[0] if code_parts(c) else None
+    )
+).dropna(subset=["truth_lvl1"])
+tbl_l1 = render_group_table(_lvl, "truth_lvl1", k=4)
+tbl_l1 = tbl_l1.sort_values("truth_lvl1")
+Markdown(
+    tbl_l1.to_markdown(index=False, disable_numparse=True)
+    if len(tbl_l1)
+    else "_Pas assez d'observations par niveau 1._"
+)
+```
+
+### Par niveau 2 du code COICOP (vérité terrain)
+
+Regroupe par les deux premiers segments de `code` (ex. `01.1`, `01.2`, …).
+
+```{python}
+# | label: tbl-coicop-lvl2
+_lvl = scorable.assign(
+    truth_lvl2=scorable["code"].map(
+        lambda c: ".".join(code_parts(c)[:2]) if len(code_parts(c)) >= 2 else None
+    )
+).dropna(subset=["truth_lvl2"])
+tbl_l2 = render_group_table(_lvl, "truth_lvl2", k=4)
+tbl_l2 = tbl_l2.sort_values("truth_lvl2")
+Markdown(
+    tbl_l2.to_markdown(index=False, disable_numparse=True)
+    if len(tbl_l2)
+    else "_Pas assez d'observations par niveau 2._"
+)
+```
+
+### Par `shop`
+
+```{python}
+# | label: tbl-shop
+Markdown(
+    render_group_table(scorable, "shop", k=4).to_markdown(index=False)
+    if scorable["shop"].notna().any()
+    else "_Aucune donnée `shop` disponible._"
+)
+```
+
+### Par `shop_type_name`
+
+```{python}
+# | label: tbl-shop-type
+Markdown(
+    render_group_table(scorable, "shop_type_name", k=4).to_markdown(index=False)
+    if scorable["shop_type_name"].notna().any()
+    else "_Aucune donnée `shop_type_name` disponible._"
+)
+```
+
+### Par décile de `budget`
+
+Déciles de la distribution de `budget` (vide exclu). Les montants affichés sont les bornes de chaque décile.
+
+```{python}
+# | label: tbl-budget
+scored_b = scorable.dropna(subset=["budget"]).copy()
+
+
+def _fmt_amount(v: float) -> str:
+    return f"{v:,.2f} €".replace(",", " ").replace(".", ",")
+
+
+if len(scored_b) >= 10:
+    try:
+        _, edges = pd.qcut(
+            scored_b["budget"], q=10, duplicates="drop", retbins=True
+        )
+        labels = [
+            f"D{i + 1} ({_fmt_amount(edges[i])} – {_fmt_amount(edges[i + 1])})"
+            for i in range(len(edges) - 1)
+        ]
+        scored_b["budget_decile"] = pd.qcut(
+            scored_b["budget"], q=10, duplicates="drop", labels=labels,
+        )
+        tbl_budget = render_group_table(scored_b, "budget_decile", k=4)
+        # Sort D1..D10 rather than by group size
+        tbl_budget = tbl_budget.assign(
+            _order=tbl_budget["budget_decile"]
+            .astype(str)
+            .str.extract(r"D(\d+)", expand=False)
+            .astype(int)
+        ).sort_values("_order").drop(columns="_order")
+        md = tbl_budget.to_markdown(index=False)
+    except ValueError:
+        md = "_Pas assez de variation dans `budget` pour former 10 déciles distincts._"
+else:
+    md = "_Pas assez de valeurs non-nulles de `budget` pour former des déciles._"
+Markdown(md)
+```
+
+## Analyse d'erreurs
+
+### Matrice de confusion — top 20 paires `code` vs `llm_code`
+
+On liste les couples (code réel, code LLM) les plus fréquents **parmi les erreurs** au niveau 4 (le niveau typiquement visé par l'enquête).
+
+```{python}
+# | label: tbl-confusion
+def at_level(s: pd.Series, k: int) -> pd.Series:
+    return s.map(lambda x: ".".join(code_parts(x)[:k]) if len(code_parts(x)) >= k else None)
+
+
+k = 4
+df_k = scorable.assign(
+    truth_k=at_level(scorable["code"], k),
+    pred_k=at_level(scorable["llm_code"], k),
+)
+df_k = df_k.dropna(subset=["truth_k", "pred_k"])
+errors = df_k[df_k["truth_k"] != df_k["pred_k"]]
+conf = (
+    errors.groupby(["truth_k", "pred_k"])
+    .size()
+    .reset_index(name="n")
+    .sort_values("n", ascending=False)
+    .head(20)
+)
+if len(conf):
+    conf["part (%)"] = (100 * conf["n"] / len(errors)).round(1)
+    md = conf.to_markdown(index=False)
+else:
+    md = "_Aucune erreur au niveau 4 à reporter._"
+Markdown(md)
+```
+
+### Calibration du LLM : accuracy vs `llm_confiance`
+
+La commande `decide-coicop` retourne un score de confiance de 1 à 5. Une calibration saine montre une accuracy croissante avec la confiance.
+
+```{python}
+# | label: fig-calibration
+cal_df = scorable.dropna(subset=["llm_confiance"]).copy()
+if len(cal_df):
+    cal_df["acc_niv4"] = accuracy_series(cal_df["code"], cal_df["llm_code"], 4)
+    cal_df = cal_df.dropna(subset=["acc_niv4"])
+    cal = (
+        cal_df.assign(acc=cal_df["acc_niv4"].astype(bool).astype(int))
+        .groupby(cal_df["llm_confiance"].round().astype(int))
+        .agg(n=("acc", "size"), accuracy=("acc", "mean"))
+        .reset_index()
+        .rename(columns={"llm_confiance": "confiance"})
+    )
+    fig, ax = plt.subplots()
+    bars = sns.barplot(cal, x="confiance", y="accuracy", ax=ax, color="#4C72B0")
+    ax.set_ylim(0, 1)
+    for bar, n in zip(bars.patches, cal["n"]):
+        ax.annotate(
+            f"n={n}",
+            (bar.get_x() + bar.get_width() / 2, bar.get_height()),
+            ha="center", va="bottom", fontsize=9, xytext=(0, 2), textcoords="offset points",
+        )
+    ax.set_title("Accuracy au niveau 4 par score de confiance LLM")
+    ax.set_ylabel("Accuracy")
+    ax.set_xlabel("llm_confiance (1 = faible, 5 = très élevée)")
+    plt.tight_layout()
+    plt.show()
+else:
+    Markdown("_Pas de valeur `llm_confiance` disponible._")
+```
+
+### Valeur ajoutée de l'arbitrage LLM : consensus vs désaccord
+
+On compare l'accuracy du LLM selon que les trois sources amont (LCS, RAG, TTC top-1) sont d'accord ou non, tronquées au niveau 4.
+
+```{python}
+# | label: tbl-agreement
+def key(s):
+    return s.map(lambda x: ".".join(code_parts(x)[:4]) if len(code_parts(x)) >= 4 else None)
+
+
+agree = scorable.assign(
+    t=key(scorable["code"]),
+    l=key(scorable["lcs_code"]),
+    r=key(scorable["rag_code"]),
+    c=key(scorable["ttc_code_1"]),
+    p=key(scorable["llm_code"]),
+).dropna(subset=["t", "p"])
+
+# Nombre de sources amont qui s'accordent avec la vérité terrain
+def count_sources_correct(row):
+    n = 0
+    for col in ("l", "r", "c"):
+        if row[col] is not None and row[col] == row["t"]:
+            n += 1
+    return n
+
+
+# Agreement pattern between the three sources themselves (not vs truth)
+def source_agreement_bucket(row):
+    vals = [row["l"], row["r"], row["c"]]
+    non_null = [v for v in vals if v is not None]
+    if len(non_null) < 2:
+        return "sources manquantes"
+    unique = set(non_null)
+    if len(unique) == 1 and len(non_null) == 3:
+        return "3/3 d'accord"
+    if len(unique) == 1 and len(non_null) == 2:
+        return "2/2 d'accord"
+    if len(unique) == 2 and len(non_null) == 3:
+        return "2/3 d'accord"
+    return "désaccord complet"
+
+
+agree["bucket"] = agree.apply(source_agreement_bucket, axis=1)
+agree["llm_correct"] = agree["p"] == agree["t"]
+agree["best_source_correct"] = agree.apply(count_sources_correct, axis=1) > 0
+
+summary = (
+    agree.groupby("bucket")
+    .agg(
+        n=("llm_correct", "size"),
+        llm_accuracy=("llm_correct", "mean"),
+        une_source_au_moins_juste=("best_source_correct", "mean"),
+    )
+    .reset_index()
+    .sort_values("n", ascending=False)
+)
+summary["llm_accuracy"] = (100 * summary["llm_accuracy"]).round(1)
+summary["une_source_au_moins_juste"] = (100 * summary["une_source_au_moins_juste"]).round(1)
+summary = summary.rename(columns={
+    "llm_accuracy": "accuracy LLM (%)",
+    "une_source_au_moins_juste": "≥1 source amont juste (%)",
+})
+Markdown(summary.to_markdown(index=False))
+```
+
+**Lecture :** quand les trois sources s'accordent, on attend une accuracy LLM ≈ celle des sources (le LLM ne fait que confirmer, grâce au raccourci consensus de `decide-coicop`). Sur les cas de désaccord, comparer `accuracy LLM` à `≥1 source amont juste` indique si le LLM parvient à choisir la bonne source (idéalement la première colonne s'approche de la seconde).
+
+## Récapitulatif
+
+```{python}
+# | label: tbl-summary
+summary_rows = []
+for name, col in METHODS:
+    row = {"méthode": name}
+    for k in [1, 3, 4, 5]:
+        _, _, acc = accuracy(scorable["code"], scorable[col], k)
+        row[f"acc niv{k}"] = acc
+    summary_rows.append(row)
+summ = pd.DataFrame(summary_rows).set_index("méthode")
+Markdown(summ.to_markdown(floatfmt=".1%"))
+```

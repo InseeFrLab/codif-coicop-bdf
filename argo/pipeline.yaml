@@ -18,49 +18,85 @@ spec:
       - name: sample_size
         value: ""
       - name: model-name
-        value: ""
+        value: "gemma4-26b-moe"
       - name: skip-vector-db
+        value: "false"
+      - name: run_id
+        value: "{{workflow.name}}"
+      - name: run_date
+        value: "{{workflow.creationTimestamp.Y}}-{{workflow.creationTimestamp.m}}-{{wor\
+          kflow.creationTimestamp.d}}"
+      - name: decide-model
+        value: "gemma4-26b-moe"
+      - name: decide-concurrency
+        value: "5"
+      - name: skip-report
         value: "false"
 
   templates:
     # -----------------------------------------------------------------------
     # Main pipeline: DAG with parallelism
     #
-    #                    ┌──→ prune-coicop ──→ create-vector-db ──┐  (skippable)
-    #   preprocessing ──┤                                         ├──→ run-rag
-    #                    └──→ prune-annotations ──→ codif-regex ──┘
-    #                                                └──→ codif-lcs
+    #                    ┌──→ prune-coicop ──→ create-vector-db ─────────────┐  (skippable)
+    #   preprocessing ──┤                                                    ├──→ run-rag ──┐
+    #                    └──→ codif-regex ──→ prune-annotations ─────────────┘              │
+    #                                    ├──→ codif-lcs ─────────────────────────────────────┼──→ decide-coicop ──→ report  (opt-in)
+    #                                    └──→ run-ttc ──────────────────────────────────────┘
     # -----------------------------------------------------------------------
     - name: pipeline
       dag:
         tasks:
           - name: preprocessing
             template: preprocessing
+            arguments:
+              parameters:
+                - name: run_id
+                  value: "{{workflow.parameters.run_id}}"
+                - name: run_date
+                  value: "{{workflow.parameters.run_date}}"
 
           - name: prune-coicop
-            dependencies: [preprocessing]
+            dependencies: [ preprocessing ]
             template: prune-coicop
-            when: '"{{workflow.parameters.skip-vector-db}}" != "true"'
+            when: "\"{{workflow.parameters.skip-vector-db}}\" != \"true\""
 
           - name: codif-regex
-            dependencies: [prune-annotations]
+            dependencies: [ preprocessing ]
             template: codif-regex
+            arguments:
+              parameters:
+                - name: run_id
+                  value: "{{workflow.parameters.run_id}}"
+                - name: run_date
+                  value: "{{workflow.parameters.run_date}}"
 
           - name: prune-annotations
-            dependencies: [preprocessing]
+            dependencies: [ codif-regex ]
             template: prune-annotations
+            arguments:
+              parameters:
+                - name: run_id
+                  value: "{{workflow.parameters.run_id}}"
+                - name: run_date
+                  value: "{{workflow.parameters.run_date}}"
 
           - name: codif-lcs
-            dependencies: [codif-regex]
+            dependencies: [ codif-regex ]
             template: codif-lcs
+            arguments:
+              parameters:
+                - name: run_id
+                  value: "{{workflow.parameters.run_id}}"
+                - name: run_date
+                  value: "{{workflow.parameters.run_date}}"
 
           - name: create-vector-db
-            dependencies: [prune-coicop]
+            dependencies: [ prune-coicop ]
             template: create-vector-db
-            when: '"{{workflow.parameters.skip-vector-db}}" != "true"'
+            when: "\"{{workflow.parameters.skip-vector-db}}\" != \"true\""
 
           - name: run-rag
-            dependencies: [create-vector-db, codif-regex]
+            dependencies: [ create-vector-db, prune-annotations ]
             template: run-rag
             arguments:
               parameters:
@@ -68,24 +104,63 @@ spec:
                   value: "{{workflow.parameters.sample_size}}"
                 - name: model-name
                   value: "{{workflow.parameters.model-name}}"
+                - name: run_id
+                  value: "{{workflow.parameters.run_id}}"
+                - name: run_date
+                  value: "{{workflow.parameters.run_date}}"
 
           - name: run-ttc
-            dependencies: [codif-regex]
+            dependencies: [ codif-regex ]
             template: run-ttc
+            arguments:
+              parameters:
+                - name: run_id
+                  value: "{{workflow.parameters.run_id}}"
+                - name: run_date
+                  value: "{{workflow.parameters.run_date}}"
+
+          - name: decide-coicop
+            dependencies: [ codif-lcs, run-rag, run-ttc ]
+            template: decide-coicop
+            arguments:
+              parameters:
+                - name: model
+                  value: "{{workflow.parameters.decide-model}}"
+                - name: concurrency
+                  value: "{{workflow.parameters.decide-concurrency}}"
+                - name: run_id
+                  value: "{{workflow.parameters.run_id}}"
+                - name: run_date
+                  value: "{{workflow.parameters.run_date}}"
+
+          - name: report
+            dependencies: [ decide-coicop ]
+            template: report
+            when: "\"{{workflow.parameters.skip-report}}\" != \"true\""
+            arguments:
+              parameters:
+                - name: run_id
+                  value: "{{workflow.parameters.run_id}}"
+                - name: run_date
+                  value: "{{workflow.parameters.run_date}}"
 
     # -----------------------------------------------------------------------
     # Step 0: Preprocessing — construction du dataset
     # -----------------------------------------------------------------------
     - name: preprocessing
+      inputs:
+        parameters:
+          - name: run_id
+          - name: run_date
       container:
         image: inseefrlab/onyxia-vscode-python:py3.13.12
-        command: [sh, -c]
+        command: [ sh, -c ]
         args:
           - |
             set -e
-            git clone --branch main https://git.lab.sspcloud.fr/ssplab/experimentation-bdf/construction-dataset.git repo && cd repo
+            git clone --branch merge-all-repos https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/preprocessing
             uv sync
-            uv run main.py
+            uv run main.py --run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}
         env:
           - name: AWS_ACCESS_KEY_ID
             valueFrom:
@@ -124,15 +199,19 @@ spec:
     # Step 0b: Codification par regex
     # -----------------------------------------------------------------------
     - name: codif-regex
+      inputs:
+        parameters:
+          - name: run_id
+          - name: run_date
       container:
         image: inseefrlab/onyxia-vscode-python:py3.13.12
-        command: [sh, -c]
+        command: [ sh, -c ]
         args:
           - |
             set -e
-            git clone --branch main https://git.lab.sspcloud.fr/ssplab/experimentation-bdf/regex_codif.git repo && cd repo
+            git clone --branch merge-all-repos https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/regex-codif
             uv sync
-            uv run src/main.py
+            uv run src/main.py --run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}
         env:
           - name: AWS_ACCESS_KEY_ID
             valueFrom:
@@ -171,14 +250,18 @@ spec:
     # Step 0c: Codification par LCS
     # -----------------------------------------------------------------------
     - name: codif-lcs
+      inputs:
+        parameters:
+          - name: run_id
+          - name: run_date
       container:
         image: inseefrlab/onyxia-vscode-r-python-julia:r4.5.3-py3.13.12
-        command: [sh, -c]
+        command: [ sh, -c ]
         args:
           - |
             set -e
-            git clone --branch main https://git.lab.sspcloud.fr/ssplab/experimentation-bdf/stats-annotations.git repo && cd repo
-            Rscript R/main.R
+            git clone --branch merge-all-repos https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/stats-annotations
+            Rscript R/main.R --run-id={{inputs.parameters.run_id}} --run-date={{inputs.parameters.run_date}}
         env:
           - name: AWS_ACCESS_KEY_ID
             valueFrom:
@@ -223,11 +306,11 @@ spec:
             value: config/config.yaml
       container:
         image: inseefrlab/onyxia-vscode-python:py3.13.12
-        command: [sh, -c]
+        command: [ sh, -c ]
         args:
           - |
             set -e
-            git clone --branch main https://github.com/InseeFrLab/coicop-rag.git repo && cd repo
+            git clone --branch merge-all-repos https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/coicop-rag
             uv run scripts/0_prunning_coicop.py --config {{inputs.parameters.config}}
         env:
           - name: AWS_ACCESS_KEY_ID
@@ -266,14 +349,16 @@ spec:
         parameters:
           - name: config
             value: config/config.yaml
+          - name: run_id
+          - name: run_date
       container:
         image: inseefrlab/onyxia-vscode-python:py3.13.12
-        command: [sh, -c]
+        command: [ sh, -c ]
         args:
           - |
             set -e
-            git clone --branch main https://github.com/InseeFrLab/coicop-rag.git repo && cd repo
-            uv run scripts/1_prune_annotations.py --config {{inputs.parameters.config}}
+            git clone --branch merge-all-repos https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/coicop-rag
+            uv run scripts/1_prune_annotations.py --config {{inputs.parameters.config}} --run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}
         env:
           - name: AWS_ACCESS_KEY_ID
             valueFrom:
@@ -313,11 +398,11 @@ spec:
             value: config/config.yaml
       container:
         image: inseefrlab/onyxia-vscode-python:py3.13.12
-        command: [sh, -c]
+        command: [ sh, -c ]
         args:
           - |
             set -e
-            git clone --branch main https://github.com/InseeFrLab/coicop-rag.git repo && cd repo
+            git clone --branch merge-all-repos https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/coicop-rag
             uv run scripts/0_create_vector_db.py --config {{inputs.parameters.config}}
         env:
           - name: AWS_ACCESS_KEY_ID
@@ -383,16 +468,18 @@ spec:
             value: config/config.yaml
           - name: sample_size
           - name: model-name
+          - name: run_id
+          - name: run_date
       container:
         image: inseefrlab/onyxia-vscode-python:py3.13.12
-        command: [sh, -c]
+        command: [ sh, -c ]
         args:
           - |
             set -e
-            git clone --branch main https://github.com/InseeFrLab/coicop-rag.git repo && cd repo
+            git clone --branch merge-all-repos https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/coicop-rag
             mkdir -p logs prompts
 
-            ARGS="--config {{inputs.parameters.config}}"
+            ARGS="--config {{inputs.parameters.config}} --run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}"
 
             if [ -n "{{inputs.parameters.sample_size}}" ]; then
               ARGS="$ARGS --sample_size {{inputs.parameters.sample_size}}"
@@ -511,17 +598,25 @@ spec:
     # Step 4: Run TTC predictions
     # -----------------------------------------------------------------------
     - name: run-ttc
+      inputs:
+        parameters:
+          - name: run_id
+          - name: run_date
       container:
         image: ghcr.io/micedre/coicop_bdf_classifier:latest
-        command: ["python", "main.py"]
+        command: [ "python", "main.py" ]
         args:
           - predict-basic
           - "--model"
-          - "mlflow-artifacts:/10/cacf2603514b4887bbfb77e2654c9bc1/artifacts/model"
+          - "mlflow-artifacts:/10/cacf2603514b4887bbfb77e2654c9bc1/artifacts/mo\
+            del"
           - "--file"
-          - "s3://projet-budget-famille/data/output-annotation-consolidated/annotations-consolidated-2026-04-15/raw_test.parquet"
+          - "s3://projet-budget-famille/data/workflow_runs/{{inputs.parameters.\
+            run_date}}/{{inputs.parameters.run_id}}/codif-regex/raw_test_withou\
+            t_regex.parquet"
           - "--output"
-          - 's3://projet-budget-famille/data/workflow_outputs/outputs_ttc/predictions_{{= sprig.date "20060102150405" sprig.now }}.parquet'
+          - "s3://projet-budget-famille/data/workflow_runs/{{inputs.parameters.\
+            run_date}}/{{inputs.parameters.run_id}}/run-ttc/predictions.parquet"
           - "--text-column"
           - "l_pr_product"
           - "--top-k"
@@ -566,3 +661,130 @@ spec:
           limits:
             memory: 50Gi
             cpu: 15000m
+
+    # -----------------------------------------------------------------------
+    # Step 5: LLM-as-judge reconciliation of LCS / RAG / TTC predictions
+    # -----------------------------------------------------------------------
+    - name: decide-coicop
+      inputs:
+        parameters:
+          - name: model
+          - name: concurrency
+          - name: run_id
+          - name: run_date
+      container:
+        image: inseefrlab/onyxia-vscode-python:py3.13.12
+        command: [ sh, -c ]
+        args:
+          - |
+            set -e
+            git clone --branch merge-all-repos https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/coicop-bdf-classifier
+            uv sync
+
+            RUN_ROOT="s3://projet-budget-famille/data/workflow_runs/{{inputs.parameters.run_date}}/{{inputs.parameters.run_id}}"
+            ARGS="--lcs-file $RUN_ROOT/codif-lcs/raw_test_LCS.parquet \
+                  --rag-file $RUN_ROOT/run-rag/predictions.parquet \
+                  --ttc-file $RUN_ROOT/run-ttc/predictions.parquet \
+                  --output-file $RUN_ROOT/decide-coicop/predictions.parquet \
+                  --concurrency {{inputs.parameters.concurrency}}"
+
+            if [ -n "{{inputs.parameters.model}}" ]; then
+              ARGS="$ARGS --model {{inputs.parameters.model}}"
+            fi
+
+            uv run main.py decide-coicop $ARGS
+        env:
+          - name: OPENAI_API_KEY
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: OPENAI_API_KEY
+          - name: OPENAI_BASE_URL
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: OPENAI_BASE_URL
+                optional: true
+          - name: AWS_ACCESS_KEY_ID
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_ACCESS_KEY_ID
+          - name: AWS_SECRET_ACCESS_KEY
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_SECRET_ACCESS_KEY
+          - name: AWS_SESSION_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_SESSION_TOKEN
+          - name: AWS_S3_ENDPOINT
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_S3_ENDPOINT
+          - name: AWS_ENDPOINT_URL
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_ENDPOINT_URL
+        resources:
+          requests:
+            memory: 2Gi
+            cpu: 100m
+          limits:
+            memory: 50Gi
+            cpu: 15000m
+
+    # -----------------------------------------------------------------------
+    # Step 6 (opt-in): accuracy report (Quarto HTML on S3)
+    # -----------------------------------------------------------------------
+    - name: report
+      inputs:
+        parameters:
+          - name: run_id
+          - name: run_date
+      container:
+        image: inseefrlab/onyxia-vscode-python:py3.13.12
+        command: [ sh, -c ]
+        args:
+          - |
+            set -e
+            git clone --branch merge-all-repos https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/report
+            uv sync
+            uv run main.py --run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}
+        env:
+          - name: AWS_ACCESS_KEY_ID
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_ACCESS_KEY_ID
+          - name: AWS_SECRET_ACCESS_KEY
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_SECRET_ACCESS_KEY
+          - name: AWS_SESSION_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_SESSION_TOKEN
+          - name: AWS_S3_ENDPOINT
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_S3_ENDPOINT
+          - name: AWS_ENDPOINT_URL
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_ENDPOINT_URL
+        resources:
+          requests:
+            memory: 2Gi
+            cpu: 100m
+          limits:
+            memory: 20Gi
+            cpu: 4000m

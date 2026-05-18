@@ -1,0 +1,28 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/coicop_rag"]
+
+[tool.hatch.build.targets.editable]
+packages = ["src/coicop_rag"]
+
+[project]
+name = "coicop-rag"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "duckdb>=1.4.3",
+    "langfuse>=3.11.1",
+    "mlflow>=3.8.1",
+    "openai>=2.14.0",
+    "pandas>=2.3.3",
+    "pydantic>=2.12.5",
+    "pytest>=9.0.2",
+    "qdrant-client>=1.16.2",
+    "s3fs>=2025.12.0",
+    "tenacity>=9.1.4",
+]
