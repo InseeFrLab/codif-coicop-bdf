@@ -44,7 +44,7 @@ def main():
         base_url=os.environ["LLMLAB_URL"],
         api_key=os.environ["LLMLAB_API_KEY"],
     )
-    model_name = client_llmlab.models.list().data[0].id
+    model_name = config["embedding"]["model_name"]
     logger.info(f"Embedding model: {model_name}")
 
     client_qdrant = QdrantClient(
