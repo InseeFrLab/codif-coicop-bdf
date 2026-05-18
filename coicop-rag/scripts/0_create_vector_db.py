@@ -40,11 +40,11 @@ def main():
 
     con = create_duckdb_connection()
 
-    client_emb = OpenAI(
-        base_url=os.environ["VLLM_EMBEDDING_URL"],
-        api_key=os.environ["VLLM_EMBEDDING_API_KEY"]
+    client_llmlab = OpenAI(
+        base_url=os.environ["LLMLAB_URL"],
+        api_key=os.environ["LLMLAB_API_KEY"],
     )
-    model_name = client_emb.models.list().data[0].id
+    model_name = client_llmlab.models.list().data[0].id
     logger.info(f"Embedding model: {model_name}")
 
     client_qdrant = QdrantClient(
@@ -188,7 +188,7 @@ def main():
     embeddings = []
     for i, document in enumerate(documents):
         try:
-            response = client_emb.embeddings.create(
+            response = client_llmlab.embeddings.create(
                 model=model_name,
                 input=document["text"]
             )

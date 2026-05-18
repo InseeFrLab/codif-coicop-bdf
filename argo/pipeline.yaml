@@ -425,16 +425,16 @@ spec:
               secretKeyRef:
                 name: secret-codif-coicop-bdf
                 key: DDC_ENCRYPTION_KEY
-          - name: VLLM_EMBEDDING_URL
+          - name: LLMLAB_URL
             valueFrom:
               secretKeyRef:
                 name: secret-codif-coicop-bdf
-                key: VLLM_EMBEDDING_URL
-          - name: VLLM_EMBEDDING_API_KEY
+                key: LLMLAB_URL
+          - name: LLMLAB_API_KEY
             valueFrom:
               secretKeyRef:
                 name: secret-codif-coicop-bdf
-                key: VLLM_EMBEDDING_API_KEY
+                key: LLMLAB_API_KEY
           - name: QDRANT_URL
             valueFrom:
               secretKeyRef:
@@ -521,16 +521,16 @@ spec:
               secretKeyRef:
                 name: secret-codif-coicop-bdf
                 key: MLFLOW_TRACKING_PASSWORD
-          - name: OLLAMA_API_KEY
+          - name: LLMLAB_API_KEY
             valueFrom:
               secretKeyRef:
                 name: secret-codif-coicop-bdf
-                key: OLLAMA_API_KEY
-          - name: OLLAMA_URL
+                key: LLMLAB_API_KEY
+          - name: LLMLAB_URL
             valueFrom:
               secretKeyRef:
                 name: secret-codif-coicop-bdf
-                key: OLLAMA_URL
+                key: LLMLAB_URL
           - name: QDRANT_URL
             valueFrom:
               secretKeyRef:
@@ -546,26 +546,6 @@ spec:
               secretKeyRef:
                 name: secret-codif-coicop-bdf
                 key: QDRANT_API_PORT
-          - name: VLLM_EMBEDDING_URL
-            valueFrom:
-              secretKeyRef:
-                name: secret-codif-coicop-bdf
-                key: VLLM_EMBEDDING_URL
-          - name: VLLM_EMBEDDING_API_KEY
-            valueFrom:
-              secretKeyRef:
-                name: secret-codif-coicop-bdf
-                key: VLLM_EMBEDDING_API_KEY
-          - name: VLLM_GENERATION_URL
-            valueFrom:
-              secretKeyRef:
-                name: secret-codif-coicop-bdf
-                key: VLLM_GENERATION_URL
-          - name: VLLM_GENERATION_API_KEY
-            valueFrom:
-              secretKeyRef:
-                name: secret-codif-coicop-bdf
-                key: VLLM_GENERATION_API_KEY
           - name: AWS_ACCESS_KEY_ID
             valueFrom:
               secretKeyRef:

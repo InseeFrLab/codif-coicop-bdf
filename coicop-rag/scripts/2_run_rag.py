@@ -97,7 +97,7 @@ def main():
         # Initialize external service connections
         # -----------------------------------------------------------------------
         
-        con, client_qdrant, client_vllm_gen, client_vllm_emb = initialize_clients(config)
+        con, client_qdrant, client_llmlab = initialize_clients(config)
         
         # -----------------------------------------------------------------------
         # Load prompt template
@@ -123,7 +123,7 @@ def main():
         # Step 1: Generate embeddings
         search_embeddings, embedding_dim = generate_embeddings(
             searched_products_rag,
-            client_vllm_emb,
+            client_llmlab,
             config
         )
         mlflow.log_param("embedding_dimension", embedding_dim)
@@ -148,7 +148,7 @@ def main():
         # Step 4: Generate LLM responses
         llm_responses = generate_llm_responses(
             messages,
-            client_vllm_gen,
+            client_llmlab,
             config,
             concurrency=config["llm"].get("concurrency", 8),
         )
@@ -448,53 +448,32 @@ def initialize_clients(config):
     )
     logger.info(f"  → Qdrant collection: {config['qdrant']['collection_name']}")
     
-    # LLM generation connection — llm.lab
-    logger.info("  → Connecting to llm.lab generation model...")
-    client_vllm_gen = OpenAI(
-        base_url=os.environ["OLLAMA_URL"],
-        api_key=os.environ["OLLAMA_API_KEY"],
+    # LLM connection — llm.lab (génération et embedding sur le même serveur)
+    logger.info("  → Connecting to llm.lab...")
+    client_llmlab = OpenAI(
+        base_url=os.environ["LLMLAB_URL"],
+        api_key=os.environ["LLMLAB_API_KEY"],
     )
 
-    client_vllm_emb = OpenAI(
-        base_url=os.environ["VLLM_EMBEDDING_URL"],
-        api_key=os.environ["VLLM_EMBEDDING_API_KEY"]
-    )
+    available = [m.id for m in client_llmlab.models.list().data]
 
-    models = client_vllm_gen.models.list()
-    available = [m.id for m in models.data]
-    expected_model_id = config["llm"]["model_name"]
-    if expected_model_id not in available:
+    expected_gen_model = config["llm"]["model_name"]
+    if expected_gen_model not in available:
         raise ValueError(
-            f"Modèle '{expected_model_id}' absent de llm.lab — disponibles : {available}"
+            f"Modèle de génération '{expected_gen_model}' absent de llm.lab — disponibles : {available}"
         )
-    logger.info("✔ Modèle '%s' disponible sur llm.lab", expected_model_id)
-    
-    try:
-        models = client_vllm_emb.models.list()
-        
-        if not models.data:
-            raise ValueError("No embedding model in vLLM server.")
+    logger.info("✔ Modèle de génération '%s' disponible sur llm.lab", expected_gen_model)
 
-        server_model_id = models.data[0].id
-        expected_model_id = config["embedding"]["model_name"]
-
-        if server_model_id != expected_model_id:
-            raise ValueError(
-                f"Model mismatch : server='{server_model_id}' "
-                f"vs config='{expected_model_id}'"
-            )
-
-        print("✔ Valid VLLM embedding model with config")
-
-    except KeyError as e:
-        print(f"Missing embedding config key : {e}")
-
-    except Exception as e:
-        print(f"Error between vllm's embedding model and config : {e}")
+    expected_emb_model = config["embedding"]["model_name"]
+    if expected_emb_model not in available:
+        raise ValueError(
+            f"Modèle d'embedding '{expected_emb_model}' absent de llm.lab — disponibles : {available}"
+        )
+    logger.info("✔ Modèle d'embedding '%s' disponible sur llm.lab", expected_emb_model)
 
     logger.info("✓ All clients initialized successfully")
-    
-    return con, client_qdrant, client_vllm_gen, client_vllm_emb
+
+    return con, client_qdrant, client_llmlab
 
 
 def load_prompt_template(config):
