@@ -117,6 +117,7 @@ codif_console <- function(df){
 #' Graphique qui affiche les évolutions du nombre de bonnes pred et le nombre de libellés selon le taux prop_in_s2
 #' @param df data.frame comprenant les infos sur la prédiction LCS
 graph_bon_pred_lcs <- function(df){
+  if (nrow(df) == 0) return(invisible(NULL))
   df <- df |> dplyr::filter(predict_ok == 1)
   ggplot2::ggplot(df, ggplot2::aes(x = prop)) +
     # Série 1 : taux pour predict_ok = 1
