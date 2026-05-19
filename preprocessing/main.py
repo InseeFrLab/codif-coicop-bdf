@@ -6,6 +6,7 @@ import s3fs
 import time
 import uuid
 import pandas as pd
+import pyarrow as pa
 from src.utils.data_management import (
     concat_path_from_key,
     load_stopwords,
@@ -164,7 +165,8 @@ def main():
             run_id=args.run_id, run_date=args.run_date
         )
         export_parquet_s3(df, f"{output_root}/raw_test.parquet")
-        export_parquet_s3(df.iloc[0:0], f"{output_root}/raw_train.parquet")
+        train_schema = pa.Schema.from_pandas(df, preserve_index=False)
+        export_parquet_s3(df.iloc[0:0], f"{output_root}/raw_train.parquet", schema=train_schema)
         logger.info(f"Fichier de prédiction exporté : {output_root}/raw_test.parquet")
         return
 
