@@ -702,6 +702,7 @@ spec:
                   --rag-file $RUN_ROOT/run-rag/predictions.parquet \
                   --ttc-file $RUN_ROOT/run-ttc/predictions.parquet \
                   --output-file $RUN_ROOT/decide-coicop/predictions.parquet \
+                  --extra-columns-file $RUN_ROOT/raw_test.parquet \
                   --concurrency {{inputs.parameters.concurrency}}"
 
             if [ -n "{{inputs.parameters.model}}" ]; then
