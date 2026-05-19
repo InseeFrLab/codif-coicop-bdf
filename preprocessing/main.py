@@ -164,6 +164,7 @@ def main():
         output_root = concat_path_from_key(config, "paths", "output_root").format(
             run_id=args.run_id, run_date=args.run_date
         )
+        df["_source_input_file"] = args.input_file
         export_parquet_s3(df, f"{output_root}/raw_test.parquet")
 
         # Build suggester from the fixed reference catalog so codif-lcs has a non-empty

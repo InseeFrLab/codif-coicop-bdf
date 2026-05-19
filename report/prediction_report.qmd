@@ -65,6 +65,7 @@ n_total = len(df)
 n_consensus = int((df["llm_model"] == "consensus").sum()) if "llm_model" in df.columns else 0
 n_llm_judged = n_total - n_consensus
 n_errors = int(df["llm_error"].notna().sum()) if "llm_error" in df.columns else 0
+source_input_file = df["_source_input_file"].iloc[0] if "_source_input_file" in df.columns and len(df) > 0 else None
 
 LEVEL_WIDTHS = [2, 4, 6, 8, 10]
 LEVEL_NAMES  = ["L1 (2 pos.)", "L2 (4 pos.)", "L3 (6 pos.)", "L4 (8 pos.)", "L5 (10 pos.)"]
@@ -82,7 +83,8 @@ PREDICTORS = {
 |---|---|
 | Run ID | `{python} RUN_ID` |
 | Date   | `{python} RUN_DATE` |
-| Fichier source | `{python} INPUT` |
+| Fichier d'entrée | `{python} source_input_file if source_input_file else "—"` |
+| Fichier de prédictions | `{python} INPUT` |
 | Observations totales | `{python} f"{n_total:,}".replace(",", " ")` |
 | Avec consensus automatique | `{python} f"{n_consensus:,} ({n_consensus/n_total*100:.1f} %)".replace(",", " ") if n_total else "—"` |
 | Arbitrés par le LLM | `{python} f"{n_llm_judged:,} ({n_llm_judged/n_total*100:.1f} %)".replace(",", " ") if n_total else "—"` |
@@ -208,4 +210,74 @@ else:
 
     display(Markdown("**Tableau détaillé par code L2 :**"))
     display(Markdown(summary.to_markdown(index=False)))
+```
+
+## Observations à désaccord total entre les trois prédicateurs
+
+*Observations pour lesquelles LCS, RAG et TTC proposent chacun un code différent.*
+
+```{python}
+pred_cols = {k: v for k, v in PREDICTORS.items() if v in df.columns}
+
+if len(pred_cols) < 3:
+    display(Markdown("*Colonnes de prédiction insuffisantes pour cette analyse.*"))
+else:
+    lcs_col, rag_col, ttc_col = "lcs_code", "rag_code", "ttc_code_1"
+    has_all = df[[lcs_col, rag_col, ttc_col]].notna().all(axis=1)
+    sub = df[has_all].copy()
+
+    # Désaccord total : les 3 codes sont tous différents
+    total_disagreement = (
+        (sub[lcs_col] != sub[rag_col]) &
+        (sub[lcs_col] != sub[ttc_col]) &
+        (sub[rag_col] != sub[ttc_col])
+    )
+    disag = sub[total_disagreement].copy()
+
+    n_disag = len(disag)
+    n_all_pred = len(sub)
+    pct = n_disag / n_all_pred * 100 if n_all_pred else 0
+
+    display(Markdown(
+        f"**{n_disag:,}** observations en désaccord total sur {n_all_pred:,} "
+        f"observations avec les 3 prédicteurs renseignés ({pct:.1f} %)."
+        .replace(",", " ")
+    ))
+
+    if n_disag > 0:
+        # Distribution des décisions LLM sur ces cas difficiles
+        llm_dist = disag["llm_code"].str[:4].value_counts().head(10).reset_index()
+        llm_dist.columns = ["Code L2 (LLM)", "Nb obs."]
+        display(Markdown("\n**Top 10 codes L2 choisis par le LLM sur ces cas :**"))
+        display(Markdown(llm_dist.to_markdown(index=False)))
+
+        # Distribution des scores de confiance LLM
+        if "llm_confiance" in disag.columns:
+            fig, ax = plt.subplots(figsize=(6, 3))
+            conf_vals = disag["llm_confiance"].dropna().astype(int).value_counts().sort_index()
+            ax.bar(conf_vals.index, conf_vals.values, color="#E91E63", edgecolor="white")
+            ax.set_title("Confiance LLM sur les cas à désaccord total")
+            ax.set_xlabel("Score de confiance (1–5)")
+            ax.set_ylabel("Nb observations")
+            ax.xaxis.set_major_locator(mticker.MaxNLocator(integer=True))
+            plt.tight_layout()
+            plt.show()
+
+        # Exemples
+        example_cols = ["raw_product", lcs_col, rag_col, ttc_col, "llm_code"]
+        if "llm_explication" in disag.columns:
+            example_cols.append("llm_explication")
+        if "llm_confiance" in disag.columns:
+            example_cols.append("llm_confiance")
+
+        examples = disag[example_cols].sample(min(10, n_disag), random_state=42)
+        examples.columns = [
+            c.replace("lcs_code", "LCS").replace("rag_code", "RAG")
+             .replace("ttc_code_1", "TTC").replace("llm_code", "LLM")
+             .replace("llm_explication", "Explication LLM")
+             .replace("llm_confiance", "Confiance")
+            for c in examples.columns
+        ]
+        display(Markdown(f"\n**{min(10, n_disag)} exemples tirés aléatoirement :**"))
+        display(Markdown(examples.to_markdown(index=False)))
 ```
