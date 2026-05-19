@@ -77,19 +77,24 @@ def is_prediction_mode(input_path: str) -> bool:
 def main() -> int:
     args = parse_args()
     run_root = f"s3://{args.bucket}/data/workflow_runs/{args.run_date}/{args.run_id}"
-    input_path = f"{run_root}/decide-coicop/predictions.parquet"
+    decide_path = f"{run_root}/decide-coicop/predictions.parquet"
+    final_output_path = f"{run_root}/final-output/predictions.parquet"
     output_s3 = f"{run_root}/report/report.html"
 
     here = Path(__file__).resolve().parent
     out_html = here / "report.html"
 
     env = os.environ.copy()
-    env["REPORT_INPUT_PATH"] = input_path
     env["REPORT_RUN_ID"] = args.run_id
     env["REPORT_RUN_DATE"] = args.run_date
 
-    prediction = is_prediction_mode(input_path)
+    prediction = is_prediction_mode(decide_path)
     qmd = "prediction_report.qmd" if prediction else "report.qmd"
+    if prediction:
+        env["REPORT_INPUT_PATH"] = final_output_path
+        env["REPORT_DECIDE_PATH"] = decide_path
+    else:
+        env["REPORT_INPUT_PATH"] = decide_path
     print(f"[report] mode={'prediction' if prediction else 'evaluation'}", flush=True)
     print(f"[report] rendering {here / qmd} (input={input_path})", flush=True)
     subprocess.run(

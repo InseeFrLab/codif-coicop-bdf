@@ -167,6 +167,14 @@ spec:
                   value: "{{workflow.parameters.run_id}}"
                 - name: run_date
                   value: "{{workflow.parameters.run_date}}"
+                - name: text_column
+                  value: "{{workflow.parameters.text_column}}"
+                - name: shop_column
+                  value: "{{workflow.parameters.shop_column}}"
+                - name: budget_column
+                  value: "{{workflow.parameters.budget_column}}"
+                - name: annee_column
+                  value: "{{workflow.parameters.annee_column}}"
 
           - name: report
             dependencies: [decide-coicop]
@@ -772,6 +780,10 @@ spec:
         parameters:
           - name: run_id
           - name: run_date
+          - name: text_column
+          - name: shop_column
+          - name: budget_column
+          - name: annee_column
       container:
         image: inseefrlab/onyxia-vscode-python:py3.13.12
         command: [sh, -c]
@@ -780,7 +792,12 @@ spec:
             set -e
             git clone --branch codif-pipeline https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/final-output
             uv sync
-            uv run main.py --run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}
+            ARGS="--run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}"
+            [ -n "{{inputs.parameters.text_column}}" ]   && ARGS="$ARGS --text-column {{inputs.parameters.text_column}}"
+            [ -n "{{inputs.parameters.shop_column}}" ]   && ARGS="$ARGS --shop-column {{inputs.parameters.shop_column}}"
+            [ -n "{{inputs.parameters.budget_column}}" ] && ARGS="$ARGS --budget-column {{inputs.parameters.budget_column}}"
+            [ -n "{{inputs.parameters.annee_column}}" ]  && ARGS="$ARGS --annee-column {{inputs.parameters.annee_column}}"
+            uv run main.py $ARGS
         env:
           - name: AWS_ACCESS_KEY_ID
             valueFrom:

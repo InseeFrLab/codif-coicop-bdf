@@ -32,6 +32,14 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--run-id", required=True)
     p.add_argument("--run-date", required=True)
     p.add_argument("--bucket", default="projet-budget-famille")
+    p.add_argument("--text-column", default="raw_product",
+                   help="Original input column name for product text (preprocessing renamed it to raw_product)")
+    p.add_argument("--shop-column", default="shop",
+                   help="Original input column name for shop (preprocessing renamed it to shop)")
+    p.add_argument("--budget-column", default="budget",
+                   help="Original input column name for budget (preprocessing renamed it to budget)")
+    p.add_argument("--annee-column", default="annee",
+                   help="Original input column name for year (preprocessing renamed it to annee)")
     return p.parse_args()
 
 
@@ -101,21 +109,34 @@ def main() -> int:
     result = result.merge(llm, on="id", how="left")
 
     # LLM code takes precedence; fallback to regex; else NA
-    result["final_code"] = result["llm_code"].where(
+    result["predicted_code"] = result["llm_code"].where(
         result["llm_code"].notna(), result["predict_code"]
     )
-    result["final_method"] = result.apply(
-        lambda r: r["llm_model"]
+    result["prediction_source"] = result.apply(
+        lambda r: ("consensus" if r["llm_model"] == "consensus" else "llm")
         if pd.notna(r["llm_code"])
-        else ("REGEX" if pd.notna(r["predict_code"]) else None),
+        else ("regex" if pd.notna(r["predict_code"]) else None),
         axis=1,
     )
-    result["final_comment"] = result["llm_explication"]
-    result["final_confiance"] = result["llm_confiance"]
+    result["llm_comment"] = result["llm_explication"]
 
     result = result.drop(
         columns=["predict_code", "llm_code", "llm_explication", "llm_confiance", "llm_model"]
     )
+
+    # Restore original column names (preprocessing renamed them to pipeline names)
+    reverse_mapping = {}
+    for pipeline_col, original_col in [
+        ("raw_product", args.text_column),
+        ("shop",        args.shop_column),
+        ("budget",      args.budget_column),
+        ("annee",       args.annee_column),
+    ]:
+        if original_col and original_col != pipeline_col and pipeline_col in result.columns:
+            reverse_mapping[pipeline_col] = original_col
+    if reverse_mapping:
+        result = result.rename(columns=reverse_mapping)
+        print(f"[final-output] restored column names: {reverse_mapping}", flush=True)
 
     export_parquet(result, f"{run_root}/final-output/predictions.parquet")
     return 0
