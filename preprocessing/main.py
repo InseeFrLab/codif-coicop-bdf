@@ -95,7 +95,7 @@ def main():
         logger.info(
             f"Mode prédiction activé. Chargement du fichier : {args.input_file}"
         )
-        (_, _, _, _, S3_SHOPS_MAPPING, S3_UNCODABLE_PRODUCTS) = load_path_data(config)
+        (_, _, _, S3_APP_ANNOTATIONS, S3_SHOPS_MAPPING, S3_UNCODABLE_PRODUCTS) = load_path_data(config)
 
         df = load_input_file(args.input_file, con)
         logger.info(f"{len(df)} lignes chargées depuis le fichier d'entrée")
@@ -165,9 +165,27 @@ def main():
             run_id=args.run_id, run_date=args.run_date
         )
         export_parquet_s3(df, f"{output_root}/raw_test.parquet")
-        train_schema = pa.Schema.from_pandas(df, preserve_index=False)
-        export_parquet_s3(df.iloc[0:0], f"{output_root}/raw_train.parquet", schema=train_schema)
-        logger.info(f"Fichier de prédiction exporté : {output_root}/raw_test.parquet")
+
+        # Build suggester from the fixed reference catalog so codif-lcs has a non-empty
+        # reference database to compare against (same logic as normal mode, load_data.py L.214-221)
+        suggester = con.sql(f"""
+            SELECT DISTINCT code, product AS raw_product, coicop
+            FROM read_csv_auto('{S3_APP_ANNOTATIONS}')
+        """).to_df()
+        suggester["source"] = "suggester"
+        suggester["annee"] = 2017
+        suggester["l_pr_product"] = normalize_text(suggester["raw_product"])
+        suggester["s_pr_product"] = suggester["l_pr_product"].copy()
+        suggester = preprocess_text(suggester, "s_pr_product", stopwords)
+        for col in ["shop", "shop_type_name", "budget", "n_obs"]:
+            if col not in suggester.columns:
+                suggester[col] = pd.NA
+        suggester["id"] = [str(uuid.uuid4()) for _ in range(len(suggester))]
+        export_parquet_s3(suggester, f"{output_root}/raw_train.parquet")
+        logger.info(
+            f"Fichier de prédiction exporté : {output_root}/raw_test.parquet "
+            f"({len(suggester)} lignes suggester dans raw_train.parquet)"
+        )
         return
 
     # -----------------------------------------------------------------------
