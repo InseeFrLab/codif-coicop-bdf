@@ -43,6 +43,26 @@ def parse_args():
         default="raw_product",
         help="Column in the input file containing the text to classify (default: raw_product).",
     )
+    parser.add_argument(
+        "--shop-column",
+        default="shop",
+        help="Column in the input file for the shop name (default: shop).",
+    )
+    parser.add_argument(
+        "--budget-column",
+        default="budget",
+        help="Column in the input file for the budget amount (default: budget).",
+    )
+    parser.add_argument(
+        "--annee-column",
+        default="annee",
+        help="Column in the input file for the year (default: annee).",
+    )
+    parser.add_argument(
+        "--source-column",
+        default="source",
+        help="Column in the input file for the data source tag (default: source).",
+    )
     return parser.parse_args()
 
 
@@ -83,8 +103,17 @@ def main():
             raise ValueError(
                 f"Column '{args.text_column}' not found in input file. Found: {list(df.columns)}"
             )
-        if args.text_column != "raw_product":
-            df = df.rename(columns={args.text_column: "raw_product"})
+
+        # Rename input columns to canonical pipeline names
+        column_mapping = {
+            args.text_column: "raw_product",
+            args.shop_column: "shop",
+            args.budget_column: "budget",
+            args.annee_column: "annee",
+            args.source_column: "source",
+        }
+        df = df.rename(columns={src: tgt for src, tgt in column_mapping.items()
+                                 if src in df.columns and src != tgt})
 
         shops_mapping = load_shops_mapping(S3_SHOPS_MAPPING, con)
 
@@ -115,6 +144,21 @@ def main():
         df = df.loc[~df["raw_product"].isin(uncodable_products)]
         df["id"] = [str(uuid.uuid4()) for _ in range(len(df))]
         logger.info(f"{len(df)} lignes après prétraitement")
+
+        # Ensure schema matches training output so downstream steps don't crash
+        prediction_defaults = {
+            "annee": pd.NA,
+            "code": pd.NA,
+            "coicop": pd.NA,
+            "shop": pd.NA,
+            "shop_type_name": pd.NA,
+            "budget": pd.NA,
+            "n_obs": 1,
+            "source": "prediction",
+        }
+        for col, default in prediction_defaults.items():
+            if col not in df.columns:
+                df[col] = default
 
         output_root = concat_path_from_key(config, "paths", "output_root").format(
             run_id=args.run_id, run_date=args.run_date
