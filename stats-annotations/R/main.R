@@ -71,6 +71,7 @@ suggester <- DBI::dbGetQuery(con, glue::glue(
         ")
 )
 suggester$s_pr_product <- as.character(suggester$s_pr_product)
+suggester$code <- as.character(suggester$code)
 
 ###############################################################################'
 # 2 - Retraitements ------------------------------------------------------------
