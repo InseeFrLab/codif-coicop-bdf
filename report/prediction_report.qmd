@@ -176,7 +176,7 @@ else:
                 rates[name] = (sub[col] == sub["llm_code"]).mean()
             else:
                 rates[name] = np.nan
-        best = max(rates, key=lambda k: rates[k] if not np.isnan(rates[k]) else -1)
+        best = max(rates, key=lambda k: rates[k] if not pd.isna(rates[k]) else -1)
         rows.append({
             "Code L2": grp,
             "Nb obs.": nb,
