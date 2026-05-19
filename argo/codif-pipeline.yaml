@@ -20,9 +20,9 @@ spec:
       - name: text_column
         value: NAT_DEP
       - name: shop_column
-        value: ""
+        value: "MAG_DEP"
       - name: budget_column
-        value: ""
+        value: "MONT_DEP"
       - name: annee_column
         value: ""
       - name: source_column
