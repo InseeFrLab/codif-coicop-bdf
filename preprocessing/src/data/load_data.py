@@ -160,8 +160,6 @@ def load_input_file(path: str, con) -> pd.DataFrame:
     else:
         df = con.sql(f"SELECT * FROM read_csv_auto('{path}', delim=';')").to_df()
 
-    if "raw_product" not in df.columns:
-        raise ValueError(f"Input file must contain a 'raw_product' column. Found: {list(df.columns)}")
     return df
 
 

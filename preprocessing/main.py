@@ -30,6 +30,10 @@ def parse_args():
         "--input-file", default=None,
         help="Path to input file for prediction (local or S3). Activates prediction mode."
     )
+    parser.add_argument(
+        "--text-column", default="raw_product",
+        help="Column in the input file containing the text to classify (default: raw_product)."
+    )
     return parser.parse_args()
 
 
@@ -63,6 +67,11 @@ def main():
 
         df = load_input_file(args.input_file, con)
         logger.info(f"{len(df)} lignes chargées depuis le fichier d'entrée")
+
+        if args.text_column not in df.columns:
+            raise ValueError(f"Column '{args.text_column}' not found in input file. Found: {list(df.columns)}")
+        if args.text_column != "raw_product":
+            df = df.rename(columns={args.text_column: "raw_product"})
 
         shops_mapping = load_shops_mapping(S3_SHOPS_MAPPING, con)
 
