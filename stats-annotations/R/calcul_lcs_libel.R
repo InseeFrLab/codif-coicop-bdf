@@ -83,6 +83,9 @@ aws.s3::s3write_using(
   opts = list("region" = "")
 )
 
+is_prediction_mode <- all(is.na(data$code))
+if (!is_prediction_mode) {
+
 ###############################################################################'
 # 2 - Analyse des bonnes prédictions selon la valeur de prop_in_s2 ------
 
@@ -187,3 +190,4 @@ recap_origine <- table(erreur_pred$source) |> as.data.frame() |> # erreur totale
                       dplyr::rename(total = Freq), by = "Var1") |> 
   dplyr::rename(origine_libel = Var1)
 
+} # end if (!is_prediction_mode)
