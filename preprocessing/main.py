@@ -120,6 +120,7 @@ def main():
             run_id=args.run_id, run_date=args.run_date
         )
         export_parquet_s3(df, f"{output_root}/raw_test.parquet")
+        export_parquet_s3(df.iloc[0:0], f"{output_root}/raw_train.parquet")
         logger.info(f"Fichier de prédiction exporté : {output_root}/raw_test.parquet")
         return
 
