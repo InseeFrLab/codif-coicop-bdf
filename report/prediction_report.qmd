@@ -172,9 +172,6 @@ plt.show()
 
 ```{python}
 if df_decide is not None and "llm_confiance" in df_decide.columns and n_llm > 0:
-    llm_ids = df[df["prediction_source"] == "llm"][["id"]]
-    llm_conf = llm_ids.merge(df_decide[["id", "llm_confiance", "prediction_source"]].rename(
-        columns={"prediction_source": "_src_decide"}), on="id", how="left")
     conf_by_src = df_decide.merge(
         df[["id", "prediction_source"]], on="id", how="left"
     ).groupby("prediction_source")["llm_confiance"].value_counts().unstack(fill_value=0)
