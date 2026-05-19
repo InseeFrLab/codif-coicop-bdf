@@ -167,8 +167,11 @@ def main():
         df["_source_input_file"] = args.input_file
         export_parquet_s3(df, f"{output_root}/raw_test.parquet")
 
-        # Build suggester from the fixed reference catalog so codif-lcs has a non-empty
-        # reference database to compare against (same logic as normal mode, load_data.py L.214-221)
+        # raw_train.parquet vide : regex-codif ne doit pas traiter le suggester
+        train_schema = pa.Schema.from_pandas(df, preserve_index=False)
+        export_parquet_s3(df.iloc[0:0], f"{output_root}/raw_train.parquet", schema=train_schema)
+
+        # Suggester dans un fichier dédié, lu directement par codif-lcs (bypass regex-codif)
         suggester = con.sql(f"""
             SELECT DISTINCT code, product AS raw_product, coicop
             FROM read_csv_auto('{S3_APP_ANNOTATIONS}')
@@ -182,10 +185,10 @@ def main():
             if col not in suggester.columns:
                 suggester[col] = pd.NA
         suggester["id"] = [str(uuid.uuid4()) for _ in range(len(suggester))]
-        export_parquet_s3(suggester, f"{output_root}/raw_train.parquet")
+        export_parquet_s3(suggester, f"{output_root}/suggester.parquet")
         logger.info(
             f"Fichier de prédiction exporté : {output_root}/raw_test.parquet "
-            f"({len(suggester)} lignes suggester dans raw_train.parquet)"
+            f"({len(suggester)} lignes suggester dans suggester.parquet)"
         )
         return
 

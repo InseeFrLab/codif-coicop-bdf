@@ -64,12 +64,24 @@ data <- DBI::dbGetQuery(con, glue::glue(
         ")
     )
 
-suggester <- DBI::dbGetQuery(con, glue::glue(
-  " SELECT *
-    FROM read_parquet('s3://{BUCKET}/{sug_path}')
-    WHERE source = 'suggester'
-        ")
-)
+# En mode prédiction, le suggester est dans un fichier dédié (bypass regex-codif).
+# On essaie ce fichier en premier ; si absent (mode normal), on lit depuis raw_train_without_regex.
+suggester_override <- glue::glue("{run_root}/suggester.parquet")
+use_override <- tryCatch({
+  DBI::dbGetQuery(con, glue::glue(
+    "SELECT COUNT(*) > 0 AS has_rows FROM read_parquet('s3://{BUCKET}/{suggester_override}')"
+  ))$has_rows
+}, error = function(e) FALSE)
+
+if (isTRUE(use_override)) {
+  suggester <- DBI::dbGetQuery(con, glue::glue(
+    "SELECT * FROM read_parquet('s3://{BUCKET}/{suggester_override}')"
+  ))
+} else {
+  suggester <- DBI::dbGetQuery(con, glue::glue(
+    "SELECT * FROM read_parquet('s3://{BUCKET}/{sug_path}') WHERE source = 'suggester'"
+  ))
+}
 suggester$s_pr_product <- as.character(suggester$s_pr_product)
 suggester$code <- as.character(suggester$code)
 
