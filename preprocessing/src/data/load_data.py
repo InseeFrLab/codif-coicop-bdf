@@ -149,6 +149,22 @@ def load_shops_mapping(s3_shop_types, con) -> pd.DataFrame:
     return shops_mapping
 
 
+def load_input_file(path: str, con) -> pd.DataFrame:
+    """
+    Load an arbitrary CSV or parquet file (local or S3) for prediction mode.
+    Returns a DataFrame guaranteed to have a 'raw_product' column.
+    """
+    ext = path.split("?")[0].lower()
+    if ext.endswith(".parquet"):
+        df = con.sql(f"SELECT * FROM read_parquet('{path}')").to_df()
+    else:
+        df = con.sql(f"SELECT * FROM read_csv_auto('{path}', delim=';')").to_df()
+
+    if "raw_product" not in df.columns:
+        raise ValueError(f"Input file must contain a 'raw_product' column. Found: {list(df.columns)}")
+    return df
+
+
 def load_data(config, con):
     """
     Load all annotations files

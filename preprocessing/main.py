@@ -13,7 +13,7 @@ from src.utils.data_management import (
 from src.utils.load_config import load_config
 from src.utils.logging import setup_logging
 from src.utils.init_duckdb import init_duckdb
-from src.data.load_data import load_data
+from src.data.load_data import load_data, load_input_file, load_shops_mapping, load_path_data
 from src.data.string_cleaning import preprocess_text, normalize_text
 from src.data.check_data import duplicated_suggester, get_product_with_multiple_codes
 from src.stats.calculate_features import aggregate_budget, statistics_annotations_data
@@ -26,6 +26,10 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--run-id", required=True, help="Workflow run identifier")
     parser.add_argument("--run-date", required=True, help="Workflow run date (YYYY-MM-DD)")
+    parser.add_argument(
+        "--input-file", default=None,
+        help="Path to input file for prediction (local or S3). Activates prediction mode."
+    )
     return parser.parse_args()
 
 
@@ -49,6 +53,48 @@ def main():
     logger.info("Initialisation duckdb")
     con = init_duckdb(config)
     logger.info("Initialisation duckdb fait")
+
+    # -----------------------------------------------------------------------
+    # PREDICTION MODE
+    # -----------------------------------------------------------------------
+    if args.input_file:
+        logger.info(f"Mode prédiction activé. Chargement du fichier : {args.input_file}")
+        (_, _, _, _, S3_SHOPS_MAPPING, S3_UNCODABLE_PRODUCTS) = load_path_data(config)
+
+        df = load_input_file(args.input_file, con)
+        logger.info(f"{len(df)} lignes chargées depuis le fichier d'entrée")
+
+        shops_mapping = load_shops_mapping(S3_SHOPS_MAPPING, con)
+
+        uncodable_products = con.sql(f"""
+            SELECT DISTINCT produit AS raw_product
+            FROM read_csv_auto('{S3_UNCODABLE_PRODUCTS}')
+        """).to_df()["raw_product"].tolist()
+
+        if "shop" in df.columns:
+            df["shop"] = normalize_text(df["shop"])
+            shops_mapping["shop"] = normalize_text(shops_mapping["shop"])
+            df = df.merge(
+                shops_mapping[["shop", "shop_type_code", "shop_type_name"]],
+                on="shop", how="left"
+            )
+
+        df["l_pr_product"] = normalize_text(df["raw_product"])
+        uncodable_products = normalize_text(pd.Series(uncodable_products)).tolist()
+        stopwords = load_stopwords()
+        df["s_pr_product"] = df["l_pr_product"].copy()
+        df = preprocess_text(df, "s_pr_product", stopwords)
+
+        df = df.loc[~df["raw_product"].isin(uncodable_products)]
+        df["id"] = [str(uuid.uuid4()) for _ in range(len(df))]
+        logger.info(f"{len(df)} lignes après prétraitement")
+
+        output_root = concat_path_from_key(config, "paths", "output_root").format(
+            run_id=args.run_id, run_date=args.run_date
+        )
+        export_parquet_s3(df, f"{output_root}/raw_predict.parquet")
+        logger.info(f"Fichier de prédiction exporté : {output_root}/raw_predict.parquet")
+        return
 
     # -----------------------------------------------------------------------
     # READING ALL FILES
