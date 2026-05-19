@@ -180,7 +180,7 @@ else:
         rows.append({
             "Code L2": grp,
             "Nb obs.": nb,
-            **{f"{k} ↔ LLM": f"{v*100:.0f} %" if not np.isnan(v) else "—" for k, v in rates.items()},
+            **{f"{k} ↔ LLM": f"{v*100:.0f} %" if not pd.isna(v) else "—" for k, v in rates.items()},
             "Meilleur prédicateur": best,
         })
 
