@@ -24,7 +24,7 @@ spec:
       - name: model-name
         value: "gemma4-26b-moe"
       - name: skip-vector-db
-        value: "false"
+        value: "true"
       - name: run_id
         value: "{{workflow.name}}"
       - name: run_date
