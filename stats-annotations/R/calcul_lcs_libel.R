@@ -90,7 +90,7 @@ aws.s3::s3write_using(
 comparaison <- output_lcs |>
   dplyr::mutate(
     comparaison = purrr::map2_chr(code, predict_code, compar_coicop),
-    long_max_coicop = purrr::map2_int(code, predict_code, ~ max(nchar(.x), nchar(.y), na.rm = T)) # variable permettant de récupérer les bonne pred sur des positions inférieures
+    long_max_coicop = purrr::map2_int(code, predict_code, ~ { m <- max(nchar(.x), nchar(.y), na.rm = TRUE); if (is.infinite(m)) 0L else as.integer(m) }) # variable permettant de récupérer les bonne pred sur des positions inférieures
   ) |>
   dplyr::distinct() |> 
   dplyr::mutate(predict_ok = dplyr::if_else(code == comparaison, 1, 0))
