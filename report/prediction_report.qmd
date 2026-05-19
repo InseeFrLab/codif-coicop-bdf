@@ -60,7 +60,10 @@ con.sql(
     )
 )
 
-df = con.sql(f"SELECT * FROM read_parquet('{INPUT}')").df()
+if INPUT.lower().endswith(".parquet"):
+    df = con.sql(f"SELECT * FROM read_parquet('{INPUT}')").df()
+else:
+    df = con.sql(f"SELECT * FROM read_csv_auto('{INPUT}')").df()
 df_decide = None
 if DECIDE_PATH:
     df_decide = con.sql(f"SELECT * FROM read_parquet('{DECIDE_PATH}')").df()

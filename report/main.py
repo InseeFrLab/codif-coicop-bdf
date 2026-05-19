@@ -23,6 +23,11 @@ def parse_args() -> argparse.Namespace:
         default="projet-budget-famille",
         help="S3 bucket that holds workflow_runs (default: projet-budget-famille)",
     )
+    p.add_argument(
+        "--input-file",
+        default=None,
+        help="Original input file path; used to locate the final-output file in prediction mode.",
+    )
     return p.parse_args()
 
 
@@ -91,12 +96,14 @@ def main() -> int:
     prediction = is_prediction_mode(decide_path)
     qmd = "prediction_report.qmd" if prediction else "report.qmd"
     if prediction:
+        if args.input_file:
+            final_output_path = f"{run_root}/final-output/{os.path.basename(args.input_file)}"
         env["REPORT_INPUT_PATH"] = final_output_path
         env["REPORT_DECIDE_PATH"] = decide_path
     else:
         env["REPORT_INPUT_PATH"] = decide_path
     print(f"[report] mode={'prediction' if prediction else 'evaluation'}", flush=True)
-    print(f"[report] rendering {here / qmd} (input={input_path})", flush=True)
+    print(f"[report] rendering {here / qmd} (input={env['REPORT_INPUT_PATH']})", flush=True)
     subprocess.run(
         ["quarto", "render", qmd, "--to", "html", "--output", "report.html"],
         cwd=here,

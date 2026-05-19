@@ -33,13 +33,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--run-date", required=True)
     p.add_argument("--bucket", default="projet-budget-famille")
     p.add_argument("--text-column", default="raw_product",
-                   help="Original input column name for product text (preprocessing renamed it to raw_product)")
+                   help="Original input column name for product text")
     p.add_argument("--shop-column", default="shop",
-                   help="Original input column name for shop (preprocessing renamed it to shop)")
+                   help="Original input column name for shop")
     p.add_argument("--budget-column", default="budget",
-                   help="Original input column name for budget (preprocessing renamed it to budget)")
+                   help="Original input column name for budget")
     p.add_argument("--annee-column", default="annee",
-                   help="Original input column name for year (preprocessing renamed it to annee)")
+                   help="Original input column name for year")
     return p.parse_args()
 
 
@@ -67,15 +67,25 @@ def init_duckdb() -> duckdb.DuckDBPyConnection:
     return con
 
 
-def export_parquet(df: pd.DataFrame, s3_uri: str) -> None:
+def _fs() -> s3fs.S3FileSystem:
     endpoint = os.environ.get("AWS_S3_ENDPOINT") or os.environ.get("AWS_ENDPOINT_URL")
     if endpoint and not endpoint.startswith("http"):
         endpoint = f"https://{endpoint}"
-    fs = s3fs.S3FileSystem(endpoint_url=endpoint)
+    return s3fs.S3FileSystem(endpoint_url=endpoint)
+
+
+def export_parquet(df: pd.DataFrame, s3_uri: str) -> None:
     path = s3_uri.removeprefix("s3://")
     tbl = pa.Table.from_pandas(df, preserve_index=False)
-    with fs.open(path, "wb") as f:
+    with _fs().open(path, "wb") as f:
         pq.write_table(tbl, f)
+    print(f"[final-output] exported {len(df)} rows → {s3_uri}", flush=True)
+
+
+def export_csv(df: pd.DataFrame, s3_uri: str) -> None:
+    path = s3_uri.removeprefix("s3://")
+    with _fs().open(path, "w") as f:
+        df.to_csv(f, index=False)
     print(f"[final-output] exported {len(df)} rows → {s3_uri}", flush=True)
 
 
@@ -85,9 +95,15 @@ def main() -> int:
     con = init_duckdb()
 
     # Base: all user columns from raw_test.parquet (strip internal pipeline columns)
-    raw = con.sql(f"SELECT * FROM read_parquet('{run_root}/preprocessing/raw_test.parquet')").df()
-    initial_cols = ["id"] + [c for c in raw.columns if c not in PIPELINE_COLS and c != "id"]
-    raw = raw[initial_cols]
+    # Read full first to capture _source_input_file before stripping
+    raw_full = con.sql(f"SELECT * FROM read_parquet('{run_root}/preprocessing/raw_test.parquet')").df()
+    input_file_path = (
+        raw_full["_source_input_file"].iloc[0]
+        if "_source_input_file" in raw_full.columns and len(raw_full) > 0
+        else None
+    )
+    initial_cols = ["id"] + [c for c in raw_full.columns if c not in PIPELINE_COLS and c != "id"]
+    raw = raw_full[initial_cols]
     print(f"[final-output] base: {len(raw)} rows, {len(initial_cols)} columns", flush=True)
 
     # Regex predictions: rows classified by regex
@@ -138,7 +154,16 @@ def main() -> int:
         result = result.rename(columns=reverse_mapping)
         print(f"[final-output] restored column names: {reverse_mapping}", flush=True)
 
-    export_parquet(result, f"{run_root}/final-output/predictions.parquet")
+    # Export with original input filename and format
+    output_basename = os.path.basename(input_file_path) if input_file_path else "predictions.parquet"
+    output_uri = f"{run_root}/final-output/{output_basename}"
+    print(f"[final-output] output file: {output_uri}", flush=True)
+
+    if output_basename.lower().endswith(".csv"):
+        export_csv(result, output_uri)
+    else:
+        export_parquet(result, output_uri)
+
     return 0
 
 

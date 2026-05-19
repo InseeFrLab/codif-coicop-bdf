@@ -177,7 +177,7 @@ spec:
                   value: "{{workflow.parameters.annee_column}}"
 
           - name: report
-            dependencies: [decide-coicop]
+            dependencies: [final-output]
             template: report
             when: '"{{workflow.parameters.skip-report}}" != "true"'
             arguments:
@@ -186,6 +186,8 @@ spec:
                   value: "{{workflow.parameters.run_id}}"
                 - name: run_date
                   value: "{{workflow.parameters.run_date}}"
+                - name: input_file
+                  value: "{{workflow.parameters.input_file}}"
 
     # -----------------------------------------------------------------------
     # Step 0: Preprocessing — construction du dataset
@@ -840,6 +842,7 @@ spec:
         parameters:
           - name: run_id
           - name: run_date
+          - name: input_file
       container:
         image: inseefrlab/onyxia-vscode-python:py3.13.12
         command: [sh, -c]
@@ -848,7 +851,9 @@ spec:
             set -e
             git clone --branch codif-pipeline https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/report
             uv sync
-            uv run main.py --run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}
+            ARGS="--run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}"
+            [ -n "{{inputs.parameters.input_file}}" ] && ARGS="$ARGS --input-file {{inputs.parameters.input_file}}"
+            uv run main.py $ARGS
         env:
           - name: AWS_ACCESS_KEY_ID
             valueFrom:
