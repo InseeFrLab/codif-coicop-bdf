@@ -7,9 +7,11 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from textwrap import dedent
 from urllib.parse import urlparse
 
 import boto3
+import duckdb
 
 
 def parse_args() -> argparse.Namespace:
@@ -47,6 +49,31 @@ def upload(local: Path, s3_uri: str) -> None:
     print(f"[report] uploaded {local} -> {s3_uri}", flush=True)
 
 
+def is_prediction_mode(input_path: str) -> bool:
+    endpoint = (
+        os.environ.get("AWS_S3_ENDPOINT")
+        or os.environ.get("AWS_ENDPOINT_URL", "").replace("https://", "").replace("http://", "")
+        or "minio.lab.sspcloud.fr"
+    )
+    con = duckdb.connect()
+    con.sql("INSTALL httpfs; LOAD httpfs;")
+    con.sql(
+        dedent(f"""
+            CREATE OR REPLACE SECRET s3_secret (
+                TYPE s3,
+                KEY_ID '{os.environ.get("AWS_ACCESS_KEY_ID", "")}',
+                SECRET '{os.environ.get("AWS_SECRET_ACCESS_KEY", "")}',
+                SESSION_TOKEN '{os.environ.get("AWS_SESSION_TOKEN", "")}',
+                ENDPOINT '{endpoint}',
+                URL_STYLE 'path',
+                USE_SSL true
+            );
+        """)
+    )
+    row = con.sql(f"SELECT bool_and(code IS NULL) FROM read_parquet('{input_path}')").fetchone()
+    return bool(row[0]) if row and row[0] is not None else False
+
+
 def main() -> int:
     args = parse_args()
     run_root = f"s3://{args.bucket}/data/workflow_runs/{args.run_date}/{args.run_id}"
@@ -61,9 +88,12 @@ def main() -> int:
     env["REPORT_RUN_ID"] = args.run_id
     env["REPORT_RUN_DATE"] = args.run_date
 
-    print(f"[report] rendering {here / 'report.qmd'} (input={input_path})", flush=True)
+    prediction = is_prediction_mode(input_path)
+    qmd = "prediction_report.qmd" if prediction else "report.qmd"
+    print(f"[report] mode={'prediction' if prediction else 'evaluation'}", flush=True)
+    print(f"[report] rendering {here / qmd} (input={input_path})", flush=True)
     subprocess.run(
-        ["quarto", "render", "report.qmd", "--to", "html", "--output", "report.html"],
+        ["quarto", "render", qmd, "--to", "html", "--output", "report.html"],
         cwd=here,
         env=env,
         check=True,
