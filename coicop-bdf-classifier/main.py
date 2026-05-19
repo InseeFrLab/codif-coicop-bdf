@@ -343,8 +343,8 @@ def cmd_decide_coicop(args: argparse.Namespace) -> None:
         try_consensus_decision,
     )
 
-    if not os.environ.get("OPENAI_API_KEY"):
-        logger.error("Variable OPENAI_API_KEY non définie.")
+    if not os.environ.get("LLMLAB_API_KEY"):
+        logger.error("Variable LLMLAB_API_KEY non définie.")
         sys.exit(1)
 
     logger.info("Chargement des données...")
@@ -360,8 +360,8 @@ def cmd_decide_coicop(args: argparse.Namespace) -> None:
             logger.error("%s", exc)
             sys.exit(1)
 
-        api_kwargs: dict = {"api_key": os.environ["OPENAI_API_KEY"]}
-        if base_url := os.environ.get("OPENAI_BASE_URL"):
+        api_kwargs: dict = {"api_key": os.environ["LLMLAB_API_KEY"]}
+        if base_url := os.environ.get("LLMLAB_URL"):
             api_kwargs["base_url"] = base_url
         client = OpenAI(**api_kwargs)
 

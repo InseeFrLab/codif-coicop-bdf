@@ -23,7 +23,7 @@ qdrant:
   upload_batch_size: 56
 
 embedding:
-  model_name: Qwen/Qwen3-Embedding-8B
+  model_name: qwen3-embedding-8b
   model_len: 4096
 
 retrieval:

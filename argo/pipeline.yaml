@@ -158,7 +158,7 @@ spec:
         args:
           - |
             set -e
-            git clone --branch merge-all-repos https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/preprocessing
+            git clone --branch main https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/preprocessing
             uv sync
             uv run main.py --run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}
         env:
@@ -209,7 +209,7 @@ spec:
         args:
           - |
             set -e
-            git clone --branch merge-all-repos https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/regex-codif
+            git clone --branch main https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/regex-codif
             uv sync
             uv run src/main.py --run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}
         env:
@@ -260,7 +260,7 @@ spec:
         args:
           - |
             set -e
-            git clone --branch merge-all-repos https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/stats-annotations
+            git clone --branch main https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/stats-annotations
             Rscript R/main.R --run-id={{inputs.parameters.run_id}} --run-date={{inputs.parameters.run_date}}
         env:
           - name: AWS_ACCESS_KEY_ID
@@ -310,7 +310,7 @@ spec:
         args:
           - |
             set -e
-            git clone --branch merge-all-repos https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/coicop-rag
+            git clone --branch main https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/coicop-rag
             uv run scripts/0_prunning_coicop.py --config {{inputs.parameters.config}}
         env:
           - name: AWS_ACCESS_KEY_ID
@@ -357,7 +357,7 @@ spec:
         args:
           - |
             set -e
-            git clone --branch merge-all-repos https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/coicop-rag
+            git clone --branch main https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/coicop-rag
             uv run scripts/1_prune_annotations.py --config {{inputs.parameters.config}} --run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}
         env:
           - name: AWS_ACCESS_KEY_ID
@@ -402,7 +402,7 @@ spec:
         args:
           - |
             set -e
-            git clone --branch merge-all-repos https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/coicop-rag
+            git clone --branch main https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/coicop-rag
             uv run scripts/0_create_vector_db.py --config {{inputs.parameters.config}}
         env:
           - name: AWS_ACCESS_KEY_ID
@@ -425,16 +425,16 @@ spec:
               secretKeyRef:
                 name: secret-codif-coicop-bdf
                 key: DDC_ENCRYPTION_KEY
-          - name: VLLM_EMBEDDING_URL
+          - name: LLMLAB_URL
             valueFrom:
               secretKeyRef:
                 name: secret-codif-coicop-bdf
-                key: VLLM_EMBEDDING_URL
-          - name: VLLM_EMBEDDING_API_KEY
+                key: LLMLAB_URL
+          - name: LLMLAB_API_KEY
             valueFrom:
               secretKeyRef:
                 name: secret-codif-coicop-bdf
-                key: VLLM_EMBEDDING_API_KEY
+                key: LLMLAB_API_KEY
           - name: QDRANT_URL
             valueFrom:
               secretKeyRef:
@@ -476,7 +476,7 @@ spec:
         args:
           - |
             set -e
-            git clone --branch merge-all-repos https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/coicop-rag
+            git clone --branch main https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/coicop-rag
             mkdir -p logs prompts
 
             ARGS="--config {{inputs.parameters.config}} --run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}"
@@ -521,16 +521,16 @@ spec:
               secretKeyRef:
                 name: secret-codif-coicop-bdf
                 key: MLFLOW_TRACKING_PASSWORD
-          - name: OLLAMA_API_KEY
+          - name: LLMLAB_API_KEY
             valueFrom:
               secretKeyRef:
                 name: secret-codif-coicop-bdf
-                key: OLLAMA_API_KEY
-          - name: OLLAMA_URL
+                key: LLMLAB_API_KEY
+          - name: LLMLAB_URL
             valueFrom:
               secretKeyRef:
                 name: secret-codif-coicop-bdf
-                key: OLLAMA_URL
+                key: LLMLAB_URL
           - name: QDRANT_URL
             valueFrom:
               secretKeyRef:
@@ -546,26 +546,6 @@ spec:
               secretKeyRef:
                 name: secret-codif-coicop-bdf
                 key: QDRANT_API_PORT
-          - name: VLLM_EMBEDDING_URL
-            valueFrom:
-              secretKeyRef:
-                name: secret-codif-coicop-bdf
-                key: VLLM_EMBEDDING_URL
-          - name: VLLM_EMBEDDING_API_KEY
-            valueFrom:
-              secretKeyRef:
-                name: secret-codif-coicop-bdf
-                key: VLLM_EMBEDDING_API_KEY
-          - name: VLLM_GENERATION_URL
-            valueFrom:
-              secretKeyRef:
-                name: secret-codif-coicop-bdf
-                key: VLLM_GENERATION_URL
-          - name: VLLM_GENERATION_API_KEY
-            valueFrom:
-              secretKeyRef:
-                name: secret-codif-coicop-bdf
-                key: VLLM_GENERATION_API_KEY
           - name: AWS_ACCESS_KEY_ID
             valueFrom:
               secretKeyRef:
@@ -678,7 +658,7 @@ spec:
         args:
           - |
             set -e
-            git clone --branch merge-all-repos https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/coicop-bdf-classifier
+            git clone --branch main https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/coicop-bdf-classifier
             uv sync
 
             RUN_ROOT="s3://projet-budget-famille/data/workflow_runs/{{inputs.parameters.run_date}}/{{inputs.parameters.run_id}}"
@@ -694,17 +674,16 @@ spec:
 
             uv run main.py decide-coicop $ARGS
         env:
-          - name: OPENAI_API_KEY
+          - name: LLMLAB_API_KEY
             valueFrom:
               secretKeyRef:
                 name: secret-codif-coicop-bdf
-                key: OPENAI_API_KEY
-          - name: OPENAI_BASE_URL
+                key: LLMLAB_API_KEY
+          - name: LLMLAB_URL
             valueFrom:
               secretKeyRef:
                 name: secret-codif-coicop-bdf
-                key: OPENAI_BASE_URL
-                optional: true
+                key: LLMLAB_URL
           - name: AWS_ACCESS_KEY_ID
             valueFrom:
               secretKeyRef:
@@ -752,7 +731,7 @@ spec:
         args:
           - |
             set -e
-            git clone --branch merge-all-repos https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/report
+            git clone --branch main https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/report
             uv sync
             uv run main.py --run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}
         env:
