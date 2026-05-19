@@ -174,10 +174,10 @@ compar_coicop <- function(coicop1, coicop2){
 #' @param seuil_prop valeur du seuil d'analyse de la variable prop_in_s2 entre 0 et 1)
 #' @return tablea de contingence avec les bonnes et mauvaises prédictions
 comptage_pred_prop_in_s2 <- function(df, seuil_prop){
-  tableau <- table(df[df$prop_in_s2 >=seuil_prop, "predict_ok"], useNA = "ifany") |> 
-    as.data.frame() |> 
-    dplyr::mutate(prop = seuil_prop)
-  tableau$libel_tot <- sum(tableau$Freq, na.rm = TRUE)
+  tableau <- table(df[df$prop_in_s2 >=seuil_prop, "predict_ok"], useNA = "ifany") |>
+    as.data.frame() |>
+    dplyr::mutate(prop = seuil_prop,
+                  libel_tot = sum(Freq, na.rm = TRUE))
   return(tableau)
 }
 
