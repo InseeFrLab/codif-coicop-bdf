@@ -332,7 +332,7 @@ def build_prompt(
                 try:
                     val = float(val)
                 except (ValueError, TypeError):
-                    pass
+                    return val
             return format(val, fmt_spec)
         return str(val)
 
