@@ -53,8 +53,8 @@ spec:
     #                    ┌──→ prune-coicop ──→ create-vector-db ─────────────┐  (skippable)
     #   preprocessing ──┤                                                    ├──→ run-rag ──┐
     #                    └──→ codif-regex ──→ prune-annotations ─────────────┘              │
-    #                                    ├──→ codif-lcs ─────────────────────────────────────┼──→ decide-coicop ──→ report  (opt-in)
-    #                                    └──→ run-ttc ──────────────────────────────────────┘
+    #                                    ├──→ codif-lcs ─────────────────────────────────────┼──→ decide-coicop ──→ final-output
+    #                                    └──→ run-ttc ──────────────────────────────────────┘         └──→ report  (opt-in)
     # -----------------------------------------------------------------------
     - name: pipeline
       dag:
@@ -153,6 +153,16 @@ spec:
                   value: "{{workflow.parameters.decide-model}}"
                 - name: concurrency
                   value: "{{workflow.parameters.decide-concurrency}}"
+                - name: run_id
+                  value: "{{workflow.parameters.run_id}}"
+                - name: run_date
+                  value: "{{workflow.parameters.run_date}}"
+
+          - name: final-output
+            dependencies: [decide-coicop]
+            template: final-output
+            arguments:
+              parameters:
                 - name: run_id
                   value: "{{workflow.parameters.run_id}}"
                 - name: run_date
@@ -702,7 +712,7 @@ spec:
                   --rag-file $RUN_ROOT/run-rag/predictions.parquet \
                   --ttc-file $RUN_ROOT/run-ttc/predictions.parquet \
                   --output-file $RUN_ROOT/decide-coicop/predictions.parquet \
-                  --extra-columns-file $RUN_ROOT/raw_test.parquet \
+                  --extra-columns-file $RUN_ROOT/preprocessing/raw_test.parquet \
                   --concurrency {{inputs.parameters.concurrency}}"
 
             if [ -n "{{inputs.parameters.model}}" ]; then
@@ -755,7 +765,58 @@ spec:
             cpu: 15000m
 
     # -----------------------------------------------------------------------
-    # Step 6 (opt-in): accuracy report (Quarto HTML on S3)
+    # Step 6: Final user-facing output (regex + LLM predictions merged)
+    # -----------------------------------------------------------------------
+    - name: final-output
+      inputs:
+        parameters:
+          - name: run_id
+          - name: run_date
+      container:
+        image: inseefrlab/onyxia-vscode-python:py3.13.12
+        command: [sh, -c]
+        args:
+          - |
+            set -e
+            git clone --branch codif-pipeline https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/final-output
+            uv sync
+            uv run main.py --run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}
+        env:
+          - name: AWS_ACCESS_KEY_ID
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_ACCESS_KEY_ID
+          - name: AWS_SECRET_ACCESS_KEY
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_SECRET_ACCESS_KEY
+          - name: AWS_SESSION_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_SESSION_TOKEN
+          - name: AWS_S3_ENDPOINT
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_S3_ENDPOINT
+          - name: AWS_ENDPOINT_URL
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_ENDPOINT_URL
+        resources:
+          requests:
+            memory: 1Gi
+            cpu: 100m
+          limits:
+            memory: 8Gi
+            cpu: 2000m
+
+    # -----------------------------------------------------------------------
+    # Step 7 (opt-in): accuracy report (Quarto HTML on S3)
     # -----------------------------------------------------------------------
     - name: report
       inputs:
