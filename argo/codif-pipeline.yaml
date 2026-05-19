@@ -161,6 +161,8 @@ spec:
         parameters:
           - name: run_id
           - name: run_date
+          - name: input_file
+          - name: text_column
       container:
         image: inseefrlab/onyxia-vscode-python:py3.13.12
         command: [sh, -c]
@@ -169,7 +171,7 @@ spec:
             set -e
             git clone --branch codif-pipeline https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/preprocessing
             uv sync
-            uv run main.py --run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}
+            uv run main.py --run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}} --input-file {{inputs.parameters.input_file}} --text-column {{inputs.parameters.text_column}}
         env:
           - name: AWS_ACCESS_KEY_ID
             valueFrom:
