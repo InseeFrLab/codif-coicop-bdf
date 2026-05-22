@@ -1,0 +1,889 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: codif-
+spec:
+  entrypoint: pipeline
+  serviceAccountName: workflow
+
+  podSpecPatch: |
+    containers:
+      - name: main
+        env:
+          - name: AWS_DEFAULT_REGION
+            value: "us-east-1"
+
+  arguments:
+    parameters:
+      - name: input_file
+        value: s3://projet-budget-famille/data/workflow_inputs/BDF_data_tickets_appli_20260320_a_codif.csv
+      - name: text_column
+        value: NAT_DEP
+      - name: shop_column
+        value: "MAG_DEP"
+      - name: budget_column
+        value: "MONT_DEP"
+      - name: annee_column
+        value: ""
+      - name: source_column
+        value: ""
+      - name: sample_size
+        value: ""
+      - name: model-name
+        value: "gemma4-26b-moe"
+      - name: skip-vector-db
+        value: "true"
+      - name: run_id
+        value: "{{workflow.name}}"
+      - name: run_date
+        value:
+          "{{workflow.creationTimestamp.Y}}-{{workflow.creationTimestamp.m}}-{{wor\
+          kflow.creationTimestamp.d}}"
+      - name: decide-model
+        value: "gemma4-26b-moe"
+      - name: decide-concurrency
+        value: "5"
+      - name: skip-report
+        value: "false"
+
+  templates:
+    # -----------------------------------------------------------------------
+    # Main pipeline: DAG with parallelism
+    #
+    #                    ┌──→ prune-coicop ──→ create-vector-db ─────────────┐  (skippable)
+    #   preprocessing ──┤                                                    ├──→ run-rag ──┐
+    #                    └──→ codif-regex ──→ prune-annotations ─────────────┘              │
+    #                                    ├──→ codif-lcs ─────────────────────────────────────┼──→ decide-coicop ──→ final-output
+    #                                    └──→ run-ttc ──────────────────────────────────────┘         └──→ report  (opt-in)
+    # -----------------------------------------------------------------------
+    - name: pipeline
+      dag:
+        tasks:
+          - name: preprocessing
+            template: preprocessing
+            arguments:
+              parameters:
+                - name: run_id
+                  value: "{{workflow.parameters.run_id}}"
+                - name: run_date
+                  value: "{{workflow.parameters.run_date}}"
+                - name: input_file
+                  value: "{{workflow.parameters.input_file}}"
+                - name: text_column
+                  value: "{{workflow.parameters.text_column}}"
+                - name: shop_column
+                  value: "{{workflow.parameters.shop_column}}"
+                - name: budget_column
+                  value: "{{workflow.parameters.budget_column}}"
+                - name: annee_column
+                  value: "{{workflow.parameters.annee_column}}"
+                - name: source_column
+                  value: "{{workflow.parameters.source_column}}"
+
+          - name: prune-coicop
+            dependencies: [preprocessing]
+            template: prune-coicop
+            when: '"{{workflow.parameters.skip-vector-db}}" != "true"'
+
+          - name: codif-regex
+            dependencies: [preprocessing]
+            template: codif-regex
+            arguments:
+              parameters:
+                - name: run_id
+                  value: "{{workflow.parameters.run_id}}"
+                - name: run_date
+                  value: "{{workflow.parameters.run_date}}"
+
+          - name: prune-annotations
+            dependencies: [codif-regex]
+            template: prune-annotations
+            arguments:
+              parameters:
+                - name: run_id
+                  value: "{{workflow.parameters.run_id}}"
+                - name: run_date
+                  value: "{{workflow.parameters.run_date}}"
+
+          - name: codif-lcs
+            dependencies: [codif-regex]
+            template: codif-lcs
+            arguments:
+              parameters:
+                - name: run_id
+                  value: "{{workflow.parameters.run_id}}"
+                - name: run_date
+                  value: "{{workflow.parameters.run_date}}"
+
+          - name: create-vector-db
+            dependencies: [prune-coicop]
+            template: create-vector-db
+            when: '"{{workflow.parameters.skip-vector-db}}" != "true"'
+
+          - name: run-rag
+            dependencies: [create-vector-db, prune-annotations]
+            template: run-rag
+            arguments:
+              parameters:
+                - name: sample_size
+                  value: "{{workflow.parameters.sample_size}}"
+                - name: model-name
+                  value: "{{workflow.parameters.model-name}}"
+                - name: run_id
+                  value: "{{workflow.parameters.run_id}}"
+                - name: run_date
+                  value: "{{workflow.parameters.run_date}}"
+
+          - name: run-ttc
+            dependencies: [codif-regex]
+            template: run-ttc
+            arguments:
+              parameters:
+                - name: run_id
+                  value: "{{workflow.parameters.run_id}}"
+                - name: run_date
+                  value: "{{workflow.parameters.run_date}}"
+
+          - name: decide-coicop
+            dependencies: [codif-lcs, run-rag, run-ttc]
+            template: decide-coicop
+            arguments:
+              parameters:
+                - name: model
+                  value: "{{workflow.parameters.decide-model}}"
+                - name: concurrency
+                  value: "{{workflow.parameters.decide-concurrency}}"
+                - name: run_id
+                  value: "{{workflow.parameters.run_id}}"
+                - name: run_date
+                  value: "{{workflow.parameters.run_date}}"
+
+          - name: final-output
+            dependencies: [decide-coicop]
+            template: final-output
+            arguments:
+              parameters:
+                - name: run_id
+                  value: "{{workflow.parameters.run_id}}"
+                - name: run_date
+                  value: "{{workflow.parameters.run_date}}"
+                - name: text_column
+                  value: "{{workflow.parameters.text_column}}"
+                - name: shop_column
+                  value: "{{workflow.parameters.shop_column}}"
+                - name: budget_column
+                  value: "{{workflow.parameters.budget_column}}"
+                - name: annee_column
+                  value: "{{workflow.parameters.annee_column}}"
+
+          - name: report
+            dependencies: [final-output]
+            template: report
+            when: '"{{workflow.parameters.skip-report}}" != "true"'
+            arguments:
+              parameters:
+                - name: run_id
+                  value: "{{workflow.parameters.run_id}}"
+                - name: run_date
+                  value: "{{workflow.parameters.run_date}}"
+                - name: input_file
+                  value: "{{workflow.parameters.input_file}}"
+
+    # -----------------------------------------------------------------------
+    # Step 0: Preprocessing — construction du dataset
+    # -----------------------------------------------------------------------
+    - name: preprocessing
+      inputs:
+        parameters:
+          - name: run_id
+          - name: run_date
+          - name: input_file
+          - name: text_column
+          - name: shop_column
+          - name: budget_column
+          - name: annee_column
+          - name: source_column
+      container:
+        image: inseefrlab/onyxia-vscode-python:py3.13.12
+        command: [sh, -c]
+        args:
+          - |
+            set -e
+            git clone --branch codif-pipeline https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/preprocessing
+            uv sync
+            ARGS="--run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}} --input-file {{inputs.parameters.input_file}} --text-column {{inputs.parameters.text_column}}"
+            [ -n "{{inputs.parameters.shop_column}}" ]   && ARGS="$ARGS --shop-column {{inputs.parameters.shop_column}}"
+            [ -n "{{inputs.parameters.budget_column}}" ] && ARGS="$ARGS --budget-column {{inputs.parameters.budget_column}}"
+            [ -n "{{inputs.parameters.annee_column}}" ]  && ARGS="$ARGS --annee-column {{inputs.parameters.annee_column}}"
+            [ -n "{{inputs.parameters.source_column}}" ] && ARGS="$ARGS --source-column {{inputs.parameters.source_column}}"
+            uv run main.py $ARGS
+        env:
+          - name: AWS_ACCESS_KEY_ID
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_ACCESS_KEY_ID
+          - name: AWS_SECRET_ACCESS_KEY
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_SECRET_ACCESS_KEY
+          - name: AWS_SESSION_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_SESSION_TOKEN
+          - name: AWS_S3_ENDPOINT
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_S3_ENDPOINT
+          - name: AWS_ENDPOINT_URL
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_ENDPOINT_URL
+        resources:
+          requests:
+            memory: 2Gi
+            cpu: 100m
+          limits:
+            memory: 50Gi
+            cpu: 15000m
+
+    # -----------------------------------------------------------------------
+    # Step 0b: Codification par regex
+    # -----------------------------------------------------------------------
+    - name: codif-regex
+      inputs:
+        parameters:
+          - name: run_id
+          - name: run_date
+      container:
+        image: inseefrlab/onyxia-vscode-python:py3.13.12
+        command: [sh, -c]
+        args:
+          - |
+            set -e
+            git clone --branch codif-pipeline https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/regex-codif
+            uv sync
+            uv run src/main.py --run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}
+        env:
+          - name: AWS_ACCESS_KEY_ID
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_ACCESS_KEY_ID
+          - name: AWS_SECRET_ACCESS_KEY
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_SECRET_ACCESS_KEY
+          - name: AWS_SESSION_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_SESSION_TOKEN
+          - name: AWS_S3_ENDPOINT
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_S3_ENDPOINT
+          - name: AWS_ENDPOINT_URL
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_ENDPOINT_URL
+        resources:
+          requests:
+            memory: 2Gi
+            cpu: 100m
+          limits:
+            memory: 50Gi
+            cpu: 15000m
+
+    # -----------------------------------------------------------------------
+    # Step 0c: Codification par LCS
+    # -----------------------------------------------------------------------
+    - name: codif-lcs
+      inputs:
+        parameters:
+          - name: run_id
+          - name: run_date
+      container:
+        image: inseefrlab/onyxia-vscode-r-python-julia:r4.5.3-py3.13.12
+        command: [sh, -c]
+        args:
+          - |
+            set -e
+            git clone --branch codif-pipeline https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/stats-annotations
+            Rscript R/main.R --run-id={{inputs.parameters.run_id}} --run-date={{inputs.parameters.run_date}}
+        env:
+          - name: AWS_ACCESS_KEY_ID
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_ACCESS_KEY_ID
+          - name: AWS_SECRET_ACCESS_KEY
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_SECRET_ACCESS_KEY
+          - name: AWS_SESSION_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_SESSION_TOKEN
+          - name: AWS_S3_ENDPOINT
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_S3_ENDPOINT
+          - name: AWS_ENDPOINT_URL
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_ENDPOINT_URL
+        resources:
+          requests:
+            memory: 2Gi
+            cpu: 100m
+          limits:
+            memory: 50Gi
+            cpu: 15000m
+
+    # -----------------------------------------------------------------------
+    # Step 1: Prune COICOP nomenclature
+    # -----------------------------------------------------------------------
+    - name: prune-coicop
+      inputs:
+        parameters:
+          - name: config
+            value: config/config.yaml
+      container:
+        image: inseefrlab/onyxia-vscode-python:py3.13.12
+        command: [sh, -c]
+        args:
+          - |
+            set -e
+            git clone --branch codif-pipeline https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/coicop-rag
+            uv run scripts/0_prunning_coicop.py --config {{inputs.parameters.config}}
+        env:
+          - name: AWS_ACCESS_KEY_ID
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_ACCESS_KEY_ID
+          - name: AWS_SECRET_ACCESS_KEY
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_SECRET_ACCESS_KEY
+          - name: AWS_SESSION_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_SESSION_TOKEN
+          - name: DDC_ENCRYPTION_KEY
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: DDC_ENCRYPTION_KEY
+        resources:
+          requests:
+            memory: 2Gi
+            cpu: 100m
+          limits:
+            memory: 50Gi
+            cpu: 15000m
+
+    # -----------------------------------------------------------------------
+    # Step 2: Prune annotations
+    # -----------------------------------------------------------------------
+    - name: prune-annotations
+      inputs:
+        parameters:
+          - name: config
+            value: config/config.yaml
+          - name: run_id
+          - name: run_date
+      container:
+        image: inseefrlab/onyxia-vscode-python:py3.13.12
+        command: [sh, -c]
+        args:
+          - |
+            set -e
+            git clone --branch codif-pipeline https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/coicop-rag
+            uv run scripts/1_prune_annotations.py --config {{inputs.parameters.config}} --run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}
+        env:
+          - name: AWS_ACCESS_KEY_ID
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_ACCESS_KEY_ID
+          - name: AWS_SECRET_ACCESS_KEY
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_SECRET_ACCESS_KEY
+          - name: AWS_SESSION_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_SESSION_TOKEN
+          - name: DDC_ENCRYPTION_KEY
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: DDC_ENCRYPTION_KEY
+        resources:
+          requests:
+            memory: 2Gi
+            cpu: 100m
+          limits:
+            memory: 50Gi
+            cpu: 15000m
+
+    # -----------------------------------------------------------------------
+    # Step 2b: Create vector database
+    # -----------------------------------------------------------------------
+    - name: create-vector-db
+      inputs:
+        parameters:
+          - name: config
+            value: config/config.yaml
+      container:
+        image: inseefrlab/onyxia-vscode-python:py3.13.12
+        command: [sh, -c]
+        args:
+          - |
+            set -e
+            git clone --branch codif-pipeline https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/coicop-rag
+            uv run scripts/0_create_vector_db.py --config {{inputs.parameters.config}}
+        env:
+          - name: AWS_ACCESS_KEY_ID
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_ACCESS_KEY_ID
+          - name: AWS_SECRET_ACCESS_KEY
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_SECRET_ACCESS_KEY
+          - name: AWS_SESSION_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_SESSION_TOKEN
+          - name: DDC_ENCRYPTION_KEY
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: DDC_ENCRYPTION_KEY
+          - name: LLMLAB_URL
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: LLMLAB_URL
+          - name: LLMLAB_API_KEY
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: LLMLAB_API_KEY
+          - name: QDRANT_URL
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: QDRANT_URL
+          - name: QDRANT_API_KEY
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: QDRANT_API_KEY
+          - name: QDRANT_API_PORT
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: QDRANT_API_PORT
+        resources:
+          requests:
+            memory: 2Gi
+            cpu: 100m
+          limits:
+            memory: 50Gi
+            cpu: 15000m
+
+    # -----------------------------------------------------------------------
+    # Step 3: Run RAG pipeline
+    # -----------------------------------------------------------------------
+    - name: run-rag
+      inputs:
+        parameters:
+          - name: config
+            value: config/config.yaml
+          - name: sample_size
+          - name: model-name
+          - name: run_id
+          - name: run_date
+      container:
+        image: inseefrlab/onyxia-vscode-python:py3.13.12
+        command: [sh, -c]
+        args:
+          - |
+            set -e
+            git clone --branch codif-pipeline https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/coicop-rag
+            mkdir -p logs prompts
+
+            ARGS="--config {{inputs.parameters.config}} --run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}"
+
+            if [ -n "{{inputs.parameters.sample_size}}" ]; then
+              ARGS="$ARGS --sample_size {{inputs.parameters.sample_size}}"
+            fi
+
+            if [ -n "{{inputs.parameters.model-name}}" ]; then
+              ARGS="$ARGS --model_name {{inputs.parameters.model-name}}"
+            fi
+
+            uv run scripts/2_run_rag.py $ARGS
+        env:
+          - name: LANGFUSE_BASE_URL
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: LANGFUSE_BASE_URL
+          - name: LANGFUSE_PUBLIC_KEY
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: LANGFUSE_PUBLIC_KEY
+          - name: LANGFUSE_SECRET_KEY
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: LANGFUSE_SECRET_KEY
+          - name: MLFLOW_TRACKING_URI
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: MLFLOW_TRACKING_URI
+          - name: MLFLOW_TRACKING_USERNAME
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: MLFLOW_TRACKING_USERNAME
+          - name: MLFLOW_TRACKING_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: MLFLOW_TRACKING_PASSWORD
+          - name: LLMLAB_API_KEY
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: LLMLAB_API_KEY
+          - name: LLMLAB_URL
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: LLMLAB_URL
+          - name: QDRANT_URL
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: QDRANT_URL
+          - name: QDRANT_API_KEY
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: QDRANT_API_KEY
+          - name: QDRANT_API_PORT
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: QDRANT_API_PORT
+          - name: AWS_ACCESS_KEY_ID
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_ACCESS_KEY_ID
+          - name: AWS_SECRET_ACCESS_KEY
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_SECRET_ACCESS_KEY
+          - name: AWS_SESSION_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_SESSION_TOKEN
+          - name: DDC_ENCRYPTION_KEY
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: DDC_ENCRYPTION_KEY
+        resources:
+          requests:
+            memory: 2Gi
+            cpu: 100m
+          limits:
+            memory: 50Gi
+            cpu: 15000m
+
+    # -----------------------------------------------------------------------
+    # Step 4: Run TTC predictions
+    # -----------------------------------------------------------------------
+    - name: run-ttc
+      inputs:
+        parameters:
+          - name: run_id
+          - name: run_date
+      container:
+        image: ghcr.io/micedre/coicop_bdf_classifier:latest
+        command: ["python", "main.py"]
+        args:
+          - predict-basic
+          - "--model"
+          - "mlflow-artifacts:/10/cacf2603514b4887bbfb77e2654c9bc1/artifacts/mo\
+            del"
+          - "--file"
+          - "s3://projet-budget-famille/data/workflow_runs/{{inputs.parameters.\
+            run_date}}/{{inputs.parameters.run_id}}/codif-regex/raw_test_withou\
+            t_regex.parquet"
+          - "--output"
+          - "s3://projet-budget-famille/data/workflow_runs/{{inputs.parameters.\
+            run_date}}/{{inputs.parameters.run_id}}/run-ttc/predictions.parquet"
+          - "--text-column"
+          - "l_pr_product"
+          - "--top-k"
+          - "10"
+        env:
+          - name: MLFLOW_TRACKING_URI
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: MLFLOW_TRACKING_URI
+          - name: MLFLOW_TRACKING_USERNAME
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: MLFLOW_TRACKING_USERNAME
+          - name: MLFLOW_TRACKING_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: MLFLOW_TRACKING_PASSWORD
+          - name: AWS_ACCESS_KEY_ID
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_ACCESS_KEY_ID
+          - name: AWS_SECRET_ACCESS_KEY
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_SECRET_ACCESS_KEY
+          - name: AWS_SESSION_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_SESSION_TOKEN
+          - name: AWS_S3_ENDPOINT
+            value: minio.lab.sspcloud.fr
+        resources:
+          requests:
+            memory: 500Mi
+            cpu: 100m
+          limits:
+            memory: 50Gi
+            cpu: 15000m
+
+    # -----------------------------------------------------------------------
+    # Step 5: LLM-as-judge reconciliation of LCS / RAG / TTC predictions
+    # -----------------------------------------------------------------------
+    - name: decide-coicop
+      inputs:
+        parameters:
+          - name: model
+          - name: concurrency
+          - name: run_id
+          - name: run_date
+      container:
+        image: inseefrlab/onyxia-vscode-python:py3.13.12
+        command: [sh, -c]
+        args:
+          - |
+            set -e
+            git clone --branch codif-pipeline https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/coicop-bdf-classifier
+            uv sync
+
+            RUN_ROOT="s3://projet-budget-famille/data/workflow_runs/{{inputs.parameters.run_date}}/{{inputs.parameters.run_id}}"
+            ARGS="--lcs-file $RUN_ROOT/codif-lcs/raw_test_LCS.parquet \
+                  --rag-file $RUN_ROOT/run-rag/predictions.parquet \
+                  --ttc-file $RUN_ROOT/run-ttc/predictions.parquet \
+                  --output-file $RUN_ROOT/decide-coicop/predictions.parquet \
+                  --extra-columns-file $RUN_ROOT/preprocessing/raw_test.parquet \
+                  --concurrency {{inputs.parameters.concurrency}}"
+
+            if [ -n "{{inputs.parameters.model}}" ]; then
+              ARGS="$ARGS --model {{inputs.parameters.model}}"
+            fi
+
+            uv run main.py decide-coicop $ARGS
+        env:
+          - name: LLMLAB_API_KEY
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: LLMLAB_API_KEY
+          - name: LLMLAB_URL
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: LLMLAB_URL
+          - name: AWS_ACCESS_KEY_ID
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_ACCESS_KEY_ID
+          - name: AWS_SECRET_ACCESS_KEY
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_SECRET_ACCESS_KEY
+          - name: AWS_SESSION_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_SESSION_TOKEN
+          - name: AWS_S3_ENDPOINT
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_S3_ENDPOINT
+          - name: AWS_ENDPOINT_URL
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_ENDPOINT_URL
+        resources:
+          requests:
+            memory: 2Gi
+            cpu: 100m
+          limits:
+            memory: 50Gi
+            cpu: 15000m
+
+    # -----------------------------------------------------------------------
+    # Step 6: Final user-facing output (regex + LLM predictions merged)
+    # -----------------------------------------------------------------------
+    - name: final-output
+      inputs:
+        parameters:
+          - name: run_id
+          - name: run_date
+          - name: text_column
+          - name: shop_column
+          - name: budget_column
+          - name: annee_column
+      container:
+        image: inseefrlab/onyxia-vscode-python:py3.13.12
+        command: [sh, -c]
+        args:
+          - |
+            set -e
+            git clone --branch codif-pipeline https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/final-output
+            uv sync
+            ARGS="--run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}"
+            [ -n "{{inputs.parameters.text_column}}" ]   && ARGS="$ARGS --text-column {{inputs.parameters.text_column}}"
+            [ -n "{{inputs.parameters.shop_column}}" ]   && ARGS="$ARGS --shop-column {{inputs.parameters.shop_column}}"
+            [ -n "{{inputs.parameters.budget_column}}" ] && ARGS="$ARGS --budget-column {{inputs.parameters.budget_column}}"
+            [ -n "{{inputs.parameters.annee_column}}" ]  && ARGS="$ARGS --annee-column {{inputs.parameters.annee_column}}"
+            uv run main.py $ARGS
+        env:
+          - name: AWS_ACCESS_KEY_ID
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_ACCESS_KEY_ID
+          - name: AWS_SECRET_ACCESS_KEY
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_SECRET_ACCESS_KEY
+          - name: AWS_SESSION_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_SESSION_TOKEN
+          - name: AWS_S3_ENDPOINT
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_S3_ENDPOINT
+          - name: AWS_ENDPOINT_URL
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_ENDPOINT_URL
+        resources:
+          requests:
+            memory: 1Gi
+            cpu: 100m
+          limits:
+            memory: 8Gi
+            cpu: 2000m
+
+    # -----------------------------------------------------------------------
+    # Step 7 (opt-in): accuracy report (Quarto HTML on S3)
+    # -----------------------------------------------------------------------
+    - name: report
+      inputs:
+        parameters:
+          - name: run_id
+          - name: run_date
+          - name: input_file
+      container:
+        image: inseefrlab/onyxia-vscode-python:py3.13.12
+        command: [sh, -c]
+        args:
+          - |
+            set -e
+            git clone --branch codif-pipeline https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/report
+            uv sync
+            ARGS="--run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}"
+            [ -n "{{inputs.parameters.input_file}}" ] && ARGS="$ARGS --input-file {{inputs.parameters.input_file}}"
+            uv run main.py $ARGS
+        env:
+          - name: AWS_ACCESS_KEY_ID
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_ACCESS_KEY_ID
+          - name: AWS_SECRET_ACCESS_KEY
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_SECRET_ACCESS_KEY
+          - name: AWS_SESSION_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_SESSION_TOKEN
+          - name: AWS_S3_ENDPOINT
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_S3_ENDPOINT
+          - name: AWS_ENDPOINT_URL
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_ENDPOINT_URL
+        resources:
+          requests:
+            memory: 2Gi
+            cpu: 100m
+          limits:
+            memory: 20Gi
+            cpu: 4000m

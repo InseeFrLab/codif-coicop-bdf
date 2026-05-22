@@ -117,6 +117,7 @@ codif_console <- function(df){
 #' Graphique qui affiche les évolutions du nombre de bonnes pred et le nombre de libellés selon le taux prop_in_s2
 #' @param df data.frame comprenant les infos sur la prédiction LCS
 graph_bon_pred_lcs <- function(df){
+  if (nrow(df) == 0) return(invisible(NULL))
   df <- df |> dplyr::filter(predict_ok == 1)
   ggplot2::ggplot(df, ggplot2::aes(x = prop)) +
     # Série 1 : taux pour predict_ok = 1
@@ -174,10 +175,11 @@ compar_coicop <- function(coicop1, coicop2){
 #' @param seuil_prop valeur du seuil d'analyse de la variable prop_in_s2 entre 0 et 1)
 #' @return tablea de contingence avec les bonnes et mauvaises prédictions
 comptage_pred_prop_in_s2 <- function(df, seuil_prop){
-  tableau <- table(df[df$prop_in_s2 >=seuil_prop, "predict_ok"], useNA = "ifany") |> 
-    as.data.frame() |> 
-    dplyr::mutate(prop = seuil_prop)
-  tableau$libel_tot <- sum(tableau$Freq, na.rm = TRUE)
+  predict_ok <- df[!is.na(df$prop_in_s2) & df$prop_in_s2 >= seuil_prop, "predict_ok"]
+  tableau <- table(predict_ok, useNA = "ifany") |>
+    as.data.frame() |>
+    dplyr::mutate(prop = seuil_prop,
+                  libel_tot = sum(Freq, na.rm = TRUE))
   return(tableau)
 }
 

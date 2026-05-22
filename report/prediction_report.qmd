@@ -1,0 +1,313 @@
+---
+title: "Rapport de prédiction COICOP"
+subtitle: "Distribution des prédictions et analyse du consensus"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    embed-resources: true
+    code-fold: true
+    theme: cosmo
+    fig-width: 9
+    fig-height: 5
+execute:
+  echo: false
+  warning: false
+  error: false
+jupyter: python3
+---
+
+```{python}
+# | tags: [setup]
+import os
+from textwrap import dedent
+
+import duckdb
+import matplotlib.pyplot as plt
+import matplotlib.ticker as mticker
+import numpy as np
+import pandas as pd
+import seaborn as sns
+from IPython.display import Markdown
+
+sns.set_theme(style="whitegrid")
+
+INPUT = os.environ["REPORT_INPUT_PATH"]
+DECIDE_PATH = os.environ.get("REPORT_DECIDE_PATH", "")
+RUN_ID = os.environ.get("REPORT_RUN_ID", "(inconnu)")
+RUN_DATE = os.environ.get("REPORT_RUN_DATE", "(inconnu)")
+
+con = duckdb.connect()
+con.sql("INSTALL httpfs; LOAD httpfs;")
+endpoint = (
+    os.environ.get("AWS_S3_ENDPOINT")
+    or os.environ.get("AWS_ENDPOINT_URL", "").replace("https://", "").replace("http://", "")
+    or "minio.lab.sspcloud.fr"
+)
+con.sql(
+    dedent(
+        f"""
+        CREATE OR REPLACE SECRET s3_secret (
+            TYPE s3,
+            KEY_ID '{os.environ.get("AWS_ACCESS_KEY_ID", "")}',
+            SECRET '{os.environ.get("AWS_SECRET_ACCESS_KEY", "")}',
+            SESSION_TOKEN '{os.environ.get("AWS_SESSION_TOKEN", "")}',
+            ENDPOINT '{endpoint}',
+            URL_STYLE 'path',
+            USE_SSL true
+        );
+        """
+    )
+)
+
+if INPUT.lower().endswith(".parquet"):
+    df = con.sql(f"SELECT * FROM read_parquet('{INPUT}')").df()
+else:
+    df = con.sql(f"SELECT * FROM read_csv_auto('{INPUT}')").df()
+df_decide = None
+if DECIDE_PATH:
+    df_decide = con.sql(f"SELECT * FROM read_parquet('{DECIDE_PATH}')").df()
+
+n_total = len(df)
+n_regex = int((df["prediction_source"] == "regex").sum()) if "prediction_source" in df.columns else 0
+n_consensus = int((df["prediction_source"] == "consensus").sum()) if "prediction_source" in df.columns else 0
+n_llm = int((df["prediction_source"] == "llm").sum()) if "prediction_source" in df.columns else 0
+n_errors = int(df_decide["llm_error"].notna().sum()) if df_decide is not None and "llm_error" in df_decide.columns else 0
+source_input_file = (
+    df_decide["_source_input_file"].iloc[0]
+    if df_decide is not None and "_source_input_file" in df_decide.columns and len(df_decide) > 0
+    else None
+)
+
+LEVEL_WIDTHS = [2, 4, 6, 8, 10]
+LEVEL_NAMES  = ["L1 (2 pos.)", "L2 (4 pos.)", "L3 (6 pos.)", "L4 (8 pos.)", "L5 (10 pos.)"]
+
+PREDICTORS = {
+    "LCS": "lcs_code",
+    "RAG": "rag_code",
+    "TTC": "ttc_code_1",
+}
+```
+
+## Métadonnées du run
+
+| Champ | Valeur |
+|---|---|
+| Run ID | `{python} RUN_ID` |
+| Date   | `{python} RUN_DATE` |
+| Fichier d'entrée | `{python} source_input_file if source_input_file else "—"` |
+| Fichier de sortie final | `{python} INPUT` |
+| Observations totales | `{python} f"{n_total:,}".replace(",", " ")` |
+| Classées par regex | `{python} f"{n_regex:,} ({n_regex/n_total*100:.1f} %)".replace(",", " ") if n_total else "—"` |
+| Consensus automatique | `{python} f"{n_consensus:,} ({n_consensus/n_total*100:.1f} %)".replace(",", " ") if n_total else "—"` |
+| Arbitrées par le LLM | `{python} f"{n_llm:,} ({n_llm/n_total*100:.1f} %)".replace(",", " ") if n_total else "—"` |
+| Erreurs LLM | `{python} n_errors` |
+
+## Distribution des prédictions par niveau COICOP
+
+```{python}
+def distribution_table(n_chars):
+    col = df["predicted_code"].dropna().str[:n_chars]
+    counts = col.value_counts().reset_index()
+    counts.columns = ["code", "nb_obs"]
+
+    if df_decide is not None and "llm_libelle" in df_decide.columns:
+        tmp = df_decide[df_decide["llm_code"].notna()].copy()
+        tmp["_lvl"] = tmp["llm_code"].str[:n_chars]
+        libelles = (
+            tmp.groupby("_lvl")["llm_libelle"]
+            .agg(lambda s: s.mode().iloc[0] if not s.mode().empty else "")
+            .reset_index()
+            .rename(columns={"_lvl": "code", "llm_libelle": "libellé"})
+        )
+        counts = counts.merge(libelles, on="code", how="left")
+        counts["libellé"] = counts["libellé"].fillna("")
+    else:
+        counts["libellé"] = ""
+
+    counts["% total"] = (counts["nb_obs"] / n_total * 100).round(1).astype(str) + " %"
+    counts = counts.sort_values("nb_obs", ascending=False).reset_index(drop=True)
+    return counts[["code", "libellé", "nb_obs", "% total"]]
+```
+
+```{python}
+for w, name in zip(LEVEL_WIDTHS, LEVEL_NAMES):
+    tbl = distribution_table(w)
+    display(Markdown(f"### Niveau {name}"))
+    display(Markdown(tbl.to_markdown(index=False)))
+```
+
+## Source des prédictions
+
+```{python}
+fig, axes = plt.subplots(1, 2, figsize=(10, 4))
+
+# Left: 3-way source distribution
+src_labels = ["Regex", "Consensus", "LLM"]
+src_values = [n_regex, n_consensus, n_llm]
+src_colors = ["#FF9800", "#4CAF50", "#2196F3"]
+non_zero = [(l, v, c) for l, v, c in zip(src_labels, src_values, src_colors) if v > 0]
+if non_zero:
+    lz, vz, cz = zip(*non_zero)
+    axes[0].pie(vz, labels=lz, colors=cz, autopct="%1.1f%%", startangle=90)
+axes[0].set_title("Source des prédictions")
+
+# Right: confidence distribution (LLM-arbitrated rows only)
+if df_decide is not None and "llm_confiance" in df_decide.columns and n_llm > 0:
+    llm_ids = df[df["prediction_source"] == "llm"][["id"]]
+    llm_conf = llm_ids.merge(df_decide[["id", "llm_confiance"]], on="id", how="left")
+    conf_data = llm_conf["llm_confiance"].dropna().astype(int)
+    conf_counts = conf_data.value_counts().sort_index()
+    axes[1].bar(conf_counts.index, conf_counts.values, color="#2196F3", edgecolor="white")
+    axes[1].set_xlabel("Score de confiance LLM (1–5)")
+    axes[1].set_ylabel("Nb observations")
+    axes[1].set_title("Confiance LLM (observations arbitrées)")
+    axes[1].xaxis.set_major_locator(mticker.MaxNLocator(integer=True))
+else:
+    axes[1].set_visible(False)
+
+plt.tight_layout()
+plt.show()
+```
+
+```{python}
+if df_decide is not None and "llm_confiance" in df_decide.columns and n_llm > 0:
+    conf_by_src = df_decide.merge(
+        df[["id", "prediction_source"]], on="id", how="left"
+    ).groupby("prediction_source")["llm_confiance"].value_counts().unstack(fill_value=0)
+    if not conf_by_src.empty:
+        display(Markdown("**Distribution de la confiance par source de décision :**"))
+        display(Markdown(conf_by_src.to_markdown()))
+```
+
+## Meilleur prédicateur par code COICOP (observations arbitrées par le LLM)
+
+*Pour chaque groupe COICOP de niveau L2, taux d'accord de chaque prédicateur avec la décision LLM, sur les observations arbitrées (hors consensus et hors regex).*
+
+```{python}
+if df_decide is None:
+    display(Markdown("*Données de décision non disponibles.*"))
+elif n_llm == 0:
+    display(Markdown("*Aucune observation arbitrée par le LLM.*"))
+else:
+    llm_ids = df[df["prediction_source"] == "llm"][["id"]]
+    non_cons = llm_ids.merge(
+        df_decide[["id", "lcs_code", "rag_code", "ttc_code_1", "llm_code"]],
+        on="id", how="left",
+    )
+
+    non_cons["_L2"] = non_cons["llm_code"].str[:4]
+
+    rows = []
+    for grp, sub in non_cons.groupby("_L2"):
+        nb = len(sub)
+        rates = {}
+        for name, col in PREDICTORS.items():
+            if col in sub.columns:
+                rates[name] = (sub[col] == sub["llm_code"]).mean()
+            else:
+                rates[name] = np.nan
+        best = max(rates, key=lambda k: rates[k] if not pd.isna(rates[k]) else -1)
+        rows.append({
+            "Code L2": grp,
+            "Nb obs.": nb,
+            **{f"{k} ↔ LLM": f"{v*100:.0f} %" if not pd.isna(v) else "—" for k, v in rates.items()},
+            "Meilleur prédicateur": best,
+        })
+
+    summary = pd.DataFrame(rows).sort_values("Nb obs.", ascending=False)
+
+    best_counts = summary["Meilleur prédicateur"].value_counts()
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+
+    axes[0].bar(best_counts.index, best_counts.values, color=["#FF5722", "#9C27B0", "#FF9800"])
+    axes[0].set_title("Nb de groupes L2 où chaque prédicateur est le meilleur")
+    axes[0].set_xlabel("Prédicateur")
+    axes[0].set_ylabel("Nb de groupes COICOP L2")
+
+    for name, col in PREDICTORS.items():
+        if f"{name} ↔ LLM" in summary.columns:
+            vals = summary[f"{name} ↔ LLM"].str.replace(" %", "").replace("—", np.nan).astype(float)
+            axes[1].scatter(summary["Nb obs."], vals, alpha=0.6, label=name)
+    axes[1].set_xlabel("Nb observations dans le groupe L2")
+    axes[1].set_ylabel("Taux d'accord avec LLM (%)")
+    axes[1].set_title("Taux d'accord avec LLM par prédicateur et groupe")
+    axes[1].legend()
+
+    plt.tight_layout()
+    plt.show()
+
+    display(Markdown("**Tableau détaillé par code L2 :**"))
+    display(Markdown(summary.to_markdown(index=False)))
+```
+
+## Observations à désaccord total entre les trois prédicateurs
+
+*Observations pour lesquelles LCS, RAG et TTC proposent chacun un code différent.*
+
+```{python}
+if df_decide is None:
+    display(Markdown("*Données de décision non disponibles.*"))
+else:
+    pred_cols = {k: v for k, v in PREDICTORS.items() if v in df_decide.columns}
+
+    if len(pred_cols) < 3:
+        display(Markdown("*Colonnes de prédiction insuffisantes pour cette analyse.*"))
+    else:
+        lcs_col, rag_col, ttc_col = "lcs_code", "rag_code", "ttc_code_1"
+        sub = df_decide[[
+            "id", "raw_product", lcs_col, rag_col, ttc_col,
+            "llm_code", "llm_confiance", "llm_explication",
+        ]].dropna(subset=[lcs_col, rag_col, ttc_col])
+
+        total_disagreement = (
+            (sub[lcs_col] != sub[rag_col]) &
+            (sub[lcs_col] != sub[ttc_col]) &
+            (sub[rag_col] != sub[ttc_col])
+        )
+        disag = sub[total_disagreement].copy()
+
+        n_disag = len(disag)
+        n_all_pred = len(sub)
+        pct = n_disag / n_all_pred * 100 if n_all_pred else 0
+
+        display(Markdown(
+            f"**{n_disag:,}** observations en désaccord total sur {n_all_pred:,} "
+            f"observations avec les 3 prédicteurs renseignés ({pct:.1f} %)."
+            .replace(",", " ")
+        ))
+
+        if n_disag > 0:
+            llm_dist = disag["llm_code"].str[:4].value_counts().head(10).reset_index()
+            llm_dist.columns = ["Code L2 (LLM)", "Nb obs."]
+            display(Markdown("\n**Top 10 codes L2 choisis par le LLM sur ces cas :**"))
+            display(Markdown(llm_dist.to_markdown(index=False)))
+
+            if "llm_confiance" in disag.columns:
+                fig, ax = plt.subplots(figsize=(6, 3))
+                conf_vals = disag["llm_confiance"].dropna().astype(int).value_counts().sort_index()
+                ax.bar(conf_vals.index, conf_vals.values, color="#E91E63", edgecolor="white")
+                ax.set_title("Confiance LLM sur les cas à désaccord total")
+                ax.set_xlabel("Score de confiance (1–5)")
+                ax.set_ylabel("Nb observations")
+                ax.xaxis.set_major_locator(mticker.MaxNLocator(integer=True))
+                plt.tight_layout()
+                plt.show()
+
+            example_cols = ["raw_product", lcs_col, rag_col, ttc_col, "llm_code"]
+            if "llm_explication" in disag.columns:
+                example_cols.append("llm_explication")
+            if "llm_confiance" in disag.columns:
+                example_cols.append("llm_confiance")
+
+            examples = disag[example_cols].sample(min(10, n_disag), random_state=42)
+            examples.columns = [
+                c.replace("lcs_code", "LCS").replace("rag_code", "RAG")
+                 .replace("ttc_code_1", "TTC").replace("llm_code", "LLM")
+                 .replace("llm_explication", "Explication LLM")
+                 .replace("llm_confiance", "Confiance")
+                for c in examples.columns
+            ]
+            display(Markdown(f"\n**{min(10, n_disag)} exemples tirés aléatoirement :**"))
+            display(Markdown(examples.to_markdown(index=False)))
+```

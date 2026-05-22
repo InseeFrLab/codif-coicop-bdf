@@ -70,6 +70,18 @@ res_list <- parallel::mclapply(chunks, function(idx) {
 }, mc.cores = n_cores)
 
 results <- dplyr::bind_rows(res_list)
+if (ncol(results) == 0) {
+  results <- data.frame(
+    id               = character(),
+    s1               = character(),
+    s2               = character(),
+    code             = character(),
+    distance         = numeric(),
+    prop_in_s1       = numeric(),
+    prop_in_s2       = numeric(),
+    common_substring = character()
+  )
+}
 
 t_end <- Sys.time()
 cat(sprintf("Temps de calcul : %s\n", format(t_end - t_deb)))
