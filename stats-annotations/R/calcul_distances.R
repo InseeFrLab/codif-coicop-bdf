@@ -42,7 +42,7 @@ df <- DBI::dbGetQuery(
 )
 
 # --- Parallélisation ---
-n_cores <- parallel::detectCores()
+n_cores <- min(parallel::detectCores(), 4L)
 cat(sprintf("Cores disponibles : %d\n", n_cores))
 
 chunk_size <- 500000L
