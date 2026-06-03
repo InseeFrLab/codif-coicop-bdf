@@ -1,0 +1,59 @@
+project:
+  type: website
+  output-dir: _site
+
+website:
+  title: "Codification COICOP — BDF"
+  description: "Documentation pas à pas du pipeline de codification automatique des produits BDF selon la nomenclature COICOP."
+  navbar:
+    left:
+      - href: index.qmd
+        text: Accueil
+      - text: Étapes
+        menu:
+          - href: 01-preprocessing.qmd
+            text: 1. Preprocessing
+          - href: 02-codif-regex.qmd
+            text: 2. Codif regex
+          - href: 03-codif-lcs.qmd
+            text: 3. Codif LCS
+          - href: 04-coicop-rag.qmd
+            text: 4. RAG (prune, vector-db, run-rag)
+          - href: 05-run-ttc.qmd
+            text: 5. TTC
+          - href: 06-decide-coicop.qmd
+            text: 6. Decide (LLM-as-judge)
+          - href: 07-final-output.qmd
+            text: 7. Final output
+          - href: 08-report.qmd
+            text: 8. Report
+  sidebar:
+    style: docked
+    search: true
+    contents:
+      - index.qmd
+      - section: "Étapes du pipeline"
+        contents:
+          - 01-preprocessing.qmd
+          - 02-codif-regex.qmd
+          - 03-codif-lcs.qmd
+          - 04-coicop-rag.qmd
+          - 05-run-ttc.qmd
+          - 06-decide-coicop.qmd
+          - 07-final-output.qmd
+          - 08-report.qmd
+      - section: "Annexes"
+        contents:
+          - text: "Inputs / outputs (référence S3)"
+            href: inputs-outputs.md
+
+format:
+  html:
+    theme: cosmo
+    toc: true
+    toc-depth: 3
+    toc-title: "Sur cette page"
+    code-copy: true
+    code-overflow: wrap
+    number-sections: false
+    lang: fr

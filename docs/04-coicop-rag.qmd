@@ -1,0 +1,117 @@
+---
+title: "4. Codification RAG"
+---
+
+## Rôle de l'étape
+
+La branche **RAG** (*Retrieval-Augmented Generation*) code les libellés par recherche
+sémantique : on encode la nomenclature COICOP dans une base vectorielle, on récupère pour
+chaque produit les codes les plus proches, et on demande à un LLM de choisir parmi cette
+courte liste de candidats.
+
+Elle se décompose en quatre sous-étapes :
+
+| Sous-étape | Code | Rôle |
+|---|---|---|
+| `prune-coicop` | `coicop-rag/scripts/0_prunning_coicop.py` | nettoie la nomenclature |
+| `create-vector-db` | `coicop-rag/scripts/0_create_vector_db.py` | encode la nomenclature dans Qdrant |
+| `prune-annotations` | `coicop-rag/scripts/1_prune_annotations.py` | normalise les codes du jeu à coder |
+| `run-rag` | `coicop-rag/scripts/2_run_rag.py` | recherche vectorielle + génération LLM |
+
+- Code : [`coicop-rag/`](../coicop-rag/) · config : [`coicop-rag/config/config.yaml`](../coicop-rag/config/config.yaml)
+
+::: {.callout-note}
+`prune-coicop` et `create-vector-db` ne dépendent pas du run : leurs sorties (nomenclature
+prunée, collection Qdrant) sont **partagées entre runs**. Sur la branche `codif-pipeline`, le
+paramètre `skip-vector-db=true` par défaut **saute** ces deux sous-étapes (la base est déjà
+construite).
+:::
+
+## prune-coicop — nettoyer la nomenclature
+
+La nomenclature COICOP brute (`data/coicop-2018_envoi_rmes_20251022.csv`) a 5 niveaux. Le
+*pruning* :
+
+1. **supprime le niveau 5** (Poste), trop granulaire pour la codification ;
+2. **fusionne les hiérarchies linéaires** : quand un code n'a qu'un seul enfant à chaque
+   niveau, la chaîne est repliée sur son code canonique (on évite de proposer au modèle deux
+   codes qui désignent en pratique la même chose).
+
+Sorties (chemins stables, `data/workflow_outputs/prunning/`) :
+
+- `…_prunned_lvl4.parquet` — notices prunées (niveaux 1 à 4) ;
+- `…_mapping_prunning_lvl4.parquet` — table de correspondance `code → code canonique`.
+
+## create-vector-db — encoder dans Qdrant
+
+Chaque notice COICOP est mise en forme en texte (code, libellé FR, notes générales, contenu
+central, exclusions, lignage des parents) puis encodée en vecteur :
+
+- Modèle d'embedding : **`qwen3-embedding-8b`** (dimension **4096**), via l'API vLLM
+  (`VLLM_EMBEDDING_URL`).
+- Base vectorielle : **Qdrant**, collection **`coicop_lineage`** (distance cosinus),
+  recréée à chaque exécution.
+
+Réglages de l'indexation (`config.yaml`) :
+
+```yaml
+coicop:
+  vectors:
+    truncate_level: 4   # on n'indexe que les codes de profondeur ≤ 4
+    prune: true         # on ne garde que les codes canoniques
+```
+
+## prune-annotations — normaliser les codes du jeu
+
+Cette sous-étape aligne les codes du jeu à coder sur la nomenclature prunée : troncature au
+niveau 4 et application de la table de mapping (un code replié devient son canonique). Cela
+garantit que prédictions et vérité parlent le même vocabulaire de codes.
+
+- Entrée : `…/{run}/codif-regex/raw_test_without_regex.parquet` + table de mapping partagée
+- Sortie : `…/{run}/prune-annotations/raw_test_without_regex_pruned.parquet`
+
+## run-rag — recherche + génération
+
+Pour chaque libellé à coder (`coicop-rag/scripts/2_run_rag.py`) :
+
+1. **Embedding** du libellé `l_pr_product` (même modèle qu'à l'indexation).
+2. **Recherche** dans Qdrant : les **`retrieval.size = 10`** codes COICOP les plus proches.
+3. **Construction du prompt** par `prepare_prompts()` : le libellé, un bloc enseigne, un bloc
+   prix, et la liste des codes candidats récupérés sont injectés dans un gabarit. Détail
+   important : **le gabarit de prompt n'est pas dans le dépôt** — il est géré dans **Langfuse**
+   (`prompt-multi-level`, version 12, cf. `config.yaml`).
+
+   ```python
+   prompt_template.compile(
+       product=searched_product["l_pr_product"],
+       enseigne_bloc=enseigne_bloc,      # "acheté dans cette enseigne : Action…"
+       price_bloc=price_bloc,            # "a coûté : 4.0 euros."
+       proposed_codes="\n\n## ".join(qdrant_results_texts[i]),
+       list_proposed_codes=qdrant_results_codes[i],
+   )
+   ```
+
+4. **Génération** par le LLM (`gemma4-26b-moe`, `temperature 0.1`, `max_tokens 2048`), via
+   l'API vLLM (`VLLM_GENERATION_URL`).
+5. **Parsing** de la réponse JSON (`extract_json_from_response`) → `code_predict`, `codable`,
+   `confidence`.
+6. **Traçage** : métriques dans MLflow (expérience `test`), traces dans Langfuse.
+
+## Exemple sur le fil rouge
+
+Pour `Max garden flowers balle surprise` (Action, 3,99 €) :
+
+- la recherche Qdrant renvoie 10 candidats COICOP (jouets, articles de jardin, articles de
+  fête…) ;
+- le prompt y ajoute l'enseigne (*Action*, magasin discount) et le prix (3,99 €) ;
+- le LLM choisit le code le plus plausible et fournit une `confidence`. Comme le libellé est
+  ambigu, la confiance peut être moyenne — ce que l'arbitrage final prendra en compte.
+
+## Sorties
+
+| Variable config | Chemin S3 |
+|---|---|
+| `predictions.s3_path` | `…/{run}/run-rag/predictions.parquet` (`rag_code`, `confidence`, `codable`) |
+| `predictions.s3_path_retrieved_codes` | `…/{run}/run-rag/retrieved_codes.parquet` (top-10 candidats par produit) |
+
+➡️ Étape suivante : [5. TTC](05-run-ttc.qmd)

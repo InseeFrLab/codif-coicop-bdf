@@ -1,0 +1,100 @@
+---
+title: "6. Decide — arbitrage LLM-as-judge"
+---
+
+## Rôle de l'étape
+
+`decide-coicop` est l'**arbitre final**. Pour chaque produit non codé par regex, elle réunit
+les trois prédictions candidates — [LCS](03-codif-lcs.qmd), [RAG](04-coicop-rag.qmd),
+[TTC](05-run-ttc.qmd) — et choisit le code COICOP final, soit automatiquement (consensus),
+soit en interrogeant un LLM qui pèse les indices.
+
+- Code : [`coicop-bdf-classifier/src/decide_coicop.py`](../coicop-bdf-classifier/src/decide_coicop.py)
+- Commande : sous-commande `decide-coicop` de `main.py`
+
+## Entrées
+
+| Source | Chemin S3 |
+|---|---|
+| LCS | `…/{run}/codif-lcs/raw_test_LCS.parquet` |
+| RAG | `…/{run}/run-rag/predictions.parquet` |
+| TTC | `…/{run}/run-ttc/predictions.parquet` |
+| Nomenclature | fichier des codes COICOP valides |
+
+## Traitement
+
+### 1. Court-circuit consensus (sans LLM)
+
+Pour économiser temps et tokens sur les cas faciles, `try_consensus_decision()` tranche
+**sans appeler le LLM** quand :
+
+- la confiance TTC top-1 est suffisante (`ttc_conf_1 ≥ 0,90`), **et**
+- tous les codes disponibles (`lcs_code`, `rag_code`) sont **égaux** à `ttc_code_1`.
+
+```python
+if float(ttc_conf) < threshold:          # threshold = 0.90
+    return None
+...
+if not all(c == ttc_code for c in other_codes):
+    return None
+# → décision par consensus, confiance = 5, llm_model = "consensus"
+```
+
+La décision porte alors la mention *« Consensus automatique : les N modèles s'accordent… »*.
+
+### 2. Arbitrage par LLM
+
+Sinon, le LLM est sollicité :
+
+- **Filtrage de la nomenclature** (`filter_nomenclature()`) : seules les sections COICOP
+  pertinentes (préfixes L2 des prédictions) sont envoyées dans le prompt — réduction ×4 à ×10
+  du nombre de tokens.
+- **Construction du prompt** (`build_prompt()`) : un prompt structuré présentant le produit,
+  les trois prédictions, la nomenclature filtrée et les consignes :
+
+  ```text
+  ═══ PRODUIT ═══
+  Libellé brut       : Max garden flowers balle surprise
+  Libellé normalisé  : max garden flowers balle surprise
+  Enseigne           : Action
+  Montant (€)        : 3.99
+  ═══ PRÉDICTIONS DES MODÈLES ═══
+  [LCS] Code prédit : … (proportion …, distance …)
+  [RAG] Code prédit : … (confiance …)
+  [TTC] Top 1 : … (confiance …) / Top 2 : … / Top 3 : …
+  ═══ NOMENCLATURE COICOP (codes valides) ═══
+  …
+  ═══ INSTRUCTIONS ═══
+  1. Choisis UN code COICOP parmi ceux listés…
+  4. Attribue un score de confiance de 1 (très faible) à 5 (très élevé).
+  ```
+
+- **Sortie structurée** : le LLM répond en JSON validé par le modèle Pydantic
+  `DecisionCoicop` :
+
+  ```python
+  class DecisionCoicop(BaseModel):
+      coicop_code: str   # code retenu
+      libelle: str       # libellé copié de la nomenclature
+      explication: str   # 1 phrase max
+      confiance: int     # 1 (très faible) à 5 (très élevé)
+  ```
+
+Le LLM par défaut est `gemma4-26b-moe` (`decide-model`), avec `decide-concurrency=5` appels
+parallèles. L'étape **reprend** automatiquement les observations déjà traitées si on la
+relance avec le même `run_id`/`run_date` (checkpoints réguliers).
+
+## Exemple sur le fil rouge
+
+| Produit | Consensus ? | Décision |
+|---|---|---|
+| `Bagu. Tradition U Blé Bretagne` | si LCS = RAG = TTC et `ttc_conf_1 ≥ 0,90` → **oui** | code pain repris sans LLM, `confiance = 5`, `llm_model = "consensus"` |
+| `Max garden flowers balle surprise` | les modèles divergent (jouet vs jardin) → **non** | le LLM arbitre à partir de l'enseigne (*Action*), du prix et des candidats |
+
+## Sorties
+
+| Fichier | Colonnes clés |
+|---|---|
+| `…/{run}/decide-coicop/predictions.parquet` | `id`, `llm_code`, `llm_libelle`, `llm_explication`, `llm_confiance`, `llm_model` (`"consensus"` si court-circuit) |
+
+➡️ Étape suivante : [7. Final output](07-final-output.qmd)
