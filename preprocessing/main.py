@@ -129,11 +129,12 @@ def main():
 
         if "shop" in df.columns:
             df["shop"] = normalize_text(df["shop"])
-            shops_mapping["shop"] = normalize_text(shops_mapping["shop"])
+            # shops_mapping est déjà normalisé et unique sur `shop` (cf. load_shops_mapping)
             df = df.merge(
                 shops_mapping[["shop", "shop_type_code", "shop_type_name"]],
                 on="shop",
                 how="left",
+                validate="many_to_one",
             )
 
         df["l_pr_product"] = normalize_text(df["raw_product"])
@@ -246,13 +247,14 @@ def main():
 
     # Merge des types de magasins avant préprocessing
     annotations["shop"] = normalize_text(annotations["shop"])
-    shops_mapping["shop"] = normalize_text(shops_mapping["shop"])
+    # shops_mapping est déjà normalisé et unique sur `shop` (cf. load_shops_mapping)
 
     # Merge shop names / shop types
     annotations = annotations.merge(
         shops_mapping[["shop", "shop_type_code", "shop_type_name"]],
         on="shop",
         how="left",
+        validate="many_to_one",
     )
 
     # Add old annotations
