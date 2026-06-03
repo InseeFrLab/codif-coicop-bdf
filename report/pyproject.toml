@@ -9,6 +9,7 @@ dependencies = [
     "ipykernel>=6.29",
     "jupyter>=1.1",
     "matplotlib>=3.9",
+    "mlflow>=3.9.0",
     "nbformat>=5.10",
     "pandas>=2.2",
     "pyarrow>=16",

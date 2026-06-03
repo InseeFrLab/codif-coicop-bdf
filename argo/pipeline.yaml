@@ -32,6 +32,8 @@ spec:
         value: "5"
       - name: skip-report
         value: "false"
+      - name: report-experiment
+        value: "codif-coicop-eval"
 
   templates:
     # -----------------------------------------------------------------------
@@ -134,7 +136,7 @@ spec:
                   value: "{{workflow.parameters.run_date}}"
 
           - name: report
-            dependencies: [ decide-coicop ]
+            dependencies: [ preprocessing, codif-regex, codif-lcs, run-rag, run-ttc, decide-coicop ]
             template: report
             when: "\"{{workflow.parameters.skip-report}}\" != \"true\""
             arguments:
@@ -143,6 +145,28 @@ spec:
                   value: "{{workflow.parameters.run_id}}"
                 - name: run_date
                   value: "{{workflow.parameters.run_date}}"
+                - name: experiment-name
+                  value: "{{workflow.parameters.report-experiment}}"
+                - name: sample_size
+                  value: "{{workflow.parameters.sample_size}}"
+                - name: model-name
+                  value: "{{workflow.parameters.model-name}}"
+                - name: decide-model
+                  value: "{{workflow.parameters.decide-model}}"
+                - name: decide-concurrency
+                  value: "{{workflow.parameters.decide-concurrency}}"
+                - name: skip-vector-db
+                  value: "{{workflow.parameters.skip-vector-db}}"
+                - name: skip-report
+                  value: "{{workflow.parameters.skip-report}}"
+                - name: step-timings
+                  value: |
+                    {"preprocessing":["{{tasks.preprocessing.startedAt}}","{{tasks.preprocessing.finishedAt}}"],
+                     "codif-regex":["{{tasks.codif-regex.startedAt}}","{{tasks.codif-regex.finishedAt}}"],
+                     "codif-lcs":["{{tasks.codif-lcs.startedAt}}","{{tasks.codif-lcs.finishedAt}}"],
+                     "run-rag":["{{tasks.run-rag.startedAt}}","{{tasks.run-rag.finishedAt}}"],
+                     "run-ttc":["{{tasks.run-ttc.startedAt}}","{{tasks.run-ttc.finishedAt}}"],
+                     "decide-coicop":["{{tasks.decide-coicop.startedAt}}","{{tasks.decide-coicop.finishedAt}}"]}
 
     # -----------------------------------------------------------------------
     # Step 0: Preprocessing — construction du dataset
@@ -583,24 +607,21 @@ spec:
           - name: run_id
           - name: run_date
       container:
-        image: ghcr.io/micedre/coicop_bdf_classifier:latest
-        command: [ "python", "main.py" ]
+        image: inseefrlab/onyxia-vscode-python:py3.13.12
+        command: [ sh, -c ]
         args:
-          - predict-basic
-          - "--model"
-          - "mlflow-artifacts:/10/cacf2603514b4887bbfb77e2654c9bc1/artifacts/mo\
-            del"
-          - "--file"
-          - "s3://projet-budget-famille/data/workflow_runs/{{inputs.parameters.\
-            run_date}}/{{inputs.parameters.run_id}}/codif-regex/raw_test_withou\
-            t_regex.parquet"
-          - "--output"
-          - "s3://projet-budget-famille/data/workflow_runs/{{inputs.parameters.\
-            run_date}}/{{inputs.parameters.run_id}}/run-ttc/predictions.parquet"
-          - "--text-column"
-          - "l_pr_product"
-          - "--top-k"
-          - "10"
+          - |
+            set -e
+            git clone --branch main https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/coicop-bdf-classifier
+            uv sync
+
+            RUN_ROOT="s3://projet-budget-famille/data/workflow_runs/{{inputs.parameters.run_date}}/{{inputs.parameters.run_id}}"
+            uv run main.py predict-basic \
+              --model "mlflow-artifacts:/10/cacf2603514b4887bbfb77e2654c9bc1/artifacts/model" \
+              --file "$RUN_ROOT/codif-regex/raw_test_without_regex.parquet" \
+              --output "$RUN_ROOT/run-ttc/predictions.parquet" \
+              --text-column l_pr_product \
+              --top-k 10
         env:
           - name: MLFLOW_TRACKING_URI
             valueFrom:
@@ -636,7 +657,7 @@ spec:
             value: minio.lab.sspcloud.fr
         resources:
           requests:
-            memory: 500Mi
+            memory: 2Gi
             cpu: 100m
           limits:
             memory: 50Gi
@@ -725,6 +746,14 @@ spec:
         parameters:
           - name: run_id
           - name: run_date
+          - name: experiment-name
+          - name: sample_size
+          - name: model-name
+          - name: decide-model
+          - name: decide-concurrency
+          - name: skip-vector-db
+          - name: skip-report
+          - name: step-timings
       container:
         image: inseefrlab/onyxia-vscode-python:py3.13.12
         command: [ sh, -c ]
@@ -733,8 +762,41 @@ spec:
             set -e
             git clone --branch main https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/report
             uv sync
-            uv run main.py --run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}
+
+            ARGS="--run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}} \
+                  --experiment-name {{inputs.parameters.experiment-name}} \
+                  --decide-model {{inputs.parameters.decide-model}} \
+                  --decide-concurrency {{inputs.parameters.decide-concurrency}} \
+                  --skip-vector-db {{inputs.parameters.skip-vector-db}} \
+                  --skip-report {{inputs.parameters.skip-report}}"
+
+            if [ -n "{{inputs.parameters.sample_size}}" ]; then
+              ARGS="$ARGS --sample-size {{inputs.parameters.sample_size}}"
+            fi
+            if [ -n "{{inputs.parameters.model-name}}" ]; then
+              ARGS="$ARGS --model-name {{inputs.parameters.model-name}}"
+            fi
+
+            # step-timings is JSON (spaces/newlines): pass it directly with literal
+            # single quotes so it stays one argument (it must NOT go through $ARGS,
+            # which would word-split it on expansion).
+            uv run main.py $ARGS --step-timings '{{inputs.parameters.step-timings}}'
         env:
+          - name: MLFLOW_TRACKING_URI
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: MLFLOW_TRACKING_URI
+          - name: MLFLOW_TRACKING_USERNAME
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: MLFLOW_TRACKING_USERNAME
+          - name: MLFLOW_TRACKING_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: MLFLOW_TRACKING_PASSWORD
           - name: AWS_ACCESS_KEY_ID
             valueFrom:
               secretKeyRef:

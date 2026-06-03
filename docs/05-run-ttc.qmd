@@ -17,7 +17,8 @@ C'est la troisième prédiction « candidate » (avec [LCS](03-codif-lcs.qmd) et
 
 - Code (source vendorisée) : [`coicop-bdf-classifier/`](../coicop-bdf-classifier/) —
   classifieur basique (`src/classifiers/basic_classifier.py`)
-- L'étape Argo utilise l'image pré-construite `ghcr.io/micedre/coicop_bdf_classifier:latest`.
+- L'étape Argo construit depuis les sources comme les autres étapes : `git clone` du dépôt
+  puis `uv sync` + `uv run main.py predict-basic …` dans `coicop-bdf-classifier/`.
 
 
 ## Entrées

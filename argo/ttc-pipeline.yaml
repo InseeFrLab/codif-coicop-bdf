@@ -21,20 +21,20 @@ spec:
           - name: sample_size
           - name: model-name
       container:
-        image: ghcr.io/micedre/coicop_bdf_classifier:latest
-        command: ["python", "main.py"]
+        image: inseefrlab/onyxia-vscode-python:py3.13.12
+        command: [ sh, -c ]
         args:
-          - predict-basic
-          - "--model"
-          - "mlflow-artifacts:/10/cacf2603514b4887bbfb77e2654c9bc1/artifacts/model"
-          - "--file"
-          - "s3://projet-budget-famille/data/output-annotation-consolidated/annotations-consolidated-2026-04-15/raw_test.parquet"
-          - "--output"
-          - 's3://projet-budget-famille/data/workflow_outputs/outputs_ttc/predictions_{{= sprig.date "20060102150405" sprig.now }}.parquet'
-          - "--text-column"
-          - "l_pr_product"
-          - "--top-k"
-          - "10"
+          - |
+            set -e
+            git clone --branch main https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/coicop-bdf-classifier
+            uv sync
+
+            uv run main.py predict-basic \
+              --model "mlflow-artifacts:/10/cacf2603514b4887bbfb77e2654c9bc1/artifacts/model" \
+              --file "s3://projet-budget-famille/data/output-annotation-consolidated/annotations-consolidated-2026-04-15/raw_test.parquet" \
+              --output "s3://projet-budget-famille/data/workflow_outputs/outputs_ttc/predictions_{{= sprig.date "20060102150405" sprig.now }}.parquet" \
+              --text-column l_pr_product \
+              --top-k 10
         env:
           - name: MLFLOW_TRACKING_URI
             valueFrom:
@@ -70,7 +70,7 @@ spec:
             value: minio.lab.sspcloud.fr
         resources:
           requests:
-            memory: 500Mi
+            memory: 2Gi
             cpu: 100m
           limits:
             memory: 50Gi
