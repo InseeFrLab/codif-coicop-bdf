@@ -53,6 +53,11 @@ Le rapport décrit la campagne de codification réalisée, sans calcul d'exactit
   avec `lcs_code` / `rag_code` / `ttc_code_1` — mesure l'apport de l'arbitrage par rapport à
   chaque modèle amont.
 
+Les **lignes sans code** (`prediction_source` vide) et les **erreurs LLM** (`llm_error`)
+ressortent ici : leur nombre signale la part de produits non codés automatiquement. Voir
+l'éventail des valeurs possibles de `predicted_code` sur la page
+[7. Final output](07-final-output.qmd#quelles-valeurs-pour-predicted_code).
+
 ## Mode évaluation (jeu annoté)
 
 Quand une vérité terrain est disponible (jeu de test annoté, hors CSV BDF), `report.qmd`
@@ -96,4 +101,4 @@ prédictions — utile pour comparer deux versions du classifieur.
 
 ---
 
-Retour à l'[accueil](index.qmd) · annexe technique : [inputs-outputs](inputs-outputs.md)
+Retour à l'[accueil](index.qmd)

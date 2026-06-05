@@ -91,10 +91,42 @@ relance avec le même `run_id`/`run_date` (checkpoints réguliers).
 | `Bagu. Tradition U Blé Bretagne` | si LCS = RAG = TTC et `ttc_conf_1 ≥ 0,90` → **oui** | code pain repris sans LLM, `confiance = 5`, `llm_model = "consensus"` |
 | `Max garden flowers balle surprise` | les modèles divergent (jouet vs jardin) → **non** | le LLM arbitre à partir de l'enseigne (*Action*), du prix et des candidats |
 
+## Que peut renvoyer la décision ?
+
+La sortie de l'étape n'est pas garantie d'être un « beau » code de niveau 4. Les cas
+possibles :
+
+- **Cas nominal** — un code repris de la nomenclature, à un niveau quelconque (de `01` à
+  `01.1.1.1` ; l'instruction demande « le niveau le plus précis justifié »), avec un score
+  `llm_confiance` de 1 (très faible) à 5 (très élevé).
+- **Décision par consensus** — `llm_code = ttc_code_1`, `llm_model = "consensus"`,
+  `llm_confiance = 5`, `llm_error = None` (aucun appel LLM).
+- **Aucun code** (`llm_code` à `NA`) — quand l'appel LLM **échoue**. La raison est alors
+  consignée dans la colonne **`llm_error`**. Causes capturées par `call_llm_async` :
+
+  | Cause | `llm_error` (extrait) |
+  |---|---|
+  | Quota dépassé | `RateLimitError: …` |
+  | Erreur HTTP de l'API | `APIStatusError(<code>): …` |
+  | Connexion impossible | `APIConnectionError: …` |
+  | Réponse coupée (limite de tokens) | `Response truncated before JSON was complete…` |
+  | JSON illisible | `JSON parsing failed: …` |
+
+::: {.callout-warning}
+## Le code n'est pas validé contre la nomenclature
+La réponse du LLM est validée **uniquement sur sa forme** par le schéma Pydantic
+`DecisionCoicop` (`coicop_code` est une chaîne, `confiance` ∈ 1–5, longueurs de `libelle` /
+`explication` bornées). Le code **n'est pas vérifié** comme appartenant réellement à la
+nomenclature. Les garde-fous sont uniquement *incitatifs* : le prompt impose de choisir parmi
+la liste de candidats filtrée (`filter_nomenclature`) et de recopier le code exactement, et la
+sortie est en JSON structuré. Un code **inexistant (hallucination)** reste donc possible en
+principe — c'est rare, mais à garder en tête lors des contrôles qualité.
+:::
+
 ## Sorties
 
 | Fichier | Colonnes clés |
 |---|---|
-| `…/{run}/decide-coicop/predictions.parquet` | `id`, `llm_code`, `llm_libelle`, `llm_explication`, `llm_confiance`, `llm_model` (`"consensus"` si court-circuit) |
+| `…/{run}/decide-coicop/predictions.parquet` | `id`, `llm_code`, `llm_libelle`, `llm_explication`, `llm_confiance`, `llm_model` (`"consensus"` si court-circuit), `llm_error` (raison si `llm_code` est `NA`) |
 
 ➡️ Étape suivante : [7. Final output](07-final-output.qmd)

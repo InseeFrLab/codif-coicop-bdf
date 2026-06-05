@@ -42,10 +42,6 @@ website:
           - 06-decide-coicop.qmd
           - 07-final-output.qmd
           - 08-report.qmd
-      - section: "Annexes"
-        contents:
-          - text: "Inputs / outputs (référence S3)"
-            href: inputs-outputs.md
 
 format:
   html:
