@@ -52,6 +52,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--model-name", default=None)
     p.add_argument("--decide-model", default=None)
     p.add_argument("--decide-concurrency", default=None)
+    p.add_argument(
+        "--ttc-model-uri",
+        default=None,
+        help="MLflow URI of the TTC model used by run-ttc, logged for traceability.",
+    )
     p.add_argument("--skip-vector-db", default=None)
     p.add_argument("--skip-report", default=None)
     return p.parse_args()
@@ -136,6 +141,7 @@ def log_to_mlflow(args, run_root, output_s3, decide_path, prediction) -> None:
             "model_name": args.model_name,
             "decide_model": args.decide_model,
             "decide_concurrency": args.decide_concurrency,
+            "ttc_model_uri": args.ttc_model_uri,
             "skip_vector_db": args.skip_vector_db,
             "skip_report": args.skip_report,
             "output_prefix": run_root,

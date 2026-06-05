@@ -26,9 +26,16 @@ C'est la troisième prédiction « candidate » (avec [LCS](03-codif-lcs.qmd) et
 | Argument | Chemin |
 |---|---|
 | `--file` | `…/{run}/codif-regex/raw_test_without_regex.parquet` |
-| `--model` | `mlflow-artifacts:/…/artifacts/model` |
+| `--model` | `mlflow-artifacts:/…/artifacts/model` (paramètre de workflow `ttc-model-uri`) |
 
 La prédiction porte sur la colonne **`l_pr_product`** (normalisation légère).
+
+::: {.callout-note}
+L'URI du modèle TTC est un **paramètre de workflow** (`ttc-model-uri`, défini dans
+`argo/codif-pipeline.yaml`) plutôt qu'une valeur codée en dur. La même URI est propagée à
+l'étape [`report`](08-report.qmd), qui la **loggue dans MLflow** (paramètre `ttc_model_uri`)
+pour tracer quel modèle a servi à chaque run.
+:::
 
 ## Traitement
 

@@ -67,6 +67,27 @@ Méthodologie de l'accuracy par niveau : on tronque `code` et la prédiction aux
 segments ; les observations dont la vérité a moins de `k` niveaux sont exclues du dénominateur
 à ce niveau.
 
+## Traçabilité MLflow
+
+En plus du HTML, l'étape loggue le run dans **MLflow** (`log_to_mlflow()` dans
+`report/main.py`, expérience `codif-coicop-eval` par défaut). C'est facultatif et sans effet
+de bord : si `MLFLOW_TRACKING_URI` n'est pas défini, l'étape passe l'enregistrement.
+
+Sont enregistrés notamment :
+
+- **Paramètres** du pipeline pour rejouer/comparer un run : `run_id`, `run_date`,
+  `model_name` (LLM RAG), `decide_model`, `decide_concurrency`, **`ttc_model_uri`** (URI du
+  modèle utilisé par [`run-ttc`](05-run-ttc.qmd)), `skip_vector_db`, l'emplacement S3 de
+  sortie, etc.
+- **Tags** : mode (`prediction`/`evaluation`), commit et branche git.
+- **Métriques** : durées des étapes Argo, nombre d'observations, distribution des codes
+  prédits par niveau ; et en mode évaluation, l'accuracy par méthode (LCS/RAG/TTC/LLM) et par
+  niveau.
+- **Artefact** : le `report.html`.
+
+Logguer `ttc_model_uri` permet de savoir, pour chaque run, **quel modèle TTC** a produit les
+prédictions — utile pour comparer deux versions du classifieur.
+
 ## Sortie
 
 | Fichier | Contenu |

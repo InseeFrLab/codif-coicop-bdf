@@ -43,6 +43,8 @@ spec:
         value: "gemma4-26b-moe"
       - name: decide-concurrency
         value: "5"
+      - name: ttc-model-uri
+        value: "mlflow-artifacts:/10/cacf2603514b4887bbfb77e2654c9bc1/artifacts/model"
       - name: skip-report
         value: "false"
       - name: report-experiment
@@ -145,6 +147,8 @@ spec:
                   value: "{{workflow.parameters.run_id}}"
                 - name: run_date
                   value: "{{workflow.parameters.run_date}}"
+                - name: ttc-model-uri
+                  value: "{{workflow.parameters.ttc-model-uri}}"
 
           - name: decide-coicop
             dependencies: [codif-lcs, run-rag, run-ttc]
@@ -200,6 +204,8 @@ spec:
                   value: "{{workflow.parameters.decide-model}}"
                 - name: decide-concurrency
                   value: "{{workflow.parameters.decide-concurrency}}"
+                - name: ttc-model-uri
+                  value: "{{workflow.parameters.ttc-model-uri}}"
                 - name: skip-vector-db
                   value: "{{workflow.parameters.skip-vector-db}}"
                 - name: skip-report
@@ -662,6 +668,7 @@ spec:
         parameters:
           - name: run_id
           - name: run_date
+          - name: ttc-model-uri
       container:
         image: inseefrlab/onyxia-vscode-python:py3.13.12
         command: [ sh, -c ]
@@ -673,7 +680,7 @@ spec:
 
             RUN_ROOT="s3://projet-budget-famille/data/workflow_runs/{{inputs.parameters.run_date}}/{{inputs.parameters.run_id}}"
             uv run main.py predict-basic \
-              --model "mlflow-artifacts:/10/cacf2603514b4887bbfb77e2654c9bc1/artifacts/model" \
+              --model "{{inputs.parameters.ttc-model-uri}}" \
               --file "$RUN_ROOT/codif-regex/raw_test_without_regex.parquet" \
               --output "$RUN_ROOT/run-ttc/predictions.parquet" \
               --text-column l_pr_product \
@@ -869,6 +876,7 @@ spec:
           - name: model-name
           - name: decide-model
           - name: decide-concurrency
+          - name: ttc-model-uri
           - name: skip-vector-db
           - name: skip-report
           - name: step-timings
@@ -888,9 +896,10 @@ spec:
                   --skip-vector-db {{inputs.parameters.skip-vector-db}} \
                   --skip-report {{inputs.parameters.skip-report}}"
 
-            [ -n "{{inputs.parameters.input_file}}" ]   && ARGS="$ARGS --input-file {{inputs.parameters.input_file}}"
-            [ -n "{{inputs.parameters.sample_size}}" ]  && ARGS="$ARGS --sample-size {{inputs.parameters.sample_size}}"
-            [ -n "{{inputs.parameters.model-name}}" ]   && ARGS="$ARGS --model-name {{inputs.parameters.model-name}}"
+            [ -n "{{inputs.parameters.input_file}}" ]    && ARGS="$ARGS --input-file {{inputs.parameters.input_file}}"
+            [ -n "{{inputs.parameters.sample_size}}" ]   && ARGS="$ARGS --sample-size {{inputs.parameters.sample_size}}"
+            [ -n "{{inputs.parameters.model-name}}" ]    && ARGS="$ARGS --model-name {{inputs.parameters.model-name}}"
+            [ -n "{{inputs.parameters.ttc-model-uri}}" ] && ARGS="$ARGS --ttc-model-uri {{inputs.parameters.ttc-model-uri}}"
 
             # step-timings is JSON (spaces/newlines): pass it directly with literal
             # single quotes so it stays one argument (it must NOT go through $ARGS,
