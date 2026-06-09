@@ -83,6 +83,9 @@ aws.s3::s3write_using(
   opts = list("region" = "")
 )
 
+is_prediction_mode <- all(is.na(data$code))
+if (!is_prediction_mode) {
+
 ###############################################################################'
 # 2 - Analyse des bonnes prédictions selon la valeur de prop_in_s2 ------
 
@@ -90,7 +93,7 @@ aws.s3::s3write_using(
 comparaison <- output_lcs |>
   dplyr::mutate(
     comparaison = purrr::map2_chr(code, predict_code, compar_coicop),
-    long_max_coicop = purrr::map2_int(code, predict_code, ~ max(nchar(.x), nchar(.y), na.rm = T)) # variable permettant de récupérer les bonne pred sur des positions inférieures
+    long_max_coicop = purrr::map2_int(code, predict_code, ~ { m <- max(nchar(.x), nchar(.y), na.rm = TRUE); if (is.infinite(m)) 0L else as.integer(m) }) # variable permettant de récupérer les bonne pred sur des positions inférieures
   ) |>
   dplyr::distinct() |> 
   dplyr::mutate(predict_ok = dplyr::if_else(code == comparaison, 1, 0))
@@ -187,3 +190,4 @@ recap_origine <- table(erreur_pred$source) |> as.data.frame() |> # erreur totale
                       dplyr::rename(total = Freq), by = "Var1") |> 
   dplyr::rename(origine_libel = Var1)
 
+} # end if (!is_prediction_mode)

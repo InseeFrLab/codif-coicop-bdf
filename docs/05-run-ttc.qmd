@@ -1,0 +1,82 @@
+---
+title: "5. Codif TTC"
+---
+
+## Rôle de l'étape
+
+`run-ttc` code les libellés avec un **classifieur neuronal pré-entraîné** (à l'aide du package *torchTextClassifiers*).
+
+Le modèle utilisé est le **classifieur basique (« flat »)** . Il a été :
+
+1. **entraîné** sur des **données de caisses** (tickets de la grande distribution :
+   hypermarchés / grandes surfaces uniquement) ;
+2. puis **fine-tuné** sur les **annotations produites lors du test de l'enquête BDF de 2024**.
+
+C'est la troisième prédiction « candidate » (avec [LCS](03-codif-lcs.qmd) et
+[RAG](04-coicop-rag.qmd)) que l'arbitrage final combinera.
+
+- Code (source vendorisée) : [`coicop-bdf-classifier/`](../coicop-bdf-classifier/) —
+  classifieur basique (`src/classifiers/basic_classifier.py`)
+- L'étape Argo construit depuis les sources comme les autres étapes : `git clone` du dépôt
+  puis `uv sync` + `uv run main.py predict-basic …` dans `coicop-bdf-classifier/`.
+
+
+## Entrées
+
+| Argument | Chemin |
+|---|---|
+| `--file` | `…/{run}/codif-regex/raw_test_without_regex.parquet` |
+| `--model` | `mlflow-artifacts:/…/artifacts/model` (paramètre de workflow `ttc-model-uri`) |
+
+La prédiction porte sur la colonne **`l_pr_product`** (normalisation légère).
+
+::: {.callout-note}
+L'URI du modèle TTC est un **paramètre de workflow** (`ttc-model-uri`, défini dans
+`argo/codif-pipeline.yaml`) plutôt qu'une valeur codée en dur. La même URI est propagée à
+l'étape [`report`](08-report.qmd), qui la **loggue dans MLflow** (paramètre `ttc_model_uri`)
+pour tracer quel modèle a servi à chaque run.
+:::
+
+## Traitement
+
+Le classifieur est **basique (« flat »)** : il prédit directement le code COICOP à partir du
+libellé, sans cascade par niveaux. Pour chaque produit, il renvoie les **10 meilleurs** codes
+avec leur score de confiance (`--top-k 10`).
+
+```
+"bagu tradition u ble bretagne"
+  → ttc_code_1 : 01.1.1.x (pain…)   conf. ttc_conf_1
+  → ttc_code_2 : …                  conf. ttc_conf_2
+  → … jusqu'à ttc_code_10
+```
+
+::: {.callout-warning}
+## Biais d'entraînement à garder en tête
+Le modèle a été entraîné sur des **données de caisses de la grande distribution** puis
+fine-tuné sur le **test BDF 2024**. Il est donc le plus fiable sur les produits de
+supermarché/hypermarché ; il l'est moins sur les libellés issus d'autres circuits (petits
+commerces, restauration, services…). C'est l'une des raisons d'être de l'arbitrage final, qui
+croise TTC avec LCS et RAG.
+:::
+
+Les colonnes produites sont `ttc_code_1 … ttc_code_10` et `ttc_conf_1 … ttc_conf_10`,
+classées par confiance décroissante. L'arbitrage utilise surtout le **top-1**
+(`ttc_code_1`, `ttc_conf_1`), notamment pour le court-circuit consensus.
+
+## Exemple sur le fil rouge
+
+| Libellé (`l_pr_product`) | `ttc_code_1` (illustratif) | `ttc_conf_1` |
+|---|---|---|
+| `bagu tradition u ble bretagne` | `01.1.1` (pains et céréales) | élevée |
+| `max garden flowers balle surprise` | code jouet/jardin | plus faible (libellé ambigu) |
+
+Quand la confiance top-1 est ≥ 0,90 **et** que LCS et RAG donnent le même code, l'arbitrage
+tranche sans appeler le LLM (voir [decide-coicop](06-decide-coicop.qmd)).
+
+## Sorties
+
+| Argument | Chemin |
+|---|---|
+| `--output` | `…/{run}/run-ttc/predictions.parquet` (`ttc_code_1..10`, `ttc_conf_1..10`) |
+
+➡️ Étape suivante : [6. Decide (LLM-as-judge)](06-decide-coicop.qmd)

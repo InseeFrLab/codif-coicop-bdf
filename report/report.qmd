@@ -29,6 +29,15 @@ import pandas as pd
 import seaborn as sns
 from IPython.display import Markdown
 
+from coicop_metrics import (
+    LEVELS,
+    METHODS,
+    accuracy,
+    accuracy_series,
+    accuracy_table,
+    code_parts,
+)
+
 sns.set_theme(style="whitegrid")
 
 INPUT = os.environ["REPORT_INPUT_PATH"]
@@ -60,14 +69,6 @@ con.sql(
 
 df = con.sql(f"SELECT * FROM read_parquet('{INPUT}')").df()
 
-METHODS = [
-    ("LCS", "lcs_code"),
-    ("RAG", "rag_code"),
-    ("TTC", "ttc_code_1"),
-    ("LLM", "llm_code"),
-]
-LEVELS = [1, 2, 3, 4, 5]
-
 # Keep a "scorable" view: rows with ground truth `code`
 scorable = df[df["code"].notna() & (df["code"].astype(str).str.len() > 0)].copy()
 ```
@@ -85,55 +86,9 @@ scorable = df[df["code"].notna() & (df["code"].astype(str).str.len() > 0)].copy(
 
 ```{python}
 # | tags: [utils]
-def code_parts(s) -> list[str]:
-    if s is None or (isinstance(s, float) and np.isnan(s)):
-        return []
-    s = str(s).strip()
-    if not s:
-        return []
-    return s.split(".")
-
-
-def level_result(truth: str, pred: str, k: int):
-    """Return True/False/None.
-
-    None means the observation is not applicable at level k
-    (truth is shallower than k, so we can't evaluate that depth).
-    """
-    tp = code_parts(truth)
-    if len(tp) < k:
-        return None
-    pp = code_parts(pred)
-    if len(pp) < k:
-        return False
-    return tp[:k] == pp[:k]
-
-
-def accuracy_series(truth: pd.Series, pred: pd.Series, k: int) -> pd.Series:
-    """Series of True/False/NA indexed like truth."""
-    out = [level_result(t, p, k) for t, p in zip(truth, pred)]
-    return pd.Series(out, index=truth.index, dtype="object")
-
-
-def accuracy(truth: pd.Series, pred: pd.Series, k: int) -> tuple[int, int, float]:
-    s = accuracy_series(truth, pred, k)
-    applicable = s.notna()
-    n_app = int(applicable.sum())
-    n_ok = int((s == True).sum())  # noqa: E712
-    return n_ok, n_app, (n_ok / n_app if n_app else float("nan"))
-
-
-def accuracy_table(data: pd.DataFrame) -> pd.DataFrame:
-    rows = []
-    for name, col in METHODS:
-        row = {"méthode": name}
-        for k in LEVELS:
-            _, n_app, acc = accuracy(data["code"], data[col], k)
-            row[f"niv{k} (n={n_app})"] = acc
-        rows.append(row)
-    return pd.DataFrame(rows).set_index("méthode")
-
-
+# code_parts / level_result / accuracy_series / accuracy / accuracy_table and the
+# METHODS / LEVELS constants are imported from coicop_metrics (shared with main.py
+# so the report and the MLflow-logged metrics never diverge).
 def style_acc(tbl: pd.DataFrame):
     return (
         tbl.style

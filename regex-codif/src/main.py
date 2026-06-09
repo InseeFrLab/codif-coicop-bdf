@@ -75,34 +75,36 @@ def main():
     # contingence table
     logger.info("Nombre de libellés prédits selon leur code :")
     logger.info(regex_predicted["predict_code"].value_counts())
-    # Global accuracy
-    accuracy = (regex_predicted["code"] == regex_predicted["predict_code"]).mean()
-    logger.info(f"Accuracy : {accuracy:.2%}")
-    # Accuracy with not null codes
-    non_nuls = regex_predicted[regex_predicted["predict_code"].notna()]
-    accuracy = (non_nuls["code"] == non_nuls["predict_code"]).mean()
-    logger.info(f"Accuracy (with not null codes): {accuracy:.2%}")
 
-    # Number of raw classified by regex
-    logger.info(f"Prédictions par année:")
-    logger.info(regex_predicted.groupby("annee")["code"].count())
+    if "code" in regex_predicted.columns:
+        # Global accuracy
+        accuracy = (regex_predicted["code"] == regex_predicted["predict_code"]).mean()
+        logger.info(f"Accuracy : {accuracy:.2%}")
+        # Accuracy with not null codes
+        non_nuls = regex_predicted[regex_predicted["predict_code"].notna()]
+        accuracy = (non_nuls["code"] == non_nuls["predict_code"]).mean()
+        logger.info(f"Accuracy (with not null codes): {accuracy:.2%}")
 
-    # Accuracy per code présents dans le fichier de règles
-    rules_codes = [rule["code"] for rule in rules]
-    regex_predicted["match"] = regex_predicted["code"] == regex_predicted["predict_code"]
-    accuracy_par_code = regex_predicted[regex_predicted["code"].isin(rules_codes)].groupby("code")["match"].mean()
-    logger.info("Accuracy par code :")
-    logger.info(accuracy_par_code)
+        # Number of raw classified by regex
+        logger.info(f"Prédictions par année:")
+        logger.info(regex_predicted.groupby("annee")["code"].count())
 
-    non_nuls["match"] = non_nuls["code"] == non_nuls["predict_code"]
-    accuracy_par_code_nn = non_nuls[non_nuls["code"].isin(rules_codes)].groupby("code")["match"].mean()
-    logger.info("Accuracy par code (avec codes non nuls) :")
-    logger.info(accuracy_par_code_nn)
+        # Accuracy per code présents dans le fichier de règles
+        rules_codes = [rule["code"] for rule in rules]
+        regex_predicted["match"] = regex_predicted["code"] == regex_predicted["predict_code"]
+        accuracy_par_code = regex_predicted[regex_predicted["code"].isin(rules_codes)].groupby("code")["match"].mean()
+        logger.info("Accuracy par code :")
+        logger.info(accuracy_par_code)
 
-    error_pred = non_nuls.loc[non_nuls["code"] != non_nuls["predict_code"], ["raw_product", "code", "predict_code"]]
-    logger.info(error_pred)
+        non_nuls["match"] = non_nuls["code"] == non_nuls["predict_code"]
+        accuracy_par_code_nn = non_nuls[non_nuls["code"].isin(rules_codes)].groupby("code")["match"].mean()
+        logger.info("Accuracy par code (avec codes non nuls) :")
+        logger.info(accuracy_par_code_nn)
 
-    save_data_to_parquet(df=error_pred, path=config["paths"]["error_pred"])
+        error_pred = non_nuls.loc[non_nuls["code"] != non_nuls["predict_code"], ["raw_product", "code", "predict_code"]]
+        logger.info(error_pred)
+
+        save_data_to_parquet(df=error_pred, path=config["paths"]["error_pred"])
 
     # -----------------------------------------------------------------------
     # EXPORT OUTPUT

@@ -1,0 +1,111 @@
+---
+title: "1. Preprocessing"
+---
+
+## Rôle de l'étape
+
+`preprocessing` transforme le fichier de tickets brut en un jeu de données normalisé et prêt
+à coder. En **mode prédiction** (cas du CSV BDF), elle :
+
+1. charge le fichier d'entrée ;
+2. renomme les colonnes vers les noms canoniques du pipeline ;
+3. normalise les libellés produits (deux variantes : légère et forte) ;
+4. rattache l'enseigne à un type de magasin ;
+5. retire les produits explicitement non codables ;
+6. écrit `raw_test.parquet` (et un `raw_train.parquet` vide en mode prédiction).
+
+- Code : [`preprocessing/`](../preprocessing/) — entrée `preprocessing/main.py`
+- Commande : `python main.py --run-id=<id> --run-date=YYYY-MM-DD --input-file=<s3> --text-column=NAT_DEP --shop-column=MAG_DEP --budget-column=MONT_DEP`
+
+## Entrées
+
+| Source | Chemin |
+|---|---|
+| Fichier à coder | `s3://…/workflow_inputs/BDF_data_tickets_appli_20260320_a_codif.csv` |
+| Table enseigne → type | `data/input-annotation/liste_magasins.csv` |
+| Produits non codables | `data/codification-manuelle-anterieure/produit_non_annotable.csv` |
+| Pool « suggester » | `data/input-annotation/liste_produits_fr_copain.csv` |
+
+## Traitement
+
+### Mappage des colonnes
+
+Les colonnes d'entrée sont renommées vers les noms attendus par le reste du pipeline
+(`preprocessing/main.py`) :
+
+```python
+column_mapping = {
+    args.text_column:   "raw_product",   # NAT_DEP  → raw_product
+    args.shop_column:   "shop",          # MAG_DEP  → shop
+    args.budget_column: "budget",        # MONT_DEP → budget
+    args.annee_column:  "annee",
+    args.source_column: "source",
+}
+df = df.rename(columns={src: tgt for src, tgt in column_mapping.items()
+                        if src in df.columns and src != tgt})
+```
+
+### Deux niveaux de normalisation
+
+À partir de `raw_product`, deux colonnes sont calculées :
+
+- **`l_pr_product`** (normalisation *légère*, `normalize_text`) : espaces multiples réduits,
+  ligatures (`œ`→`oe`), accents supprimés (décomposition NFKD + filtrage ASCII), passage en
+  minuscules. Utilisée par les **modèles** (RAG, TTC).
+- **`s_pr_product`** (normalisation *forte*, `preprocess_text`) : repart de `l_pr_product`
+  puis retire le bruit, tokenise, supprime les *stopwords*, etc. Utilisée par les **regex**.
+
+```python
+df["l_pr_product"] = normalize_text(df["raw_product"])
+df["s_pr_product"] = df["l_pr_product"].copy()
+df = preprocess_text(df, "s_pr_product", stopwords)
+```
+
+### Enseigne → type de magasin
+
+`shop` est normalisé puis joint à `liste_magasins.csv` pour récupérer `shop_type_code` et
+`shop_type_name` (ex. supermarché, restauration rapide…).
+
+### Schéma de sortie en mode prédiction
+
+Comme il n'y a pas de vérité terrain, les colonnes manquantes reçoivent des valeurs par
+défaut pour que les étapes suivantes ne plantent pas :
+
+```python
+prediction_defaults = {
+    "annee": pd.NA, "code": pd.NA, "coicop": pd.NA,
+    "shop": pd.NA, "shop_type_name": pd.NA, "budget": pd.NA,
+    "n_obs": 1, "source": "prediction",
+}
+```
+
+Un identifiant unique `id` (UUID) est attribué à chaque ligne, et `_source_input_file`
+conserve le chemin du fichier d'origine (réutilisé par `final-output` pour nommer le résultat).
+
+## Exemple sur le fil rouge
+
+| `raw_product` (=`NAT_DEP`) | `l_pr_product` | `s_pr_product` | `shop` |
+|---|---|---|---|
+| `Bagu. Tradition U Blé Bretagne` | `bagu. tradition u ble bretagne` | `bagu tradition u ble bretagne` | u |
+| `Ticket CB` | `ticket cb` | `ticket cb` | station netto |
+| `Max garden flowers balle surprise` | `max garden flowers balle surprise` | `max garden flowers balle surprise` | action |
+| `Illisible` | `illisible` | `illisible` | — |
+
+Si `Illisible` figure dans la liste des produits non codables
+(`produit_non_annotable.csv`), la ligne est **retirée** à cet endroit
+(`df.loc[~df["raw_product"].isin(uncodable_products)]`). Sinon, elle poursuit et sera
+captée plus loin par la règle regex `^illisible$ → 98.4`.
+
+## Sorties
+
+`{run}` = `s3://projet-budget-famille/data/workflow_runs/{run_date}/{run_id}/preprocessing`
+
+| Fichier | Contenu |
+|---|---|
+| `{run}/raw_test.parquet` | lignes à coder (colonnes `id`, `raw_product`, `l_pr_product`, `s_pr_product`, `shop`, `shop_type_name`, `budget`, `code`(NA)…, `_source_input_file`) |
+| `{run}/raw_train.parquet` | **vide** en mode prédiction (pas de suggester à coder par regex) |
+
+Le pool « suggester » est écrit dans un fichier dédié, lu directement par
+[`codif-lcs`](03-codif-lcs.qmd).
+
+➡️ Étape suivante : [2. Codif regex](02-codif-regex.qmd)

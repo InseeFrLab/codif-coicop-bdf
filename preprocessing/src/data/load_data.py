@@ -1,6 +1,12 @@
+import logging
+
 import duckdb
 import pandas as pd
+
+from src.data.string_cleaning import normalize_text
 from src.utils.data_management import concat_path_from_key
+
+logger = logging.getLogger(__name__)
 
 
 def load_path_data(config):
@@ -146,7 +152,36 @@ def load_shops_mapping(s3_shop_types, con) -> pd.DataFrame:
     ).to_df()
 
     # shops_mapping = shops_mapping[~shops_mapping["shop"].isin(["//", None])]
+
+    # Normalise la clé de jointure comme les sites de merge, PUIS déduplique dessus,
+    # afin que la table de droite du merge soit garantie unique sur `shop`.
+    # Sans cela, une enseigne associée à plusieurs types (code_mag/Nomen_mag) — ou
+    # plusieurs orthographes qui se confondent après normalisation — multiplie les
+    # lignes du fichier d'entrée lors du merge.
+    shops_mapping["shop"] = normalize_text(shops_mapping["shop"])
+    before = len(shops_mapping)
+    shops_mapping = shops_mapping.drop_duplicates(subset="shop", keep="first")
+    dropped = before - len(shops_mapping)
+    if dropped:
+        logger.info(
+            f"shops_mapping : {dropped} lignes d'enseignes ambiguës "
+            "(même shop, types multiples) supprimées — on garde la 1ère occurrence"
+        )
     return shops_mapping
+
+
+def load_input_file(path: str, con) -> pd.DataFrame:
+    """
+    Load an arbitrary CSV or parquet file (local or S3) for prediction mode.
+    Returns a DataFrame guaranteed to have a 'raw_product' column.
+    """
+    ext = path.split("?")[0].lower()
+    if ext.endswith(".parquet"):
+        df = con.sql(f"SELECT * FROM read_parquet('{path}')").to_df()
+    else:
+        df = con.sql(f"SELECT * FROM read_csv_auto('{path}', delim=';')").to_df()
+
+    return df
 
 
 def load_data(config, con):

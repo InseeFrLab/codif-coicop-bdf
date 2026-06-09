@@ -1,0 +1,108 @@
+---
+title: "7. Final output"
+---
+
+## Rôle de l'étape
+
+`final-output` produit le **fichier livrable destiné à l'utilisateur**. Elle repart du fichier
+d'entrée d'origine (colonnes telles que fournies), y ajoute le code COICOP retenu et la
+provenance de la décision, puis réécrit le tout sous le **nom de fichier d'origine**.
+
+C'est ici que les deux sources de codification se rejoignent :
+
+- les codes attribués par [`codif-regex`](02-codif-regex.qmd) (`predict_code`) ;
+- les décisions de [`decide-coicop`](06-decide-coicop.qmd) (`llm_code`), qui synthétisent
+  déjà LCS + RAG + TTC.
+
+- Code : [`final-output/main.py`](../final-output/main.py)
+- Commande : `python main.py --run-id=<id> --run-date=YYYY-MM-DD --text-column=NAT_DEP --shop-column=MAG_DEP --budget-column=MONT_DEP`
+
+## Entrées
+
+| Source | Chemin S3 | Apport |
+|---|---|---|
+| Colonnes utilisateur | `…/{run}/preprocessing/raw_test.parquet` | colonnes d'origine + `id` + `_source_input_file` |
+| Codes regex | `…/{run}/codif-regex/REGEX_pred.parquet` | `predict_code` |
+| Décisions LLM | `…/{run}/decide-coicop/predictions.parquet` | `llm_code`, `llm_explication`, `llm_confiance`, `llm_model` |
+
+## Traitement
+
+### Fusion et priorité
+
+Les colonnes internes au pipeline (`l_pr_product`, `s_pr_product`, `method`…) sont d'abord
+retirées pour ne garder que les colonnes utilisateur. On joint ensuite les prédictions sur
+`id` et on calcule le code final :
+
+```python
+# la décision LLM prime ; à défaut, le code regex ; sinon NA
+result["predicted_code"] = result["llm_code"].where(
+    result["llm_code"].notna(), result["predict_code"]
+)
+
+result["prediction_source"] = result.apply(
+    lambda r: ("consensus" if r["llm_model"] == "consensus" else "llm")
+              if pd.notna(r["llm_code"])
+              else ("regex" if pd.notna(r["predict_code"]) else None),
+    axis=1,
+)
+result["llm_comment"] = result["llm_explication"]
+```
+
+| Colonne ajoutée | Sens |
+|---|---|
+| `predicted_code` | code COICOP final retenu |
+| `prediction_source` | origine : `regex`, `consensus`, `llm`, ou *(vide)* si non codé |
+| `llm_comment` | justification du LLM (vide pour `regex` et `consensus` sans appel) |
+
+### Restauration des noms et du format
+
+Les colonnes renommées au [preprocessing](01-preprocessing.qmd) reprennent leur nom d'origine
+(`raw_product → NAT_DEP`, `shop → MAG_DEP`, `budget → MONT_DEP`), et le fichier est réécrit
+avec le **basename d'entrée** d'origine — au format CSV si l'entrée était un CSV :
+
+```python
+output_basename = os.path.basename(input_file_path)   # BDF_data_tickets_appli_20260320_a_codif.csv
+output_uri = f"{run_root}/final-output/{output_basename}"
+```
+
+## Exemple sur le fil rouge
+
+| `NAT_DEP` | `predicted_code` | `prediction_source` | `llm_comment` |
+|---|---|---|---|
+| `Illisible` | `98.4` | `regex` | *(vide)* |
+| `Bagu. Tradition U Blé Bretagne` | `01.1.1.x` | `consensus` | *(vide — consensus)* |
+| `Max garden flowers balle surprise` | code retenu par le LLM | `llm` | 1 phrase d'explication |
+
+## Quelles valeurs pour `predicted_code` ?
+
+`predicted_code` n'est pas toujours un code COICOP « produit » de niveau 4. Voici l'éventail
+des valeurs possibles dans le fichier livré :
+
+| Cas | `predicted_code` | `prediction_source` | Remarque |
+|---|---|---|---|
+| Code COICOP produit | ex. `01.1.1` (niveau 1 à 4) | `consensus` / `llm` / `regex` | cas nominal ; la profondeur varie selon la précision jugée justifiée |
+| Code technique | `98.x`, `99.x` | `regex` ou `llm` | lignes non-produit : carte bancaire (`98.3`), prélèvement (`98.4`), remises (`98.5`)… |
+| Reprise manuelle | `Reprise manuelle` | `regex` | valeur littérale (pas un code) issue de certaines règles `rules.yaml` → **à recoder à la main** |
+| **Aucun code** | *(vide / `NA`)* | *(vide)* | l'appel LLM a échoué **et** aucune règle regex n'a matché |
+| Code inexistant (rare) | code absent de la nomenclature | `llm` | non bloqué par le pipeline ; hallucination LLM possible (voir [étape 6](06-decide-coicop.qmd)) |
+
+Points d'attention :
+
+- **`predicted_code` peut être vide.** Cela se produit lorsque le produit n'est ni codé par
+  regex, ni codé par le LLM (échec de l'appel). Le fichier `final-output` ne contient ni
+  `llm_error` ni `llm_confiance` ; pour comprendre *pourquoi* un code manque, ouvrir
+  `…/{run}/decide-coicop/predictions.parquet` et lire la colonne **`llm_error`**.
+- **Le code n'est pas garanti valide.** Aucune étape ne vérifie l'appartenance de
+  `predicted_code` à la nomenclature (cf. l'encadré de l'[étape 6](06-decide-coicop.qmd)). Un
+  contrôle qualité côté aval reste recommandé.
+- **`prediction_source` indique la fiabilité attendue** : `consensus` (les trois modèles
+  d'accord, le plus sûr) > `regex` (règle déterministe) > `llm` (arbitrage) > *(vide)* (non
+  codé). Pour les lignes `llm`, croiser avec `llm_confiance` (1–5) et `llm_comment`.
+
+## Sorties
+
+| Fichier | Contenu |
+|---|---|
+| `…/{run}/final-output/{nom_fichier_entrée}` | fichier d'entrée enrichi de `predicted_code`, `prediction_source`, `llm_comment` |
+
+➡️ Étape suivante : [8. Report](08-report.qmd)

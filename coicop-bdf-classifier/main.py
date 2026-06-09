@@ -416,6 +416,17 @@ def cmd_decide_coicop(args: argparse.Namespace) -> None:
         )
     )
 
+    if args.extra_columns_file is not None:
+        from src.decide_coicop import _read_parquet, _write_parquet
+
+        result = _read_parquet(str(args.output_file))
+        extra = _read_parquet(args.extra_columns_file)
+        new_cols = [c for c in extra.columns if c not in result.columns and c != "id"]
+        if new_cols:
+            result = result.merge(extra[["id"] + new_cols], on="id", how="left")
+            _write_parquet(result, str(args.output_file))
+            logger.info("Extra columns joined to output: %s", new_cols)
+
 
 def cmd_serve(args: argparse.Namespace) -> None:
     """Start the FastAPI prediction server."""
@@ -1851,6 +1862,15 @@ def main() -> int:
         help=(
             "Send the full ~700-code nomenclature with every request instead of "
             "filtering to predicted sections. Slower and more expensive."
+        ),
+    )
+    decide_coicop_parser.add_argument(
+        "--extra-columns-file",
+        type=str,
+        default=None,
+        help=(
+            "Parquet file containing additional columns to join (on 'id') into the output "
+            "after batch processing. Columns already present in the output are skipped."
         ),
     )
     decide_coicop_parser.set_defaults(func=cmd_decide_coicop)

@@ -2,7 +2,8 @@ import os
 import pandas as pd
 
 
-def export_parquet_s3(df: pd.DataFrame, path: str) -> None:
+def export_parquet_s3(df: pd.DataFrame, path: str, schema=None) -> None:
+    kwargs = {"schema": schema} if schema is not None else {}
     df.to_parquet(
         f"s3://{path}",
         storage_options={
@@ -13,5 +14,6 @@ def export_parquet_s3(df: pd.DataFrame, path: str) -> None:
                 "endpoint_url": f"https://{os.environ['AWS_S3_ENDPOINT']}"
             },
         },
-        index=False
+        index=False,
+        **kwargs
     )

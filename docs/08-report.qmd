@@ -1,0 +1,104 @@
+---
+title: "8. Report"
+---
+
+## Rôle de l'étape
+
+`report` génère un **rapport HTML auto-contenu** (Quarto + Python) à la fin du pipeline. Il
+existe en **deux variantes**, choisies automatiquement selon la présence ou non d'une vérité
+terrain.
+
+- Code : [`report/`](../report/) — entrée `report/main.py`
+- Sortie : `…/{run}/report/report.html`
+- Activé par `skip-report=false` (défaut sur la branche `codif-pipeline`).
+
+## Détection du mode
+
+`report/main.py` lit les prédictions de `decide-coicop` et teste si **tous** les codes de
+référence sont nuls :
+
+```python
+row = con.sql(
+    f"SELECT bool_and(code IS NULL) FROM read_parquet('{input_path}')"
+).fetchone()
+...
+qmd = "prediction_report.qmd" if prediction else "report.qmd"
+```
+
+| Mode | Condition | Gabarit | Entrée |
+|---|---|---|---|
+| **Évaluation** | vérité terrain `code` présente | `report.qmd` | `decide-coicop/predictions.parquet` |
+| **Prédiction** | `code` partout NULL | `prediction_report.qmd` | `final-output/{fichier}` + `decide-coicop/predictions.parquet` |
+
+::: {.callout-important}
+Le CSV BDF est codé **sans vérité terrain** → c'est le **mode prédiction**
+(`prediction_report.qmd`) qui s'applique.
+:::
+
+## Mode prédiction (cas du CSV BDF)
+
+Le rapport décrit la campagne de codification réalisée, sans calcul d'exactitude :
+
+- **Répartition par source de prédiction** : nombre de lignes codées par `regex`, par
+  `consensus`, par `llm`, et nombre d'erreurs LLM (`llm_error`).
+  ```python
+  n_regex     = (df["prediction_source"] == "regex").sum()
+  n_consensus = (df["prediction_source"] == "consensus").sum()
+  n_llm       = (df["prediction_source"] == "llm").sum()
+  ```
+- **Distribution par niveau COICOP** : comptage des `predicted_code` tronqués à chaque niveau,
+  enrichi du libellé (`llm_libelle`).
+- **Calibration** : répartition des décisions LLM par score de `llm_confiance` (1 à 5).
+- **Consensus vs désaccord** : pour les cas arbitrés par le LLM, comparaison de `llm_code`
+  avec `lcs_code` / `rag_code` / `ttc_code_1` — mesure l'apport de l'arbitrage par rapport à
+  chaque modèle amont.
+
+Les **lignes sans code** (`prediction_source` vide) et les **erreurs LLM** (`llm_error`)
+ressortent ici : leur nombre signale la part de produits non codés automatiquement. Voir
+l'éventail des valeurs possibles de `predicted_code` sur la page
+[7. Final output](07-final-output.qmd#quelles-valeurs-pour-predicted_code).
+
+## Mode évaluation (jeu annoté)
+
+Quand une vérité terrain est disponible (jeu de test annoté, hors CSV BDF), `report.qmd`
+calcule l'**exactitude** :
+
+- accuracy par **niveau COICOP** (1 à 5) pour LCS, RAG, TTC et LLM ;
+- accuracy par **enseigne**, **type de magasin** et **quartile de budget** ;
+- **matrice de confusion** (top 20 paires `code` vs `llm_code` au niveau 4) ;
+- **calibration** : accuracy par tranche de `llm_confiance`.
+
+Méthodologie de l'accuracy par niveau : on tronque `code` et la prédiction aux `k` premiers
+segments ; les observations dont la vérité a moins de `k` niveaux sont exclues du dénominateur
+à ce niveau.
+
+## Traçabilité MLflow
+
+En plus du HTML, l'étape loggue le run dans **MLflow** (`log_to_mlflow()` dans
+`report/main.py`, expérience `codif-coicop-eval` par défaut). C'est facultatif et sans effet
+de bord : si `MLFLOW_TRACKING_URI` n'est pas défini, l'étape passe l'enregistrement.
+
+Sont enregistrés notamment :
+
+- **Paramètres** du pipeline pour rejouer/comparer un run : `run_id`, `run_date`,
+  `model_name` (LLM RAG), `decide_model`, `decide_concurrency`, **`ttc_model_uri`** (URI du
+  modèle utilisé par [`run-ttc`](05-run-ttc.qmd)), `skip_vector_db`, l'emplacement S3 de
+  sortie, etc.
+- **Tags** : mode (`prediction`/`evaluation`), commit et branche git.
+- **Métriques** : durées des étapes Argo, nombre d'observations, distribution des codes
+  prédits par niveau ; et en mode évaluation, l'accuracy par méthode (LCS/RAG/TTC/LLM) et par
+  niveau.
+- **Artefact** : le `report.html`.
+
+Logguer `ttc_model_uri` permet de savoir, pour chaque run, **quel modèle TTC** a produit les
+prédictions — utile pour comparer deux versions du classifieur.
+
+## Sortie
+
+| Fichier | Contenu |
+|---|---|
+| `…/{run}/report/report.html` | rapport HTML auto-contenu (prédiction ou évaluation) |
+
+---
+
+Retour à l'[accueil](index.qmd)

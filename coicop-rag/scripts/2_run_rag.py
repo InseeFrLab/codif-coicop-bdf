@@ -1115,7 +1115,7 @@ def get_tricky_errors(
     # Keep only wrong predictions on codable, non-misc products
     errors_list = [x for x, m in zip(records, result_list) if not m]
     codable_errors = [x for x in errors_list if x["codable"]]
-    real_errors = [x for x in codable_errors if (x["code"][:2] not in ("98", "99"))]
+    real_errors = [x for x in codable_errors if x["code"] is not None and (x["code"][:2] not in ("98", "99"))]
 
     keys_to_keep = [
         "l_pr_product", "shop", "code",

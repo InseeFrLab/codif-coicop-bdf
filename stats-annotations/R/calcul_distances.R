@@ -19,57 +19,65 @@ DBI::dbWriteTable(con,
                   liste_produits, 
                   overwrite = TRUE)
 
-# Mise en forme des libellés sous forme de produits cartésien pour analyser la disatnce de chaque libellé avec les autres
-# calcul de distance par la plus longue sous chaine en commun entre deux libellé
-system.time({
-  DBI::dbExecute(con, "CREATE OR REPLACE TABLE libel_pc AS
-                     SELECT DISTINCT dep.id,
-                                    dep.product AS s1,
-                                    sug.s_pr_product AS s2,
-                                    sug.code
-                    FROM dep
-                    CROSS JOIN sug
-                    WHERE dep.product <> sug.s_pr_product") 
-})
-
-
-# calcul de la sous chaine commune la plus longue entre deux libellés
-df <- DBI::dbGetQuery(
-  con,
-  sprintf("
-          SELECT *
-          FROM libel_pc")
-)
-
-# --- Parallélisation ---
-n_cores <- parallel::detectCores()
-cat(sprintf("Cores disponibles : %d\n", n_cores))
-
-chunk_size <- 500000L
-chunks <- split(seq_len(nrow(df)), ceiling(seq_len(nrow(df)) / chunk_size))
-cat(sprintf("Nombre de chunks : %d (de %s lignes chacun)\n",
-            length(chunks), format(chunk_size, big.mark = " ")))
-
-t_deb <- Sys.time()
-
+# Compilation du noyau C++ (la fonction filtre en interne les paires distance > 0.8)
 cache_dir <- file.path(getwd(), "rcpp_cache")
 dir.create(cache_dir, showWarnings = FALSE, recursive = TRUE)
 Rcpp::sourceCpp("./C/distance_gcd_batch_cpp.cpp", cacheDir = cache_dir)
 
-# Trouver le .so compilé
-so_file <- list.files(cache_dir, pattern = "\\.so$", recursive = TRUE, full.names = TRUE)
-cat("DLL trouvée :", so_file, "\n")
+# --- Produit cartésien calculé EN FLUX, par lots de libellés de test ---
+# On NE matérialise PLUS l'intégralité du produit dep x sug (des dizaines de
+# millions de lignes), qui faisait exploser la mémoire (OOMKilled) puis le disque
+# (spill DuckDB -> "no space left on device").
+#
+# On itère sur les couples DISTINCT (id, product) du jeu de test. Comme chaque id
+# n'apparaît alors que dans UN seul lot, l'union des lots est STRICTEMENT
+# identique au produit global dédupliqué de l'ancienne version
+# (même ensemble de paires (id, s1, s2, code) -> mêmes distances -> même résultat).
+# Pour chaque lot on calcule la distance LCS et on n'accumule que les paires
+# retenues (distance <= 0.8), peu nombreuses.
+DBI::dbExecute(con, "CREATE OR REPLACE TABLE dep_u AS
+                     SELECT DISTINCT id, product FROM dep")
+DBI::dbExecute(con, "CREATE OR REPLACE TABLE dep_rn AS
+                     SELECT *, row_number() OVER () AS rn FROM dep_u")
+n_dep <- as.integer(DBI::dbGetQuery(con, "SELECT COUNT(*) AS n FROM dep_rn")$n)
 
-res_list <- parallel::mclapply(chunks, function(idx) {
-  if (!is.loaded("sourceCpp_1_distance_gcd_batch_cpp")) {
-    dyn.load(so_file)
+dep_batch <- 200L  # libellés de test par lot (~ dep_batch x |sug| paires en mémoire à la fois)
+cat(sprintf("Libellés de test distincts : %d, traités par lots de %d\n", n_dep, dep_batch))
+
+t_deb <- Sys.time()
+
+res_list <- list()
+starts <- if (n_dep > 0L) seq(1L, n_dep, by = dep_batch) else integer(0)
+for (start in starts) {
+  end <- start + dep_batch - 1L
+  df_batch <- DBI::dbGetQuery(con, sprintf("
+    SELECT DISTINCT d.id,
+                    d.product        AS s1,
+                    sug.s_pr_product AS s2,
+                    sug.code
+    FROM dep_rn d
+    CROSS JOIN sug
+    WHERE d.rn BETWEEN %d AND %d
+      AND d.product <> sug.s_pr_product", start, end))
+  if (nrow(df_batch) > 0L) {
+    res_list[[length(res_list) + 1L]] <-
+      distance_gcd_batch_cpp(df_batch$id, df_batch$s1, df_batch$s2, df_batch$code)
   }
-  distance_gcd_batch_cpp(
-    df$id[idx], df$s1[idx], df$s2[idx], df$code[idx]
-  )
-}, mc.cores = n_cores)
+}
 
 results <- dplyr::bind_rows(res_list)
+if (ncol(results) == 0) {
+  results <- data.frame(
+    id               = character(),
+    s1               = character(),
+    s2               = character(),
+    code             = character(),
+    distance         = numeric(),
+    prop_in_s1       = numeric(),
+    prop_in_s2       = numeric(),
+    common_substring = character()
+  )
+}
 
 t_end <- Sys.time()
 cat(sprintf("Temps de calcul : %s\n", format(t_end - t_deb)))
