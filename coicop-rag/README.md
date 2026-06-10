@@ -54,3 +54,52 @@ Classifie les annotations via le pipeline RAG.
    - Les contextes pertinents sont récupérés depuis Qdrant
    - La génération finale utilise le modèle hébergé sur llm.lab (`LLMLAB_URL`, `LLMLAB_API_KEY`)
 5. **Logging MLflow** : les métriques sont enregistrées dans MLflow (`MLFLOW_TRACKING_URI`)
+
+## Exécution locale / interactive (hors Argo)
+
+Pour déboguer `scripts/2_run_rag.py` en interactif (exécution ligne par ligne), le script lit
+ses credentials via `os.environ[...]`. Ces variables doivent donc être présentes dans
+l'environnement **avant** de démarrer la session.
+
+### 1. Injecter un secret dans Vault
+
+Créer un secret (via l'UI Onyxia *Mes secrets*)
+contenant les clés suivantes :
+
+```
+AWS_ACCESS_KEY_ID
+AWS_SECRET_ACCESS_KEY
+DDC_ENCRYPTION_KEY
+LANGFUSE_BASE_URL
+LANGFUSE_PUBLIC_KEY
+LANGFUSE_SECRET_KEY
+LLMLAB_API_KEY
+LLMLAB_URL
+MLFLOW_TRACKING_PASSWORD
+MLFLOW_TRACKING_URI
+MLFLOW_TRACKING_USERNAME
+QDRANT_API_KEY
+QDRANT_API_PORT
+QDRANT_URL
+```
+
+Au lancement du service Onyxia, référencer le chemin de ce secret dans la section *Vault* pour
+qu'Onyxia injecte chaque clé comme variable d'environnement.
+
+### 2. Lancer
+
+```bash
+cd coicop-rag
+uv sync
+mkdir -p logs prompts   # le logger écrit dans logs/ (sinon échec au démarrage)
+
+uv run python           # session interactive : os.environ est déjà peuplé par Vault
+```
+
+En une fois : `uv run scripts/2_run_rag.py --run-id <ID> --run-date <YYYY-MM-DD> --sample_size 100`.
+
+### Pré-requis
+
+Pour le couple `run-id` / `run-date` choisi, doivent déjà exister sur S3/services : la sortie
+de `prune-annotations`, la table de mapping de prunning, la collection Qdrant `coicop_lineage`
+et le prompt Langfuse `prompt-multi-level` (chemins/versions dans `config/config.yaml`).
