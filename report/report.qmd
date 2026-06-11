@@ -35,6 +35,7 @@ from coicop_metrics import (
     accuracy,
     accuracy_series,
     accuracy_table,
+    available_methods,
     code_parts,
 )
 
@@ -138,7 +139,7 @@ def grouped_accuracy(data: pd.DataFrame, group_col: str, k: int = 4) -> pd.DataF
     out = []
     for grp, sub in data.groupby(group_col, dropna=False):
         row = {group_col: grp, "n": len(sub)}
-        for name, col in METHODS:
+        for name, col in available_methods(data):
             _, n_app, acc = accuracy(sub["code"], sub[col], k)
             row[name] = acc
             row[f"{name}_n"] = n_app
@@ -150,9 +151,10 @@ def grouped_accuracy(data: pd.DataFrame, group_col: str, k: int = 4) -> pd.DataF
 
 def render_group_table(data: pd.DataFrame, group_col: str, k: int = 4) -> pd.DataFrame:
     tbl = grouped_accuracy(data, group_col, k=k)
-    cols = [group_col, "n"] + [m[0] for m in METHODS]
+    method_names = [m[0] for m in available_methods(data)]
+    cols = [group_col, "n"] + method_names
     view = tbl[cols].copy()
-    for name, _ in METHODS:
+    for name in method_names:
         view[name] = view[name].map(lambda v: "—" if pd.isna(v) else f"{v:.1%}")
     return view
 ```
@@ -331,45 +333,50 @@ else:
 
 ### Valeur ajoutée de l'arbitrage LLM : consensus vs désaccord
 
-On compare l'accuracy du LLM selon que les trois sources amont (LCS, RAG, TTC top-1) sont d'accord ou non, tronquées au niveau 4.
+On compare l'accuracy du LLM selon que les sources amont (LCS, RAG, RAG-annot, TTC top-1) sont d'accord ou non, tronquées au niveau 4. Les sources absentes du run sont ignorées.
 
 ```{python}
 # | label: tbl-agreement
+from collections import Counter
+
 def key(s):
     return s.map(lambda x: ".".join(code_parts(x)[:4]) if len(code_parts(x)) >= 4 else None)
 
 
-agree = scorable.assign(
-    t=key(scorable["code"]),
-    l=key(scorable["lcs_code"]),
-    r=key(scorable["rag_code"]),
-    c=key(scorable["ttc_code_1"]),
-    p=key(scorable["llm_code"]),
-).dropna(subset=["t", "p"])
+# Upstream source columns present in this run (excludes the final llm_code).
+SRC_COLS = [
+    c for c in ("lcs_code", "rag_code", "ragann_code", "ttc_code_1")
+    if c in scorable.columns
+]
+
+agree = scorable.assign(t=key(scorable["code"]), p=key(scorable["llm_code"]))
+for c in SRC_COLS:
+    agree[f"_{c}"] = key(scorable[c])
+agree = agree.dropna(subset=["t", "p"])
+
+
+def _source_vals(row):
+    vals = [row[f"_{c}"] for c in SRC_COLS]
+    return [v for v in vals if v is not None]
+
 
 # Nombre de sources amont qui s'accordent avec la vérité terrain
 def count_sources_correct(row):
-    n = 0
-    for col in ("l", "r", "c"):
-        if row[col] is not None and row[col] == row["t"]:
-            n += 1
-    return n
+    return sum(1 for v in _source_vals(row) if v == row["t"])
 
 
-# Agreement pattern between the three sources themselves (not vs truth)
+# Pattern d'accord entre les sources elles-mêmes (indépendamment de la vérité)
 def source_agreement_bucket(row):
-    vals = [row["l"], row["r"], row["c"]]
-    non_null = [v for v in vals if v is not None]
-    if len(non_null) < 2:
+    vals = _source_vals(row)
+    n = len(vals)
+    if n < 2:
         return "sources manquantes"
-    unique = set(non_null)
-    if len(unique) == 1 and len(non_null) == 3:
-        return "3/3 d'accord"
-    if len(unique) == 1 and len(non_null) == 2:
-        return "2/2 d'accord"
-    if len(unique) == 2 and len(non_null) == 3:
-        return "2/3 d'accord"
-    return "désaccord complet"
+    top = Counter(vals).most_common(1)[0][1]
+    if top == n:
+        return f"{n}/{n} d'accord"
+    if top > n / 2:
+        return f"majorité ({top}/{n})"
+    return "désaccord"
 
 
 agree["bucket"] = agree.apply(source_agreement_bucket, axis=1)
@@ -395,14 +402,14 @@ summary = summary.rename(columns={
 Markdown(summary.to_markdown(index=False))
 ```
 
-**Lecture :** quand les trois sources s'accordent, on attend une accuracy LLM ≈ celle des sources (le LLM ne fait que confirmer, grâce au raccourci consensus de `decide-coicop`). Sur les cas de désaccord, comparer `accuracy LLM` à `≥1 source amont juste` indique si le LLM parvient à choisir la bonne source (idéalement la première colonne s'approche de la seconde).
+**Lecture :** quand toutes les sources s'accordent, on attend une accuracy LLM ≈ celle des sources (le LLM ne fait que confirmer, grâce au raccourci consensus de `decide-coicop`). Sur les cas de désaccord, comparer `accuracy LLM` à `≥1 source amont juste` indique si le LLM parvient à choisir la bonne source (idéalement la première colonne s'approche de la seconde).
 
 ## Récapitulatif
 
 ```{python}
 # | label: tbl-summary
 summary_rows = []
-for name, col in METHODS:
+for name, col in available_methods(scorable):
     row = {"méthode": name}
     for k in [1, 3, 4, 5]:
         _, _, acc = accuracy(scorable["code"], scorable[col], k)

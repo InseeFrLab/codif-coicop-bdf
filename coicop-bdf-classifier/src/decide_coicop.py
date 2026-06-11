@@ -159,9 +159,9 @@ def try_consensus_decision(
         return None
     ttc_code = str(ttc_code)
 
-    # Collect all non-null codes from the other two models
+    # Collect all non-null codes from the other models
     other_codes = []
-    for key in ("lcs_code", "rag_code"):
+    for key in ("lcs_code", "rag_code", "ragann_code"):
         val = obs.get(key)
         if val is not None and not (isinstance(val, float) and pd.isna(val)):
             other_codes.append(str(val))
@@ -209,6 +209,7 @@ def filter_nomenclature(nomen: pd.DataFrame, obs: dict, full: bool = False) -> s
     predicted_codes = [
         obs.get("lcs_code"),
         obs.get("rag_code"),
+        obs.get("ragann_code"),
         obs.get("ttc_code_1"),
         obs.get("ttc_code_2"),
         obs.get("ttc_code_3"),
@@ -253,8 +254,14 @@ def load_all_observations(
     lcs_path: Path | str,
     rag_path: Path | str,
     ttc_path: Path | str,
+    rag_annotations_path: Path | str | None = None,
 ) -> pd.DataFrame:
-    """Fusionne les trois fichiers parquet et retourne le DataFrame complet."""
+    """Fusionne les fichiers de prédictions parquet et retourne le DataFrame complet.
+
+    `rag_annotations_path` (RAG sur exemples annotés) est optionnel : s'il est fourni,
+    ses prédictions sont jointes sur 'id' (colonnes ragann_code / ragann_confidence /
+    ragann_codable).
+    """
     lcs_raw = _read_parquet(lcs_path)
     rag_raw = _read_parquet(rag_path)
     ttc_raw = _read_parquet(ttc_path)
@@ -303,7 +310,21 @@ def load_all_observations(
         }
     )
 
-    return lcs.merge(rag, on="id", how="left").merge(ttc, on="id", how="left")
+    merged = lcs.merge(rag, on="id", how="left").merge(ttc, on="id", how="left")
+
+    # ──── BLOC RAG-ANNOTATIONS (optionnel) ────
+    if rag_annotations_path is not None:
+        ragann_raw = _read_parquet(rag_annotations_path)
+        ragann = ragann_raw[["id", "code_predict", "confidence", "codable"]].rename(
+            columns={
+                "code_predict": "ragann_code",
+                "confidence": "ragann_confidence",
+                "codable": "ragann_codable",
+            }
+        )
+        merged = merged.merge(ragann, on="id", how="left")
+
+    return merged
 
 
 def get_observation(df: pd.DataFrame, obs_id: str) -> dict:
@@ -353,6 +374,23 @@ def build_prompt(
         f"  Codable      : {fmt(obs.get('codable'))}"
     )
 
+    # RAG sur exemples annotés (optionnel : présent seulement si le fichier a été fourni)
+    ragann_code = obs.get("ragann_code")
+    if ragann_code is not None and not (isinstance(ragann_code, float) and pd.isna(ragann_code)):
+        ragann_conf = obs.get("ragann_confidence")
+        ragann_conf_str = (
+            f"{ragann_conf:.0%}"
+            if ragann_conf is not None and not pd.isna(ragann_conf) else "N/A"
+        )
+        ragann_section = (
+            "[RAG-Annotations — RAG sur exemples déjà codifiés]\n"
+            f"  Code prédit  : {fmt(ragann_code)}\n"
+            f"  Confiance    : {ragann_conf_str}\n"
+            f"  Codable      : {fmt(obs.get('ragann_codable'))}\n\n"
+        )
+    else:
+        ragann_section = ""
+
     ttc_lines = []
     for rank in range(1, 4):
         code = fmt(obs.get(f"ttc_code_{rank}"))
@@ -364,7 +402,7 @@ def build_prompt(
     return f"""\
 Tu es un expert en comptabilité nationale et en statistiques de consommation.
 Ta mission est de déterminer le code COICOP le plus approprié pour un produit acheté,
-en t'appuyant sur le contexte d'achat et les prédictions de trois modèles automatiques.
+en t'appuyant sur le contexte d'achat et les prédictions de plusieurs modèles automatiques.
 
 ═══════════════════════════════════════
 PRODUIT
@@ -386,7 +424,7 @@ PRÉDICTIONS DES MODÈLES
 [RAG — Retrieval-Augmented Generation]
 {rag_block}
 
-[TTC — Classificateur par apprentissage profond]
+{ragann_section}[TTC — Classificateur par apprentissage profond]
 {ttc_block}
 
 ═══════════════════════════════════════
@@ -399,7 +437,7 @@ INSTRUCTIONS
 ═══════════════════════════════════════
 1. Choisis UN code COICOP parmi ceux listés dans la nomenclature ci-dessus.
 2. Le code doit correspondre au niveau le plus précis qui te semble justifié.
-3. Explique en 1 phrase maximum comment tu as pesé les prédictions des trois modèles
+3. Explique en 1 phrase maximum comment tu as pesé les prédictions des différents modèles
    et tout autre indice (enseigne, type de magasin, montant).
 4. Attribue un score de confiance de 1 (très faible) à 5 (très élevé).
 """

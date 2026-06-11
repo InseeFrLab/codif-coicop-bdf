@@ -54,11 +54,14 @@ spec:
     # -----------------------------------------------------------------------
     # Main pipeline: DAG with parallelism
     #
-    #                    ┌──→ prune-coicop ──→ create-vector-db ─────────────┐  (skippable)
-    #   preprocessing ──┤                                                    ├──→ run-rag ──┐
-    #                    └──→ codif-regex ──→ prune-annotations ─────────────┘              │
-    #                                    ├──→ codif-lcs ─────────────────────────────────────┼──→ decide-coicop ──→ final-output
-    #                                    └──→ run-ttc ──────────────────────────────────────┘         └──→ report  (opt-in)
+    # 4 classifieurs tournent en parallèle puis sont conciliés par decide-coicop :
+    #
+    #                    ┌──→ prune-coicop ──┬──→ create-vector-db ──────────────→ run-rag ──────────────┐  (les 2 vector DB
+    #                    │                   └──→ create-vector-db-annotations ──→ run-rag-annotations ──┤   sont skippables :
+    #   preprocessing ──┤                                                                               │   skip-vector-db)
+    #                    └──→ codif-regex ──┬──→ prune-annotations ──(→ run-rag / run-rag-annotations)   │
+    #                                       ├──→ codif-lcs ──────────────────────────────────────────────┼──→ decide-coicop ──→ final-output
+    #                                       └──→ run-ttc ───────────────────────────────────────────────┘          └──→ report  (opt-in)
     # -----------------------------------------------------------------------
     - name: pipeline
       dag:
@@ -124,9 +127,34 @@ spec:
             template: create-vector-db
             when: '"{{workflow.parameters.skip-vector-db}}" != "true"'
 
+          - name: create-vector-db-annotations
+            dependencies: [prune-coicop, codif-regex]
+            template: create-vector-db-annotations
+            when: '"{{workflow.parameters.skip-vector-db}}" != "true"'
+            arguments:
+              parameters:
+                - name: run_id
+                  value: "{{workflow.parameters.run_id}}"
+                - name: run_date
+                  value: "{{workflow.parameters.run_date}}"
+
           - name: run-rag
             dependencies: [create-vector-db, prune-annotations]
             template: run-rag
+            arguments:
+              parameters:
+                - name: sample_size
+                  value: "{{workflow.parameters.sample_size}}"
+                - name: model-name
+                  value: "{{workflow.parameters.model-name}}"
+                - name: run_id
+                  value: "{{workflow.parameters.run_id}}"
+                - name: run_date
+                  value: "{{workflow.parameters.run_date}}"
+
+          - name: run-rag-annotations
+            dependencies: [create-vector-db-annotations, prune-annotations]
+            template: run-rag-annotations
             arguments:
               parameters:
                 - name: sample_size
@@ -151,7 +179,7 @@ spec:
                   value: "{{workflow.parameters.ttc-model-uri}}"
 
           - name: decide-coicop
-            dependencies: [codif-lcs, run-rag, run-ttc]
+            dependencies: [codif-lcs, run-rag, run-rag-annotations, run-ttc]
             template: decide-coicop
             arguments:
               parameters:
@@ -183,7 +211,7 @@ spec:
                   value: "{{workflow.parameters.annee_column}}"
 
           - name: report
-            dependencies: [preprocessing, codif-regex, codif-lcs, run-rag, run-ttc, decide-coicop, final-output]
+            dependencies: [preprocessing, codif-regex, codif-lcs, run-rag, run-rag-annotations, run-ttc, decide-coicop, final-output]
             template: report
             when: '"{{workflow.parameters.skip-report}}" != "true"'
             arguments:
@@ -216,6 +244,7 @@ spec:
                      "codif-regex":["{{tasks.codif-regex.startedAt}}","{{tasks.codif-regex.finishedAt}}"],
                      "codif-lcs":["{{tasks.codif-lcs.startedAt}}","{{tasks.codif-lcs.finishedAt}}"],
                      "run-rag":["{{tasks.run-rag.startedAt}}","{{tasks.run-rag.finishedAt}}"],
+                     "run-rag-annotations":["{{tasks.run-rag-annotations.startedAt}}","{{tasks.run-rag-annotations.finishedAt}}"],
                      "run-ttc":["{{tasks.run-ttc.startedAt}}","{{tasks.run-ttc.finishedAt}}"],
                      "decide-coicop":["{{tasks.decide-coicop.startedAt}}","{{tasks.decide-coicop.finishedAt}}"]}
 
@@ -239,7 +268,7 @@ spec:
         args:
           - |
             set -e
-            git clone --branch codif-pipeline https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/preprocessing
+            git clone --branch up-rag https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/preprocessing
             uv sync
             ARGS="--run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}} --input-file {{inputs.parameters.input_file}} --text-column {{inputs.parameters.text_column}}"
             [ -n "{{inputs.parameters.shop_column}}" ]   && ARGS="$ARGS --shop-column {{inputs.parameters.shop_column}}"
@@ -295,7 +324,7 @@ spec:
         args:
           - |
             set -e
-            git clone --branch codif-pipeline https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/regex-codif
+            git clone --branch up-rag https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/regex-codif
             uv sync
             uv run src/main.py --run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}
         env:
@@ -346,7 +375,7 @@ spec:
         args:
           - |
             set -e
-            git clone --branch codif-pipeline https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/stats-annotations
+            git clone --branch up-rag https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/stats-annotations
             Rscript R/main.R --run-id={{inputs.parameters.run_id}} --run-date={{inputs.parameters.run_date}}
         env:
           - name: AWS_ACCESS_KEY_ID
@@ -396,7 +425,7 @@ spec:
         args:
           - |
             set -e
-            git clone --branch codif-pipeline https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/coicop-rag
+            git clone --branch up-rag https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/coicop-rag
             uv run scripts/0_prunning_coicop.py --config {{inputs.parameters.config}}
         env:
           - name: AWS_ACCESS_KEY_ID
@@ -443,7 +472,7 @@ spec:
         args:
           - |
             set -e
-            git clone --branch codif-pipeline https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/coicop-rag
+            git clone --branch up-rag https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/coicop-rag
             uv run scripts/1_prune_annotations.py --config {{inputs.parameters.config}} --run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}
         env:
           - name: AWS_ACCESS_KEY_ID
@@ -488,7 +517,7 @@ spec:
         args:
           - |
             set -e
-            git clone --branch codif-pipeline https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/coicop-rag
+            git clone --branch up-rag https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/coicop-rag
             uv run scripts/0_create_vector_db.py --config {{inputs.parameters.config}}
         env:
           - name: AWS_ACCESS_KEY_ID
@@ -562,7 +591,7 @@ spec:
         args:
           - |
             set -e
-            git clone --branch codif-pipeline https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/coicop-rag
+            git clone --branch up-rag https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/coicop-rag
             mkdir -p logs prompts
 
             ARGS="--config {{inputs.parameters.config}} --run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}"
@@ -576,6 +605,194 @@ spec:
             fi
 
             uv run scripts/2_run_rag.py $ARGS
+        env:
+          - name: LANGFUSE_BASE_URL
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: LANGFUSE_BASE_URL
+          - name: LANGFUSE_PUBLIC_KEY
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: LANGFUSE_PUBLIC_KEY
+          - name: LANGFUSE_SECRET_KEY
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: LANGFUSE_SECRET_KEY
+          - name: MLFLOW_TRACKING_URI
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: MLFLOW_TRACKING_URI
+          - name: MLFLOW_TRACKING_USERNAME
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: MLFLOW_TRACKING_USERNAME
+          - name: MLFLOW_TRACKING_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: MLFLOW_TRACKING_PASSWORD
+          - name: LLMLAB_API_KEY
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: LLMLAB_API_KEY
+          - name: LLMLAB_URL
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: LLMLAB_URL
+          - name: QDRANT_URL
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: QDRANT_URL
+          - name: QDRANT_API_KEY
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: QDRANT_API_KEY
+          - name: QDRANT_API_PORT
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: QDRANT_API_PORT
+          - name: AWS_ACCESS_KEY_ID
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_ACCESS_KEY_ID
+          - name: AWS_SECRET_ACCESS_KEY
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_SECRET_ACCESS_KEY
+          - name: AWS_SESSION_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_SESSION_TOKEN
+          - name: DDC_ENCRYPTION_KEY
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: DDC_ENCRYPTION_KEY
+        resources:
+          requests:
+            memory: 2Gi
+            cpu: 100m
+          limits:
+            memory: 50Gi
+            cpu: 15000m
+
+    # -----------------------------------------------------------------------
+    # Step 2bis: Build the annotation vector DB (RAG on annotated examples)
+    # -----------------------------------------------------------------------
+    - name: create-vector-db-annotations
+      inputs:
+        parameters:
+          - name: config
+            value: config/config.yaml
+          - name: run_id
+          - name: run_date
+      container:
+        image: inseefrlab/onyxia-vscode-python:py3.13.12
+        command: [sh, -c]
+        args:
+          - |
+            set -e
+            git clone --branch up-rag https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/coicop-rag-annotations
+            uv run scripts/0_build_annotation_vector_db.py --config {{inputs.parameters.config}} --run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}
+        env:
+          - name: AWS_ACCESS_KEY_ID
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_ACCESS_KEY_ID
+          - name: AWS_SECRET_ACCESS_KEY
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_SECRET_ACCESS_KEY
+          - name: AWS_SESSION_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_SESSION_TOKEN
+          - name: DDC_ENCRYPTION_KEY
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: DDC_ENCRYPTION_KEY
+          - name: LLMLAB_URL
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: LLMLAB_URL
+          - name: LLMLAB_API_KEY
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: LLMLAB_API_KEY
+          - name: QDRANT_URL
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: QDRANT_URL
+          - name: QDRANT_API_KEY
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: QDRANT_API_KEY
+          - name: QDRANT_API_PORT
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: QDRANT_API_PORT
+        resources:
+          requests:
+            memory: 2Gi
+            cpu: 100m
+          limits:
+            memory: 50Gi
+            cpu: 15000m
+
+    # -----------------------------------------------------------------------
+    # Step 3bis: Run the annotation-RAG (production mode — predictions only)
+    # -----------------------------------------------------------------------
+    - name: run-rag-annotations
+      inputs:
+        parameters:
+          - name: config
+            value: config/config.yaml
+          - name: sample_size
+          - name: model-name
+          - name: run_id
+          - name: run_date
+      container:
+        image: inseefrlab/onyxia-vscode-python:py3.13.12
+        command: [sh, -c]
+        args:
+          - |
+            set -e
+            git clone --branch up-rag https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/coicop-rag-annotations
+            mkdir -p logs
+
+            ARGS="--config {{inputs.parameters.config}} --run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}"
+
+            if [ -n "{{inputs.parameters.sample_size}}" ]; then
+              ARGS="$ARGS --sample_size {{inputs.parameters.sample_size}}"
+            fi
+
+            if [ -n "{{inputs.parameters.model-name}}" ]; then
+              ARGS="$ARGS --model_name {{inputs.parameters.model-name}}"
+            fi
+
+            uv run scripts/1_run_rag.py $ARGS
         env:
           - name: LANGFUSE_BASE_URL
             valueFrom:
@@ -742,12 +959,13 @@ spec:
         args:
           - |
             set -e
-            git clone --branch codif-pipeline https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/coicop-bdf-classifier
+            git clone --branch up-rag https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/coicop-bdf-classifier
             uv sync
 
             RUN_ROOT="s3://projet-budget-famille/data/workflow_runs/{{inputs.parameters.run_date}}/{{inputs.parameters.run_id}}"
             ARGS="--lcs-file $RUN_ROOT/codif-lcs/raw_test_LCS.parquet \
                   --rag-file $RUN_ROOT/run-rag/predictions.parquet \
+                  --rag-annotations-file $RUN_ROOT/rag-annotation/predictions.parquet \
                   --ttc-file $RUN_ROOT/run-ttc/predictions.parquet \
                   --output-file $RUN_ROOT/decide-coicop/predictions.parquet \
                   --extra-columns-file $RUN_ROOT/preprocessing/raw_test.parquet \
@@ -820,7 +1038,7 @@ spec:
         args:
           - |
             set -e
-            git clone --branch codif-pipeline https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/final-output
+            git clone --branch up-rag https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/final-output
             uv sync
             ARGS="--run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}"
             [ -n "{{inputs.parameters.text_column}}" ]   && ARGS="$ARGS --text-column {{inputs.parameters.text_column}}"
@@ -886,7 +1104,7 @@ spec:
         args:
           - |
             set -e
-            git clone --branch codif-pipeline https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/report
+            git clone --branch up-rag https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/report
             uv sync
 
             ARGS="--run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}} \
