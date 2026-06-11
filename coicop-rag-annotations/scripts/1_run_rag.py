@@ -1,14 +1,22 @@
 """
 Annotation RAG Pipeline
 =======================
-Runs the annotation-based RAG on the upstream evaluation test set and evaluates it.
+Codifies product descriptions with the annotation-based RAG.
 
-For each test product: embed it, retrieve the most similar already-coded products
-from Qdrant, build a few-shot prompt from those examples, ask the LLM for a COICOP
-code, parse the JSON answer, then compute per-level accuracy and retrieval recall.
+For each product: embed it, retrieve the most similar already-coded products from
+Qdrant, build a few-shot prompt from those examples, ask the LLM for a COICOP code,
+parse the JSON answer, and export the predictions.
+
+Two modes (mirrors the workflow's `skip-report` convention):
+  - PRODUCTION (default): predict + export only. Input has no labels.
+  - EVALUATION (`--skip-eval false`): additionally compute per-level accuracy and
+    retrieval recall against the ground-truth `code` of a labeled input.
 
 Usage:
-    uv run scripts/1_run_rag.py --run-id <ID> --run-date <YYYY-MM-DD> [--sample_size N]
+    # production
+    uv run scripts/1_run_rag.py --run-id <ID> --run-date <YYYY-MM-DD>
+    # evaluation
+    uv run scripts/1_run_rag.py --run-id <ID> --run-date <YYYY-MM-DD> --skip-eval false
 """
 import argparse
 import datetime
@@ -22,11 +30,26 @@ from openai import OpenAI
 from qdrant_client import QdrantClient
 from tqdm import tqdm
 
-from coicop_rag_annotations.eval import evaluate, flatten_metrics, format_report
+# to remove
+# os.chdir("codif-coicop-bdf/coicop-rag-annotations")
+# import types
+# args = types.SimpleNamespace(config="config/config.yaml",run_id="pipeline-5jqsd", run_date="2026-06-03",sample_size=100,model_name=None, experiment_name=None,)
+
+from coicop_rag_annotations.eval import (
+    detailed_evaluation,
+    flatten_detailed,
+    format_detailed_report,
+)
 from coicop_rag_annotations.generation_tools import generate_llm_responses
 from coicop_rag_annotations.parsing import extract_json_from_response
 from coicop_rag_annotations.prompt import load_prompt
-from coicop_rag_annotations.utils import create_duckdb_connection, embed_texts, expand_paths
+from coicop_rag_annotations.utils import (
+    build_location_text,
+    create_duckdb_connection,
+    embed_texts,
+    expand_paths,
+    is_present,
+)
 
 
 def setup_argument_parser():
@@ -34,9 +57,14 @@ def setup_argument_parser():
     parser.add_argument("--config", default="config/config.yaml", help="Path to config YAML")
     parser.add_argument("--run-id", required=True, help="Workflow run identifier")
     parser.add_argument("--run-date", required=True, help="Workflow run date (YYYY-MM-DD)")
-    parser.add_argument("--sample_size", type=int, help="Limit number of test products")
+    parser.add_argument("--sample_size", type=int, help="Limit number of products")
     parser.add_argument("--model_name", type=str, help="LLM model name (overrides config)")
     parser.add_argument("--experiment_name", type=str, help="MLflow experiment (overrides config)")
+    parser.add_argument(
+        "--skip-eval", default="true",
+        help="If != 'true', evaluate predictions against ground-truth labels "
+             "(evaluation mode). Default 'true' = production mode (predictions only).",
+    )
     return parser
 
 
@@ -62,12 +90,18 @@ def main():
     product_col = config["annotations"]["product_col"]
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 
+    # Evaluation is opt-in (mirrors the workflow's `skip-report` convention):
+    # default = production (predictions only); `--skip-eval false` = evaluation mode.
+    do_eval = str(args.skip_eval).lower() != "true"
+    input_path = config["data"]["s3_path_input"]
+
     mlflow.set_tracking_uri(os.environ["MLFLOW_TRACKING_URI"])
     mlflow.set_experiment(config["mlflow"]["experiment_name"])
 
     with mlflow.start_run(run_name=f"annotation-rag_{timestamp}"):
         logger.info("=" * 80)
-        logger.info("STARTING ANNOTATION RAG PIPELINE")
+        logger.info("STARTING ANNOTATION RAG PIPELINE (%s mode)",
+                    "EVALUATION" if do_eval else "PRODUCTION")
         logger.info("=" * 80)
 
         mlflow.log_params({
@@ -75,7 +109,8 @@ def main():
             "model_name": config["llm"]["model_name"],
             "embedding_model": config["embedding"]["model_name"],
             "retrieval_size": config["retrieval"]["size"],
-            "test_set": config["eval"]["s3_path_test"],
+            "mode": "evaluation" if do_eval else "production",
+            "input": input_path,
         })
 
         # -------------------------------------------------------------------
@@ -93,11 +128,12 @@ def main():
         prompt_template = load_prompt(config)
 
         # -------------------------------------------------------------------
-        # Load evaluation test set (produced upstream by prune-annotations)
+        # Load input products to codify (labeled test set in eval mode,
+        # unlabeled production data otherwise)
         # -------------------------------------------------------------------
-        logger.info("STEP 1: loading evaluation test set (upstream)")
+        logger.info("STEP 1: loading input products from %s", input_path)
         test_df = con.sql(
-            f"SELECT * FROM read_parquet('{config['eval']['s3_path_test']}')"
+            f"SELECT * FROM read_parquet('{input_path}')"
         ).to_df()
         if args.sample_size:
             test_df = test_df.sample(n=min(args.sample_size, len(test_df)),
@@ -110,9 +146,15 @@ def main():
         # Embed + retrieve
         # -------------------------------------------------------------------
         logger.info("STEP 2: embedding test products")
+        # Same canonical representation as the index: product + purchase location.
+        search_texts = [
+            build_location_text(r[product_col], r.get("shop"), r.get("shop_type_name"))
+            for r in test_records
+        ]
         search_embeddings = embed_texts(
-            client_llmlab, config["embedding"]["model_name"],
-            [str(r[product_col]) for r in test_records],
+            client_llmlab,
+            config["embedding"]["model_name"],
+            search_texts,
             batch_size=config["embedding"]["batch_size"],
         )
 
@@ -133,23 +175,18 @@ def main():
         logger.info("STEP 4: building prompts")
         messages = []
         for i, record in enumerate(test_records):
-            shop = record.get("shop") or None
-            shop_type = record.get("shop_type_name") or None
-            if shop:
-                shop_info = f"{shop} (type d'enseigne : {shop_type})" if shop_type else shop
-                enseigne_bloc = f"# Enseigne d'achat : {shop_info}"
-            else:
-                enseigne_bloc = ""
-            budget = record.get("budget")
+            budget = is_present(record.get("budget"))
             price_bloc = (
-                f"# Prix payé : {round(budget, 1)} euros"
-                if isinstance(budget, float) and budget else ""
+                f"# Prix payé : {round(float(budget), 1)} euros"
+                if budget is not None and float(budget) > 0 else ""
             )
             messages.append(
                 prompt_template.compile(
-                    product=record[product_col],
+                    # product carries the purchase location (same repr. as the index
+                    # and the examples) → enseigne_bloc no longer needed.
+                    product=search_texts[i],
                     examples=build_examples_block(retrieved_texts[i], retrieved_codes[i]),
-                    enseigne_bloc=enseigne_bloc,
+                    enseigne_bloc="",
                     price_bloc=price_bloc,
                 )
             )
@@ -196,19 +233,44 @@ def main():
         mlflow.log_param("predictions_path", pred_path)
         logger.info(f"  → predictions exported: {pred_path}")
 
-        # -------------------------------------------------------------------
-        # Evaluate
-        # -------------------------------------------------------------------
-        logger.info("STEP 8: evaluating")
-        metrics = evaluate(records, levels=range(1, config["eval"]["levels"] + 1))
-        report = format_report(metrics, n_total=len(records))
-        print("\n" + report)
-
-        with open("report.txt", "w", encoding="utf-8") as f:
-            f.write(report)
-        mlflow.log_artifact("report.txt")
-        mlflow.log_metrics(flatten_metrics(metrics))
         mlflow.log_dict(config, "config.yaml")
+
+        # -------------------------------------------------------------------
+        # Evaluate (opt-in: only in evaluation mode, and only if labels exist)
+        # -------------------------------------------------------------------
+        if not do_eval:
+            logger.info("STEP 8: evaluation skipped (production mode)")
+        elif "code" not in test_df.columns:
+            logger.warning(
+                "STEP 8: evaluation requested but no ground-truth 'code' column in input "
+                "— skipping evaluation."
+            )
+        else:
+            logger.info("STEP 8: evaluating")
+            target_level = config["eval"]["levels"]
+            detail = detailed_evaluation(records, max_level=target_level, target_level=target_level)
+
+            report = format_detailed_report(detail)
+            print("\n" + report)
+            with open("report.txt", "w", encoding="utf-8") as f:
+                f.write(report)
+            mlflow.log_artifact("report.txt")
+
+            # Scalar metrics
+            mlflow.log_metrics(flatten_detailed(detail))
+
+            # Detailed tables (viewable in the MLflow UI)
+            mlflow.log_table(pd.DataFrame(detail["by_level1"]),
+                             "eval/accuracy_by_level1.json")
+            for lvl, d in detail["distortion"].items():
+                mlflow.log_table(pd.DataFrame(d["per_category"]),
+                                 f"eval/distribution_level_{lvl}.json")
+            mlflow.log_table(pd.DataFrame(detail["confidence"]["calibration_bins"]),
+                             "eval/confidence_calibration.json")
+            mlflow.log_table(pd.DataFrame(detail["confidence"]["threshold_sweep"]),
+                             "eval/confidence_threshold_sweep.json")
+            mlflow.log_table(pd.DataFrame(detail["codable"]["groups"]),
+                             "eval/codable_reliability.json")
 
         logger.info("=" * 80)
         logger.info("ANNOTATION RAG PIPELINE COMPLETED")

@@ -53,25 +53,28 @@ retrieval:
 
 llm:
   # Source du prompt : local (défaut) ou Langfuse.
-  use_langfuse: false
+  use_langfuse: true
   prompt_file: prompts/annotation_rag.md
   prompt_name: prompt-annotation-rag
-  prompt_version: "1"
+  prompt_version: "2"   # version Langfuse épinglée (évite de charger le mauvais prompt)
   model_name: gemma4-26b-moe
   temperature: 0.1
   max_tokens: 2048
   concurrency: 32
 
 eval:
+  # L'évaluation est opt-in : pilotée par --skip-eval (défaut 'true' = production).
+  # En mode évaluation, l'input doit contenir les labels (`code` / `coicop`).
   threshold_confidence: 0.7
   levels: 4   # évalue les niveaux COICOP 1..levels
   seed: 42    # graine pour l'échantillonnage optionnel (--sample_size)
-  # Jeu de test d'évaluation = test pruné produit en amont par l'étape
-  # prune-annotations (déjà tronqué/pruné, cohérent avec l'index). PAS produit ici.
-  s3_path_test: "s3://projet-budget-famille/data/workflow_runs/{run_date}/{run_id}/prune-annotations/raw_test_without_regex_pruned.parquet"
 
-# Artefacts produits par ce module.
+# Produits à codifier (input du RAG) :
+#   - mode évaluation : test labellisé pruné (prune-annotations, déjà tronqué/pruné) ;
+#   - mode production  : données à codifier (sans labels).
+# + artefact produit par ce module (prédictions).
 data:
+  s3_path_input: "s3://projet-budget-famille/data/workflow_runs/{run_date}/{run_id}/prune-annotations/raw_test_without_regex_pruned.parquet"
   s3_path_predictions: "s3://projet-budget-famille/data/workflow_runs/{run_date}/{run_id}/rag-annotation/predictions.parquet"
 
 mlflow:

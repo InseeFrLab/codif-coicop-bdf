@@ -8,6 +8,7 @@ import os
 from typing import Any, List, Optional
 
 import duckdb
+import pandas as pd
 from tqdm import tqdm
 
 
@@ -77,8 +78,51 @@ def embed_texts(client, model: str, texts: List[str], batch_size: int = 64) -> L
         List of embedding vectors, in the same order as `texts`.
     """
     embeddings: List[List[float]] = []
-    for start in tqdm(range(0, len(texts), batch_size), desc="Embeddings"):
-        batch = texts[start:start + batch_size]
-        response = client.embeddings.create(model=model, input=batch)
-        embeddings.extend(item.embedding for item in response.data)
+    with tqdm(total=len(texts), desc="Embeddings", unit="doc") as pbar:
+        for start in range(0, len(texts), batch_size):
+            batch = texts[start:start + batch_size]
+            response = client.embeddings.create(model=model, input=batch)
+            embeddings.extend(item.embedding for item in response.data)
+            pbar.update(len(batch))
     return embeddings
+
+
+def is_present(value: Any) -> Optional[Any]:
+    """Return `value` if it is a usable (non-missing) scalar, else None.
+
+    Handles None, NaN (float), pandas NA, and empty/whitespace strings.
+    """
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+    if isinstance(value, str) and not value.strip():
+        return None
+    return value
+
+
+def build_location_text(product: Any, shop: Any = None, shop_type: Any = None) -> str:
+    """
+    Build the canonical descriptive text of a product, enriched with the
+    purchase location when available. This is the single representation used
+    everywhere: embedded into the vector DB, used for the query embedding, and
+    shown as few-shot examples / "produit à coder" in the prompt — so the same
+    product is represented identically on the index and query sides.
+
+    Examples:
+        "café"                                  (no location info)
+        "café - magasin ou lieu d'achat : Super U"
+        "café - magasin ou lieu d'achat : Super U (type : supermarché)"
+    """
+    product = str(product).strip()
+    shop = is_present(shop)
+    shop_type = is_present(shop_type)
+    if shop is None:
+        return product
+    location = str(shop)
+    if shop_type is not None:
+        location += f" (type : {shop_type})"
+    return f"{product} - magasin ou lieu d'achat : {location}"

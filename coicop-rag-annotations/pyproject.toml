@@ -18,6 +18,7 @@ dependencies = [
     "duckdb>=1.4.3",
     "langfuse>=3.11.1",
     "mlflow>=3.8.1",
+    "numpy>=2.0.0",
     "openai>=2.14.0",
     "pandas>=2.3.3",
     "pydantic>=2.12.5",

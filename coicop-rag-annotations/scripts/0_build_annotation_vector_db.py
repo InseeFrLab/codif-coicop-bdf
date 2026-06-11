@@ -30,6 +30,7 @@ from qdrant_client.models import Distance, PointStruct, VectorParams
 
 from coicop_rag_annotations.pruning import prune_annotation_lvl4
 from coicop_rag_annotations.utils import (
+    build_location_text,
     create_duckdb_connection,
     embed_texts,
     expand_paths,
@@ -158,7 +159,11 @@ def main():
     # -----------------------------------------------------------------------
     logger.info("STEP 4: generating embeddings for index products")
     train_records = index_df.to_dict(orient="records")
-    texts = [str(r[product_col]) for r in train_records]
+    # Canonical text = product + purchase location (shop / shop type) when known.
+    texts = [
+        build_location_text(r[product_col], r.get("shop"), r.get("shop_type_name"))
+        for r in train_records
+    ]
     embeddings = embed_texts(
         client_llmlab,
         config["embedding"]["model_name"],
@@ -187,13 +192,14 @@ def main():
             id=str(uuid.uuid4()),
             vector=embedding,
             payload={
-                "text": str(record[product_col]),
+                "text": text,                       # enriched text (embedded + shown as example)
+                "product": str(record[product_col]),  # raw product, for reference
                 "code": record["code"],
                 "coicop": record.get("coicop"),
                 "source": record.get("source"),
             },
         )
-        for record, embedding in zip(train_records, embeddings)
+        for record, text, embedding in zip(train_records, texts, embeddings)
     ]
 
     batch_size = config["qdrant"]["upload_batch_size"]

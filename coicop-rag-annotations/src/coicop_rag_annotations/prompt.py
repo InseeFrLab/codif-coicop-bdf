@@ -60,7 +60,8 @@ def load_prompt(config: dict):
     """
     Load the prompt according to `config['llm']`.
 
-    - `use_langfuse: true`  -> fetch `prompt_name` (version `prompt_version`) from Langfuse.
+    - `use_langfuse: true`  -> fetch `prompt_name` at the exact `prompt_version` from
+      Langfuse. Pinning the version avoids accidentally picking up the wrong prompt.
     - otherwise              -> load the local file `prompt_file`.
     """
     llm_cfg = config["llm"]
