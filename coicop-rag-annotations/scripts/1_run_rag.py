@@ -22,6 +22,7 @@ import argparse
 import datetime
 import logging
 import os
+import time
 
 import mlflow
 import pandas as pd
@@ -111,6 +112,8 @@ def main():
             "retrieval_size": config["retrieval"]["size"],
             "mode": "evaluation" if do_eval else "production",
             "input": input_path,
+            "vectordb_exclude_sources": ",".join(config["annotations"].get("exclude_sources") or []) or "none",
+            "testset_include_sources": ",".join(config["eval"].get("include_sources") or []) or "all",
         })
 
         # -------------------------------------------------------------------
@@ -135,6 +138,16 @@ def main():
         test_df = con.sql(
             f"SELECT * FROM read_parquet('{input_path}')"
         ).to_df()
+
+        # Keep only configured sources in the test set (empty = all)
+        include_sources = config["eval"].get("include_sources") or []
+        if include_sources and "source" in test_df.columns:
+            before = len(test_df)
+            test_df = test_df[test_df["source"].isin(include_sources)]
+            logger.info(
+                f"  → test set filtered to sources {include_sources}: {before} → {len(test_df)} rows"
+            )
+
         if args.sample_size:
             test_df = test_df.sample(n=min(args.sample_size, len(test_df)),
                                      random_state=config["eval"]["seed"])
@@ -192,8 +205,21 @@ def main():
             )
 
         logger.info("STEP 5: generating LLM responses")
+        t_start = time.perf_counter()
         llm_responses = generate_llm_responses(
             messages, client_llmlab, config, concurrency=config["llm"]["concurrency"]
+        )
+        inference_seconds = time.perf_counter() - t_start
+        mlflow.log_metrics({
+            "inference/total_time_seconds": inference_seconds,
+            "inference/iterations_per_second": (
+                len(messages) / inference_seconds if inference_seconds > 0 else 0.0
+            ),
+        })
+        logger.info(
+            "  → inference: %.1fs for %d products (%.2f it/s)",
+            inference_seconds, len(messages),
+            len(messages) / inference_seconds if inference_seconds > 0 else 0.0,
         )
 
         # -------------------------------------------------------------------

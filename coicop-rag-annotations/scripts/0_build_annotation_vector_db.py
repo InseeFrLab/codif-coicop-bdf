@@ -117,6 +117,16 @@ def main():
         annotations = annotations.loc[annotations["source"] == nature]
     logger.info(f"  → {len(annotations)} annotations loaded (nature={nature or 'all'})")
 
+    # Exclude configured sources from the vector DB
+    exclude_sources = config["annotations"].get("exclude_sources") or []
+    if exclude_sources:
+        before = len(annotations)
+        annotations = annotations[~annotations["source"].isin(exclude_sources)]
+        logger.info(
+            f"  → excluded sources {exclude_sources}: {before - len(annotations)} rows dropped "
+            f"→ {len(annotations)} remaining"
+        )
+
     # -----------------------------------------------------------------------
     # STEP 2: prune codes to level 4
     # -----------------------------------------------------------------------
@@ -141,7 +151,8 @@ def main():
     # No train/test split here: preprocessing already split train (this input)
     # from the evaluation test set. ALL loaded annotations are indexed.
     index_df = annotations
-    if config.get("suggester", {}).get("enabled"):
+    suggester_excluded = "suggester" in exclude_sources
+    if config.get("suggester", {}).get("enabled") and not suggester_excluded:
         logger.info("STEP 3: adding suggester examples to the index")
         suggester_df = load_and_prune_suggester(
             con, config, product_col, mapping_table_lvl4, notices_raw
@@ -151,6 +162,8 @@ def main():
             f"  → index = {len(annotations)} annotations + {len(suggester_df)} suggester "
             f"= {len(index_df)} rows"
         )
+    elif suggester_excluded:
+        logger.info("STEP 3: suggester excluded via exclude_sources — index = annotations only")
     else:
         logger.info("STEP 3: suggester disabled — index = annotations only")
 

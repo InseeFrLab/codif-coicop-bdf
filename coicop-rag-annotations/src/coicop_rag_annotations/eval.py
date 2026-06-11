@@ -15,7 +15,7 @@ from typing import Dict, List, Optional
 
 import numpy as np
 
-from coicop_rag_annotations.utils import truncate_code
+from coicop_rag_annotations.utils import is_present, truncate_code
 
 
 def accuracy_by_level(
@@ -137,6 +137,47 @@ def accuracy_by_category(
         tvals = [ct for _, ct in lst if ct is not None]
         rows.append({
             "level1": cat,
+            "n": n,
+            "share": n / total if total else 0.0,
+            f"accuracy_level{group_level}": sum(1 for cg, _ in lst if cg) / n,
+            f"accuracy_level{target_level}": (sum(tvals) / len(tvals)) if tvals else None,
+        })
+    rows.sort(key=lambda d: d["n"], reverse=True)
+    return rows
+
+
+def accuracy_by_source(
+    records: List[Dict],
+    source_col: str = "source",
+    group_level: int = 1,
+    target_level: int = 4,
+    predicted_col: str = "code_predict",
+    label_col: str = "code",
+) -> List[Dict]:
+    """
+    Accuracy broken down by the test-data source (e.g. copain, manual_from_app…).
+
+    For each source: support (n + share), accuracy at `group_level` (level-1 top
+    category) and at `target_level` (global / fine code).
+    """
+    groups: Dict[str, list] = {}
+    for r in records:
+        gtrue = truncate_code(r.get(label_col), group_level)
+        if gtrue is None:
+            continue
+        src = is_present(r.get(source_col))
+        src = str(src) if src is not None else "<unknown>"
+        cg = truncate_code(r.get(predicted_col), group_level) == gtrue
+        ct = _correct_at(r, target_level, predicted_col, label_col)
+        groups.setdefault(src, []).append((cg, ct))
+
+    total = sum(len(v) for v in groups.values())
+    rows = []
+    for src, lst in groups.items():
+        n = len(lst)
+        tvals = [ct for _, ct in lst if ct is not None]
+        rows.append({
+            "source": src,
             "n": n,
             "share": n / total if total else 0.0,
             f"accuracy_level{group_level}": sum(1 for cg, _ in lst if cg) / n,
@@ -330,12 +371,16 @@ def codable_reliability(
 
 def detailed_evaluation(records: List[Dict], max_level: int = 4, target_level: int = 4) -> Dict:
     """Run every indicator and return them in one structured dict."""
+    # Distribution distortion is computed only on predictions the LLM flagged as
+    # codable (uncodable rows have null/unreliable predictions).
+    codable_records = [r for r in records if r.get("codable") is True]
     return {
         "n_total": len(records),
         "target_level": target_level,
         "overall": evaluate(records, range(1, max_level + 1)),
         "by_level1": accuracy_by_category(records, group_level=1, target_level=target_level),
-        "distortion": {lvl: distribution_distortion(records, lvl) for lvl in (1, 2)},
+        "by_source": accuracy_by_source(records, group_level=1, target_level=target_level),
+        "distortion": {lvl: distribution_distortion(codable_records, lvl) for lvl in (1, 2)},
         "confidence": confidence_reliability(records, target_level),
         "codable": codable_reliability(records, target_level),
     }
@@ -385,10 +430,18 @@ def format_detailed_report(detail: Dict) -> str:
         L.append(f"{row['level1']:<6}{row['n']:<8}{_fmt(row['share'],'.3f'):<9}"
                  f"{_fmt(row['accuracy_level1'],'.3f'):<9}{_fmt(row.get(f'accuracy_level{tgt}'),'.3f'):<9}")
 
-    # Distribution distortion
+    # Accuracy by test-data source (global = acc@target, plus level-1 acc)
+    if detail.get("by_source"):
+        L += ["", "── Accuracy by test-data source " + "─" * 46,
+              f"{'source':<22}{'n':<8}{'share':<9}{'acc@1':<9}{f'acc@{tgt} (global)':<18}"]
+        for row in detail["by_source"]:
+            L.append(f"{str(row['source']):<22}{row['n']:<8}{_fmt(row['share'],'.3f'):<9}"
+                     f"{_fmt(row['accuracy_level1'],'.3f'):<9}{_fmt(row.get(f'accuracy_level{tgt}'),'.3f'):<18}")
+
+    # Distribution distortion (codable predictions only)
     for lvl, d in detail["distortion"].items():
-        L += ["", f"── Distribution distortion @ level {lvl} "
-              f"(TV={_fmt(d['tv_distance'],'.4f')}, KL={_fmt(d['kl_divergence'],'.4f')}) " + "─" * 18,
+        L += ["", f"── Distribution distortion @ level {lvl} — codable only (n={d['n']}) "
+              f"(TV={_fmt(d['tv_distance'],'.4f')}, KL={_fmt(d['kl_divergence'],'.4f')}) " + "─" * 8,
               f"{'category':<10}{'true%':<9}{'pred%':<9}{'diff':<9}"]
         for row in d["per_category"][:12]:
             L.append(f"{str(row['category']):<10}{row['true_share']*100:<9.2f}"

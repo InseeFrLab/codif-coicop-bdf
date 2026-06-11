@@ -111,6 +111,8 @@ Loggé dans MLflow (scalaires `log_metrics` + tables `log_table` + `report.txt`)
 - **Accuracy / recall par niveau** (1..`eval.levels`) sur `all_parsed` et `parsed_and_codable`.
 - **Accuracy par catégorie COICOP niveau 1** (`eval/accuracy_by_level1.json`) : support et
   précision par grande catégorie, au niveau 1 et au niveau cible.
+- **Accuracy par source des données de test** (accuracy globale + niveau 1 par `source`) —
+  **uniquement dans `report.txt`** (pas en scalaire ni en table MLflow).
 - **Distorsion de distribution** niveaux 1 et 2 (`eval/distribution_level_{1,2}.json`) :
   parts vraies vs prédites par catégorie + `diff`, et indicateurs agrégés **TV distance**
   et **KL** (détecte les sur/sous-prédictions systématiques d'une catégorie).
