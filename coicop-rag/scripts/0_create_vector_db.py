@@ -14,7 +14,7 @@ from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams, PointStruct
 
 from coicop_rag.data.coicop_document import CoicopDocument
-from coicop_rag.utils import create_duckdb_connection, get_parents
+from coicop_rag.utils import create_duckdb_connection, expand_paths, get_parents
 
 
 def main():
@@ -25,10 +25,13 @@ def main():
         default="config/config.yaml",
         help="Path to config YAML file"
     )
+    parser.add_argument("--run-id", required=True, help="Workflow run identifier")
+    parser.add_argument("--run-date", required=True, help="Workflow run date (YYYY-MM-DD)")
     args = parser.parse_args()
 
     with open(args.config, "r") as f:
         config = yaml.safe_load(f)
+    config = expand_paths(config, run_id=args.run_id, run_date=args.run_date)
 
     logger.info("=" * 80)
     logger.info("STARTING VECTOR DATABASE CREATION PIPELINE")
@@ -61,13 +64,10 @@ def main():
     logger.info("STEP 1: LOADING COICOP NOTICES")
     logger.info("=" * 80)
 
-    vectors_cfg = config["coicop"].get("vectors", {})
-    truncate_level = vectors_cfg.get("truncate_level")
-    prune = vectors_cfg.get("prune", False)
-    logger.info(f"  truncate_level={truncate_level}, prune={prune}")
-
+    # La nomenclature est déjà tronquée + prunée (codes canoniques) par l'étape
+    # `prune` unifiée → on lit directement son artefact, sans re-traitement ici.
     notices_df = con.sql(
-        f"SELECT * FROM read_csv_auto('{config['coicop']['path_raw']}')"
+        f"SELECT * FROM read_parquet('{config['coicop']['path_prunned_lvl4']}')"
     ).to_df()
 
     columns_to_keep = [
@@ -75,27 +75,7 @@ def main():
         if "column" not in col.lower() and not col.endswith("_en")
     ]
     notices_df = notices_df[columns_to_keep]
-    logger.info(f"  → {len(notices_df)} notices loaded from path_raw")
-
-    # Apply truncation: keep codes whose depth (number of dot-separated parts) <= truncate_level
-    if truncate_level is not None:
-        before = len(notices_df)
-        notices_df = notices_df[
-            notices_df["code"].apply(lambda c: len(str(c).split(".")) <= truncate_level)
-        ]
-        logger.info(f"  → {len(notices_df)} notices after truncation to level {truncate_level} (dropped {before - len(notices_df)})")
-
-    # Apply pruning: keep only canonical codes (code == code_parent_equivalent in mapping)
-    if prune:
-        mapping_df = con.sql(
-            f"SELECT code, code_parent_equivalent FROM read_parquet('{config['coicop']['path_mapping_lvl4']}')"
-        ).to_df()
-        canonical_codes = set(
-            mapping_df.loc[mapping_df["code"] == mapping_df["code_parent_equivalent"], "code"]
-        )
-        before = len(notices_df)
-        notices_df = notices_df[notices_df["code"].isin(canonical_codes)]
-        logger.info(f"  → {len(notices_df)} notices after pruning (dropped {before - len(notices_df)} non-canonical codes)")
+    logger.info(f"  → {len(notices_df)} notices prunées chargées depuis path_prunned_lvl4")
 
     notices = notices_df.to_dict(orient="records")
     logger.info(f"✓ {len(notices)} notices ready")

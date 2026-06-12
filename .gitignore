@@ -1,0 +1,27 @@
+# Byte-compiled / optimized Python files
+__pycache__/
+*.py[codz]
+*$py.class
+
+# Environments / virtualenvs
+.venv/
+env/
+venv/
+ENV/
+
+# Packaging / build
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+
+# Logs / sorties locales
+*.log
+report.txt
+reports.txt

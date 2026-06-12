@@ -28,7 +28,6 @@ from openai import OpenAI
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, PointStruct, VectorParams
 
-from coicop_rag_annotations.pruning import prune_annotation_lvl4
 from coicop_rag_annotations.utils import (
     build_location_text,
     create_duckdb_connection,
@@ -37,50 +36,22 @@ from coicop_rag_annotations.utils import (
 )
 
 
-def load_and_prune_suggester(con, config, product_col, mapping_table_lvl4, notices_raw):
-    """
-    Load suggester examples and prune their codes exactly like the annotations.
-
-    Reads the configured source (CSV or parquet), aligns its columns to
-    (`product_col`, 'code', 'coicop'), tags `source='suggester'`, then applies the
-    same `prune_annotation_lvl4` (truncate to level 4 + linear-hierarchy mapping).
-
-    Returns the cleaned/pruned DataFrame.
-    """
-    sug = config["suggester"]
-    reader = "read_parquet" if sug["s3_path"].endswith(".parquet") else "read_csv_auto"
-
-    raw_count = con.sql(f"SELECT COUNT(*) FROM {reader}('{sug['s3_path']}')").fetchone()[0]
-
-    # The ENTIRE suggester is indexed (no sampling). dedup=true only collapses exact
-    # (product, code, coicop) duplicates, mirroring the preprocessing loader.
-    distinct = "DISTINCT" if sug.get("dedup", True) else ""
-    df = con.sql(f"""
-        SELECT {distinct}
-            "{sug['product_col']}" AS "{product_col}",
-            "{sug['code_col']}"    AS code,
-            "{sug['coicop_col']}"  AS coicop
-        FROM {reader}('{sug['s3_path']}')
-    """).to_df()
-    logger.info(f"  → {raw_count} suggester rows in source → {len(df)} after dedup={sug.get('dedup', True)}")
-    df["source"] = "suggester"
-
-    # Same pruning as the annotations → consistent level-4, mapped codes.
-    df = prune_annotation_lvl4(df, mapping_table_lvl4, notices_raw)
-
-    before = len(df)
-    df = df.dropna(subset=[product_col, "code"])
-    df = df[df[product_col].astype(str).str.strip() != ""]
-    logger.info(f"  → {len(df)} usable suggester rows (dropped {before - len(df)} empty/invalid)")
-    return df
-
-
 def main():
     parser = argparse.ArgumentParser(description="Annotation vector database creation")
     parser.add_argument("--config", default="config/config.yaml", help="Path to config YAML")
     parser.add_argument("--run-id", required=True, help="Workflow run identifier")
     parser.add_argument("--run-date", required=True, help="Workflow run date (YYYY-MM-DD)")
+    parser.add_argument(
+        "--skip-eval", default="true",
+        help="Mirrors the run step: 'true' = production (default), else evaluation. "
+             "Selects which sources are excluded from the index "
+             "(annotations.exclude_sources_prod vs exclude_sources).",
+    )
     args = parser.parse_args()
+
+    # Production indexe un périmètre de sources plus large que l'évaluation
+    # (cf. exclude_sources_prod) ; do_eval suit la même convention que 1_run_rag.py.
+    do_eval = str(args.skip_eval).lower() != "true"
 
     with open(args.config, "r") as f:
         config = yaml.safe_load(f)
@@ -117,8 +88,14 @@ def main():
         annotations = annotations.loc[annotations["source"] == nature]
     logger.info(f"  → {len(annotations)} annotations loaded (nature={nature or 'all'})")
 
-    # Exclude configured sources from the vector DB
-    exclude_sources = config["annotations"].get("exclude_sources") or []
+    # Exclude configured sources from the vector DB.
+    # Évaluation : exclude_sources (KB = lot train restreint).
+    # Production  : exclude_sources_prod (KB = toutes les annotations voulues).
+    if do_eval:
+        exclude_sources = config["annotations"].get("exclude_sources") or []
+    else:
+        exclude_sources = config["annotations"].get("exclude_sources_prod") or []
+    logger.info(f"  → mode={'evaluation' if do_eval else 'production'}, exclude_sources={exclude_sources}")
     if exclude_sources:
         before = len(annotations)
         annotations = annotations[~annotations["source"].isin(exclude_sources)]
@@ -128,25 +105,16 @@ def main():
         )
 
     # -----------------------------------------------------------------------
-    # STEP 2: prune codes to level 4
+    # STEP 2: cleanup (les codes sont déjà tronqués/prunés en amont par `prune`)
     # -----------------------------------------------------------------------
-    logger.info("STEP 2: pruning annotation codes to level 4")
-    mapping_table_lvl4 = con.sql(
-        f"SELECT code, code_parent_equivalent FROM read_parquet('{config['coicop']['path_mapping_lvl4']}')"
-    ).to_df()
-    notices_raw = con.sql(
-        f"SELECT * FROM read_csv_auto('{config['coicop']['path_raw']}')"
-    ).to_df()
-    annotations = prune_annotation_lvl4(annotations, mapping_table_lvl4, notices_raw)
-
-    # Drop rows without a usable product description or code
+    logger.info("STEP 2: drop des lignes sans libellé ou code exploitable")
     before = len(annotations)
     annotations = annotations.dropna(subset=[product_col, "code"])
     annotations = annotations[annotations[product_col].astype(str).str.strip() != ""]
     logger.info(f"  → {len(annotations)} usable annotations (dropped {before - len(annotations)})")
 
     # -----------------------------------------------------------------------
-    # STEP 3: add suggester examples to the index
+    # STEP 3: add suggester examples to the index (déjà prunés par l'étape `prune`)
     # -----------------------------------------------------------------------
     # No train/test split here: preprocessing already split train (this input)
     # from the evaluation test set. ALL loaded annotations are indexed.
@@ -154,9 +122,9 @@ def main():
     suggester_excluded = "suggester" in exclude_sources
     if config.get("suggester", {}).get("enabled") and not suggester_excluded:
         logger.info("STEP 3: adding suggester examples to the index")
-        suggester_df = load_and_prune_suggester(
-            con, config, product_col, mapping_table_lvl4, notices_raw
-        )
+        suggester_df = con.sql(
+            f"SELECT * FROM read_parquet('{config['suggester']['s3_path_pruned']}')"
+        ).to_df()
         index_df = pd.concat([annotations, suggester_df], ignore_index=True)
         logger.info(
             f"  → index = {len(annotations)} annotations + {len(suggester_df)} suggester "

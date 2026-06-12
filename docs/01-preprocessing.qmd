@@ -4,48 +4,54 @@ title: "1. Preprocessing"
 
 ## Rôle de l'étape
 
-`preprocessing` transforme le fichier de tickets brut en un jeu de données normalisé et prêt
-à coder. En **mode prédiction** (cas du CSV BDF), elle :
+`preprocessing` construit, à partir des sources brutes, **tous** les jeux de données
+normalisés dont le pipeline a besoin en aval — quel que soit le mode d'exécution.
+Elle enchaîne deux pipelines indépendants :
 
-1. charge le fichier d'entrée ;
-2. renomme les colonnes vers les noms canoniques du pipeline ;
-3. normalise les libellés produits (deux variantes : légère et forte) ;
-4. rattache l'enseigne à un type de magasin ;
-5. retire les produits explicitement non codables ;
-6. écrit `raw_test.parquet` (et un `raw_train.parquet` vide en mode prédiction).
+1. **Pipeline annotations** *(toujours exécuté)* — consolide les données annotées
+   (BdF 2024 + historique 2017 + suggester), standardise les libellés, agrège le budget
+   et produit un **fichier complet** + un split **train** / **test**.
+2. **Pipeline observations** *(uniquement si `--input-file` est fourni)* — prépare les
+   libellés **à coder** (sans vérité terrain) issus du fichier d'entrée.
+
+::: {.callout-note}
+Avant, l'étape avait deux chemins mutuellement exclusifs : en mode prédiction elle
+écrasait `raw_test.parquet` avec les observations et laissait `raw_train.parquet` vide.
+Désormais `raw_train`/`raw_test` désignent **toujours** le split train/test des
+**annotations**, et les observations à coder vont dans un fichier dédié
+`observations.parquet`. Ainsi, en prod comme en évaluation, toutes les données utiles
+sont disponibles.
+:::
 
 - Code : [`preprocessing/`](../preprocessing/) — entrée `preprocessing/main.py`
-- Commande : `python main.py --run-id=<id> --run-date=YYYY-MM-DD --input-file=<s3> --text-column=NAT_DEP --shop-column=MAG_DEP --budget-column=MONT_DEP`
+- Commande (évaluation) : `python main.py --run-id=<id> --run-date=YYYY-MM-DD`
+- Commande (prédiction) : `python main.py --run-id=<id> --run-date=YYYY-MM-DD --input-file=<s3> --text-column=NAT_DEP --shop-column=MAG_DEP --budget-column=MONT_DEP`
 
 ## Entrées
 
 | Source | Chemin |
 |---|---|
-| Fichier à coder | `s3://…/workflow_inputs/BDF_data_tickets_appli_20260320_a_codif.csv` |
+| Annotations COPAIN | `data/output-annotation/**` (parquet partitionné) |
+| Annotations 2024 (CSV) | `data/codification-manuelle-anterieure/annotations_test_2024.csv` |
+| Annotations historiques 2017 | `data/codification-manuelle-anterieure/annotations_BDF_2017.csv` |
+| Pool « suggester » | `data/input-annotation/liste_produits_fr_copain.csv` |
 | Table enseigne → type | `data/input-annotation/liste_magasins.csv` |
 | Produits non codables | `data/codification-manuelle-anterieure/produit_non_annotable.csv` |
-| Pool « suggester » | `data/input-annotation/liste_produits_fr_copain.csv` |
+| Fichier à coder *(prédiction)* | `s3://…/workflow_inputs/BDF_data_tickets_appli_20260320_a_codif.csv` |
 
 ## Traitement
 
-### Mappage des colonnes
+### Briques partagées
 
-Les colonnes d'entrée sont renommées vers les noms attendus par le reste du pipeline
+Les deux pipelines réutilisent la même standardisation des libellés
 (`preprocessing/main.py`) :
 
-```python
-column_mapping = {
-    args.text_column:   "raw_product",   # NAT_DEP  → raw_product
-    args.shop_column:   "shop",          # MAG_DEP  → shop
-    args.budget_column: "budget",        # MONT_DEP → budget
-    args.annee_column:  "annee",
-    args.source_column: "source",
-}
-df = df.rename(columns={src: tgt for src, tgt in column_mapping.items()
-                        if src in df.columns and src != tgt})
-```
+- `merge_shop_types` — normalise `shop` puis le joint à `liste_magasins.csv` pour récupérer
+  `shop_type_code` / `shop_type_name` (ex. supermarché, restauration rapide…).
+- `normalize_products` — calcule les deux variantes de libellé, retire les produits non
+  codables, attribue un identifiant unique `id` (UUID).
 
-### Deux niveaux de normalisation
+#### Deux niveaux de normalisation
 
 À partir de `raw_product`, deux colonnes sont calculées :
 
@@ -61,12 +67,31 @@ df["s_pr_product"] = df["l_pr_product"].copy()
 df = preprocess_text(df, "s_pr_product", stopwords)
 ```
 
-### Enseigne → type de magasin
+### Pipeline annotations
 
-`shop` est normalisé puis joint à `liste_magasins.csv` pour récupérer `shop_type_code` et
-`shop_type_name` (ex. supermarché, restauration rapide…).
+`build_annotations` consolide COPAIN + 2024 + suggester, ajoute l'historique 2017,
+applique les briques partagées, exporte des contrôles qualité (`qa/`), puis :
 
-### Schéma de sortie en mode prédiction
+- agrège le budget séparément pour les données 2024 et l'historique
+  (`aggregate_budget`, dédoublonnage + somme) ;
+- découpe les données 2024 en **train** / **test** (`train_test_split`, 50/50,
+  `random_state=42`) ; l'historique 2017 (+ suggester) rejoint le **train** ;
+- le **fichier complet** est l'union train ∪ test.
+
+### Pipeline observations *(prédiction)*
+
+`build_observations` ne s'exécute que si `--input-file` est fourni. Les colonnes d'entrée
+sont d'abord renommées vers les noms canoniques :
+
+```python
+column_mapping = {
+    args.text_column:   "raw_product",   # NAT_DEP  → raw_product
+    args.shop_column:   "shop",          # MAG_DEP  → shop
+    args.budget_column: "budget",        # MONT_DEP → budget
+    args.annee_column:  "annee",
+    args.source_column: "source",
+}
+```
 
 Comme il n'y a pas de vérité terrain, les colonnes manquantes reçoivent des valeurs par
 défaut pour que les étapes suivantes ne plantent pas :
@@ -79,8 +104,8 @@ prediction_defaults = {
 }
 ```
 
-Un identifiant unique `id` (UUID) est attribué à chaque ligne, et `_source_input_file`
-conserve le chemin du fichier d'origine (réutilisé par `final-output` pour nommer le résultat).
+`_source_input_file` conserve le chemin du fichier d'origine (réutilisé par `final-output`
+pour nommer le résultat).
 
 ## Exemple sur le fil rouge
 
@@ -100,12 +125,22 @@ captée plus loin par la règle regex `^illisible$ → 98.4`.
 
 `{run}` = `s3://projet-budget-famille/data/workflow_runs/{run_date}/{run_id}/preprocessing`
 
-| Fichier | Contenu |
-|---|---|
-| `{run}/raw_test.parquet` | lignes à coder (colonnes `id`, `raw_product`, `l_pr_product`, `s_pr_product`, `shop`, `shop_type_name`, `budget`, `code`(NA)…, `_source_input_file`) |
-| `{run}/raw_train.parquet` | **vide** en mode prédiction (pas de suggester à coder par regex) |
+| Fichier | Éval | Prédiction | Contenu |
+|---|:--:|:--:|---|
+| `{run}/annotations_full.parquet` | ✅ | ✅ | annotations consolidées complètes (= `raw_train` ∪ `raw_test`), budget agrégé |
+| `{run}/raw_train.parquet` | ✅ | ✅ | split **train** des annotations (2024-train + tout 2017 + suggester) |
+| `{run}/raw_test.parquet` | ✅ | ✅ | split **test** des annotations (2024-test) |
+| `{run}/suggester.parquet` | ✅ | ✅ | suggester préprocessé (`source="suggester"`), lu directement par [`codif-lcs`](03-codif-lcs.qmd) |
+| `{run}/observations.parquet` | — | ✅ | lignes **à coder** (`id`, `raw_product`, `l_pr_product`, `s_pr_product`, `shop`, `shop_type_name`, `budget`, `code`(NA)…, `_source_input_file`, `source="prediction"`) |
+| `{run}/qa/*.parquet` | ✅ | ✅ | contrôles qualité (doublons suggester, produits multi-codes) |
 
-Le pool « suggester » est écrit dans un fichier dédié, lu directement par
-[`codif-lcs`](03-codif-lcs.qmd).
+::: {.callout-important}
+**Transition en cours.** `raw_train`/`raw_test` désignant désormais toujours le split des
+annotations, les observations à coder en production se trouvent dans `observations.parquet`.
+Les étapes aval qui codifient en production (regex-codif `test_set`, `final-output`,
+`decide-coicop --extra-columns-file`) doivent être recâblées vers `observations.parquet` ;
+tant que ce n'est pas fait, la chaîne de codification traite en prod le split test des
+annotations.
+:::
 
 ➡️ Étape suivante : [2. Codif regex](02-codif-regex.qmd)

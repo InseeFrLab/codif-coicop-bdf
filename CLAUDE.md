@@ -9,22 +9,26 @@ Monorepo for the automatic COICOP codification pipeline of the INSEE Budget de F
 ## Pipeline DAG
 
 ```
-                   ┌──→ prune-coicop ──→ create-vector-db ─────────────┐  (skippable)
-   preprocessing ──┤                                                   ├──→ run-rag ─┐
-                   └──→ codif-regex ──→ prune-annotations ─────────────┘             │
-                                 ├──→ codif-lcs ─────────────────────────────────────┼──→ decide-coicop ──→ report
-                                 └──→ run-ttc  ──────────────────────────────────────┘
+                                      ┌──→ create-vector-db ──────────────┐  (skippable)
+   preprocessing ──┐   ┌──→ prune ────┤                                   ├──→ run-rag(-annotations) ─┐
+                   └──→┤              └──→ create-vector-db-annotations ───┘                           │
+                       └──→ codif-regex ─┬──→ codif-lcs ──────────────────────────────────────────────┼──→ decide-coicop ──→ final-output ──→ report
+                         (→ prune)       └──→ run-ttc  ───────────────────────────────────────────────┘
 ```
+
+Le pruning (troncature niv.4 + élagage des hiérarchies linéaires) est centralisé dans le module `prune/` : une étape unique, après `codif-regex`, qui produit tous les artefacts prunés (nomenclature, mapping, annotations train/test, suggester) sous `…/{run}/prune/`. L'aval ne fait que lire.
 
 | Module | Argo step | Language |
 |---|---|---|
 | `preprocessing/` | `preprocessing` | Python |
-| `coicop-rag/` | `prune-coicop`, `prune-annotations`, `create-vector-db`, `run-rag` | Python |
+| `prune/` | `prune` | Python |
+| `coicop-rag/` | `create-vector-db`, `run-rag` | Python |
+| `coicop-rag-annotations/` | `create-vector-db-annotations`, `run-rag-annotations` | Python |
 | `regex-codif/` | `codif-regex` | Python |
 | `stats-annotations/` | `codif-lcs` | R |
 | `coicop-bdf-classifier/` | `run-ttc`, `decide-coicop` | Python |
 | `report/` | `report` | Python + Quarto |
-| `final-output/` | *(post-pipeline)* | Python |
+| `final-output/` | `final-output` | Python |
 
 ## Running the Pipeline
 

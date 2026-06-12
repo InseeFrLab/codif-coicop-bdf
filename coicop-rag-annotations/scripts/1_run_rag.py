@@ -139,14 +139,18 @@ def main():
             f"SELECT * FROM read_parquet('{input_path}')"
         ).to_df()
 
-        # Keep only configured sources in the test set (empty = all)
+        # Keep only configured sources in the test set (empty = all).
+        # Production input carries source="prediction" (no ground truth) and must
+        # NOT be filtered out → the source filter only applies in evaluation mode.
         include_sources = config["eval"].get("include_sources") or []
-        if include_sources and "source" in test_df.columns:
+        if do_eval and include_sources and "source" in test_df.columns:
             before = len(test_df)
             test_df = test_df[test_df["source"].isin(include_sources)]
             logger.info(
                 f"  → test set filtered to sources {include_sources}: {before} → {len(test_df)} rows"
             )
+        elif not do_eval:
+            logger.info("  → production mode: no source filter applied to the input")
 
         if args.sample_size:
             test_df = test_df.sample(n=min(args.sample_size, len(test_df)),

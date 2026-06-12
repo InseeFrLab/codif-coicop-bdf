@@ -54,14 +54,15 @@ spec:
     # -----------------------------------------------------------------------
     # Main pipeline: DAG with parallelism
     #
-    # 4 classifieurs tournent en parallèle puis sont conciliés par decide-coicop :
+    # 4 classifieurs tournent en parallèle puis sont conciliés par decide-coicop.
+    # L'étape `prune` (post codif-regex) produit TOUS les artefacts prunés
+    # (nomenclature, mapping, annotations train/test, suggester) ; l'aval ne fait que lire.
     #
-    #                    ┌──→ prune-coicop ──┬──→ create-vector-db ──────────────→ run-rag ──────────────┐  (les 2 vector DB
-    #                    │                   └──→ create-vector-db-annotations ──→ run-rag-annotations ──┤   sont skippables :
-    #   preprocessing ──┤                                                                               │   skip-vector-db)
-    #                    └──→ codif-regex ──┬──→ prune-annotations ──(→ run-rag / run-rag-annotations)   │
-    #                                       ├──→ codif-lcs ──────────────────────────────────────────────┼──→ decide-coicop ──→ final-output
-    #                                       └──→ run-ttc ───────────────────────────────────────────────┘          └──→ report  (opt-in)
+    #                                       ┌──→ create-vector-db ──────────────→ run-rag ──────────────┐  (les 2 vector DB
+    #                    ┌──→ prune ────────┤                                                           │   sont skippables :
+    #   preprocessing ──┤                   └──→ create-vector-db-annotations ──→ run-rag-annotations ──┤   skip-vector-db)
+    #                    └──→ codif-regex ──┼──→ codif-lcs ──────────────────────────────────────────────┼──→ decide-coicop ──→ final-output
+    #                          (→ prune)    └──→ run-ttc ───────────────────────────────────────────────┘          └──→ report  (opt-in)
     # -----------------------------------------------------------------------
     - name: pipeline
       dag:
@@ -87,11 +88,6 @@ spec:
                 - name: source_column
                   value: "{{workflow.parameters.source_column}}"
 
-          - name: prune-coicop
-            dependencies: [preprocessing]
-            template: prune-coicop
-            when: '"{{workflow.parameters.skip-vector-db}}" != "true"'
-
           - name: codif-regex
             dependencies: [preprocessing]
             template: codif-regex
@@ -102,9 +98,11 @@ spec:
                 - name: run_date
                   value: "{{workflow.parameters.run_date}}"
 
-          - name: prune-annotations
+          # Étape unifiée : produit tous les artefacts prunés (nomenclature, mapping,
+          # annotations train/test, suggester). Non gated : nécessaire même sans vector DB.
+          - name: prune
             dependencies: [codif-regex]
-            template: prune-annotations
+            template: prune
             arguments:
               parameters:
                 - name: run_id
@@ -125,12 +123,18 @@ spec:
                   value: "{{workflow.parameters.sample_size}}"
 
           - name: create-vector-db
-            dependencies: [prune-coicop]
+            dependencies: [prune]
             template: create-vector-db
             when: '"{{workflow.parameters.skip-vector-db}}" != "true"'
+            arguments:
+              parameters:
+                - name: run_id
+                  value: "{{workflow.parameters.run_id}}"
+                - name: run_date
+                  value: "{{workflow.parameters.run_date}}"
 
           - name: create-vector-db-annotations
-            dependencies: [prune-coicop, codif-regex]
+            dependencies: [prune]
             template: create-vector-db-annotations
             when: '"{{workflow.parameters.skip-vector-db}}" != "true"'
             arguments:
@@ -141,7 +145,7 @@ spec:
                   value: "{{workflow.parameters.run_date}}"
 
           - name: run-rag
-            dependencies: [create-vector-db, prune-annotations]
+            dependencies: [create-vector-db, prune]
             template: run-rag
             arguments:
               parameters:
@@ -155,7 +159,7 @@ spec:
                   value: "{{workflow.parameters.run_date}}"
 
           - name: run-rag-annotations
-            dependencies: [create-vector-db-annotations, prune-annotations]
+            dependencies: [create-vector-db-annotations, prune]
             template: run-rag-annotations
             arguments:
               parameters:
@@ -332,7 +336,10 @@ spec:
             set -e
             git clone --branch up-rag https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/regex-codif
             uv sync
-            uv run src/main.py --run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}
+            ARGS="--run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}"
+            # input_file non vide => mode production (train=annotations_full, test=observations)
+            [ -n "{{workflow.parameters.input_file}}" ] && ARGS="$ARGS --input-file {{workflow.parameters.input_file}}"
+            uv run src/main.py $ARGS
         env:
           - name: AWS_ACCESS_KEY_ID
             valueFrom:
@@ -421,54 +428,9 @@ spec:
             cpu: 15000m
 
     # -----------------------------------------------------------------------
-    # Step 1: Prune COICOP nomenclature
+    # Step 1: Pruning unifié — nomenclature + mapping + annotations train/test + suggester
     # -----------------------------------------------------------------------
-    - name: prune-coicop
-      inputs:
-        parameters:
-          - name: config
-            value: config/config.yaml
-      container:
-        image: inseefrlab/onyxia-vscode-python:py3.13.12
-        command: [sh, -c]
-        args:
-          - |
-            set -e
-            git clone --branch up-rag https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/coicop-rag
-            uv run scripts/0_prunning_coicop.py --config {{inputs.parameters.config}}
-        env:
-          - name: AWS_ACCESS_KEY_ID
-            valueFrom:
-              secretKeyRef:
-                name: secret-codif-coicop-bdf
-                key: AWS_ACCESS_KEY_ID
-          - name: AWS_SECRET_ACCESS_KEY
-            valueFrom:
-              secretKeyRef:
-                name: secret-codif-coicop-bdf
-                key: AWS_SECRET_ACCESS_KEY
-          - name: AWS_SESSION_TOKEN
-            valueFrom:
-              secretKeyRef:
-                name: secret-codif-coicop-bdf
-                key: AWS_SESSION_TOKEN
-          - name: DDC_ENCRYPTION_KEY
-            valueFrom:
-              secretKeyRef:
-                name: secret-codif-coicop-bdf
-                key: DDC_ENCRYPTION_KEY
-        resources:
-          requests:
-            memory: 2Gi
-            cpu: 100m
-          limits:
-            memory: 50Gi
-            cpu: 15000m
-
-    # -----------------------------------------------------------------------
-    # Step 2: Prune annotations
-    # -----------------------------------------------------------------------
-    - name: prune-annotations
+    - name: prune
       inputs:
         parameters:
           - name: config
@@ -481,8 +443,9 @@ spec:
         args:
           - |
             set -e
-            git clone --branch up-rag https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/coicop-rag
-            uv run scripts/1_prune_annotations.py --config {{inputs.parameters.config}} --run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}
+            git clone --branch up-rag https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/prune
+            uv sync
+            uv run scripts/main.py --config {{inputs.parameters.config}} --run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}
         env:
           - name: AWS_ACCESS_KEY_ID
             valueFrom:
@@ -520,6 +483,8 @@ spec:
         parameters:
           - name: config
             value: config/config.yaml
+          - name: run_id
+          - name: run_date
       container:
         image: inseefrlab/onyxia-vscode-python:py3.13.12
         command: [sh, -c]
@@ -527,7 +492,7 @@ spec:
           - |
             set -e
             git clone --branch up-rag https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/coicop-rag
-            uv run scripts/0_create_vector_db.py --config {{inputs.parameters.config}}
+            uv run scripts/0_create_vector_db.py --config {{inputs.parameters.config}} --run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}
         env:
           - name: AWS_ACCESS_KEY_ID
             valueFrom:
@@ -715,7 +680,10 @@ spec:
           - |
             set -e
             git clone --branch up-rag https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/coicop-rag-annotations
-            uv run scripts/0_build_annotation_vector_db.py --config {{inputs.parameters.config}} --run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}
+            # input_file vide => évaluation (skip-eval=false) ; non vide => production (skip-eval=true)
+            SKIP_EVAL=true
+            [ -z "{{workflow.parameters.input_file}}" ] && SKIP_EVAL=false
+            uv run scripts/0_build_annotation_vector_db.py --config {{inputs.parameters.config}} --run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}} --skip-eval $SKIP_EVAL
         env:
           - name: AWS_ACCESS_KEY_ID
             valueFrom:
@@ -792,6 +760,12 @@ spec:
             mkdir -p logs
 
             ARGS="--config {{inputs.parameters.config}} --run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}"
+
+            # input_file vide => évaluation (--skip-eval false, calcule les métriques) ;
+            # non vide => production (--skip-eval true, prédictions seules, pas de filtre source)
+            SKIP_EVAL=true
+            [ -z "{{workflow.parameters.input_file}}" ] && SKIP_EVAL=false
+            ARGS="$ARGS --skip-eval $SKIP_EVAL"
 
             if [ -n "{{inputs.parameters.sample_size}}" ]; then
               ARGS="$ARGS --sample_size {{inputs.parameters.sample_size}}"
@@ -972,12 +946,15 @@ spec:
             uv sync
 
             RUN_ROOT="s3://projet-budget-famille/data/workflow_runs/{{inputs.parameters.run_date}}/{{inputs.parameters.run_id}}"
+            # Colonnes utilisateur : observations en production, split test des annotations en évaluation.
+            EXTRA_COLUMNS_FILE="$RUN_ROOT/preprocessing/raw_test.parquet"
+            [ -n "{{workflow.parameters.input_file}}" ] && EXTRA_COLUMNS_FILE="$RUN_ROOT/preprocessing/observations.parquet"
             ARGS="--lcs-file $RUN_ROOT/codif-lcs/raw_test_LCS.parquet \
                   --rag-file $RUN_ROOT/run-rag/predictions.parquet \
                   --rag-annotations-file $RUN_ROOT/rag-annotation/predictions.parquet \
                   --ttc-file $RUN_ROOT/run-ttc/predictions.parquet \
                   --output-file $RUN_ROOT/decide-coicop/predictions.parquet \
-                  --extra-columns-file $RUN_ROOT/preprocessing/raw_test.parquet \
+                  --extra-columns-file $EXTRA_COLUMNS_FILE \
                   --concurrency {{inputs.parameters.concurrency}}"
 
             if [ -n "{{inputs.parameters.model}}" ]; then
@@ -1054,6 +1031,8 @@ spec:
             [ -n "{{inputs.parameters.shop_column}}" ]   && ARGS="$ARGS --shop-column {{inputs.parameters.shop_column}}"
             [ -n "{{inputs.parameters.budget_column}}" ] && ARGS="$ARGS --budget-column {{inputs.parameters.budget_column}}"
             [ -n "{{inputs.parameters.annee_column}}" ]  && ARGS="$ARGS --annee-column {{inputs.parameters.annee_column}}"
+            # input_file non vide => mode production : colonnes utilisateur depuis observations.parquet
+            [ -n "{{workflow.parameters.input_file}}" ] && ARGS="$ARGS --input-file {{workflow.parameters.input_file}}"
             uv run main.py $ARGS
         env:
           - name: AWS_ACCESS_KEY_ID

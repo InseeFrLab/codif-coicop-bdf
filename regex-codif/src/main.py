@@ -16,6 +16,13 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--run-id", required=True, help="Workflow run identifier")
     parser.add_argument("--run-date", required=True, help="Workflow run date (YYYY-MM-DD)")
+    parser.add_argument(
+        "--input-file",
+        default=None,
+        help="Présence => mode production : le flux 'train' (KB) est l'ensemble des "
+             "annotations (annotations_full) et le flux 'test' (à coder) les "
+             "observations. Absence => mode évaluation (raw_train / raw_test).",
+    )
     return parser.parse_args()
 
 
@@ -46,13 +53,24 @@ def main():
 
     # -----------------------------------------------------------------------
     # READ TRAIN AND TEST SET
+    #
+    # Production (--input-file) : 'train' = annotations_full (alimente la vector DB
+    # d'annotations) et 'test' = observations à coder. Évaluation : split train/test
+    # des annotations (raw_train / raw_test). Les sorties (raw_*_without_regex) gardent
+    # les mêmes noms, donc tout l'aval est inchangé.
     # -----------------------------------------------------------------------
+    is_prod = bool(args.input_file)
+    train_key = "train_set_prod" if is_prod else "train_set"
+    test_key = "test_set_prod" if is_prod else "test_set"
+    logger.info(f"Mode {'production' if is_prod else 'évaluation'} : "
+                f"train={config['paths'][train_key]}, test={config['paths'][test_key]}")
+
     logger.info("Chargement du train set.")
-    query_definition = f"SELECT * FROM read_parquet('{config["paths"]["train_set"]}')"
+    query_definition = f"SELECT * FROM read_parquet('{config['paths'][train_key]}')"
     train_set = con.sql(query_definition).to_df()
 
     logger.info("Chargement du test set.")
-    query_definition = f"SELECT * FROM read_parquet('{config["paths"]["test_set"]}')"
+    query_definition = f"SELECT * FROM read_parquet('{config['paths'][test_key]}')"
     test_set = con.sql(query_definition).to_df()
 
     # -----------------------------------------------------------------------
