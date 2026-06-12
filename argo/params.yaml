@@ -8,8 +8,8 @@
 # guarantee consistent S3 paths across steps.
 
 # --- Input ----------------------------------------------------------------
-#input_file: s3://projet-budget-famille/data/workflow_inputs/BDF_data_tickets_appli_20260320_a_codif.csv
-input_file: "" # mode evaluation
+input_file: s3://projet-budget-famille/data/workflow_inputs/BDF_data_tickets_appli_20260320_a_codif.csv
+#input_file: "" # mode evaluation
 
 text_column: NAT_DEP        # label column to classify
 shop_column: MAG_DEP        # shop column
@@ -18,7 +18,17 @@ budget_column: MONT_DEP     # amount column
 # source_column: ""         # optional
 
 # --- Volume / debugging ---------------------------------------------------
-sample_size: "50"             # e.g. "500" for a test run; empty = whole file
+# Deux curseurs d'échantillonnage (vide = tout) :
+#   sample-annotations  : taille de la KB d'annotations indexée (vector DB),
+#                         appliqué à l'étape create-vector-db-annotations ;
+#   sample-observations : nb d'observations à coder, mode prod uniquement.
+# Le sampling des observations est CENTRALISÉ à l'étape codif-regex : un seul jeu
+# est tiré et hérité par tous les classifieurs (lcs, rag, rag-annotations, ttc),
+# garantissant qu'ils codent exactement les mêmes lignes.
+# En évaluation, les observations = split test des annotations → on utilise
+# sample-annotations (sample-observations est ignoré).
+sample-annotations: ""        # ex. "500"
+sample-observations: ""       # ex. "50" (prod)
 
 # --- LLM models -----------------------------------------------------------
 model-name: gemma4-26b-moe          # run-rag model

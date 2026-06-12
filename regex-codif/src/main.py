@@ -23,6 +23,14 @@ def parse_args():
              "annotations (annotations_full) et le flux 'test' (à coder) les "
              "observations. Absence => mode évaluation (raw_train / raw_test).",
     )
+    parser.add_argument(
+        "--sample-size",
+        type=int,
+        default=None,
+        help="Échantillonne le jeu à coder (test sans regex) à N lignes. Point UNIQUE "
+             "de sampling des observations : tous les classifieurs aval (lcs, rag, "
+             "rag-annotations, ttc) héritent du même jeu. Vide = tout.",
+    )
     return parser.parse_args()
 
 
@@ -82,6 +90,15 @@ def main():
 
     # Apply rules on test set raws
     test_set_regex_predicted, test_set_without_regex = apply_regex(test_set, rules, logger)
+
+    # Échantillonnage CENTRALISÉ du jeu à coder (sans remise, graine 42) : c'est l'unique
+    # point de sampling des observations. raw_test_without_regex est lu par lcs/ttc, et
+    # par prune (→ annotations_test_pruned, lu par les RAG) → tous héritent du même jeu.
+    if args.sample_size and args.sample_size < len(test_set_without_regex):
+        test_set_without_regex = test_set_without_regex.sample(
+            n=args.sample_size, random_state=42
+        )
+        logger.info(f"Échantillon observations : {len(test_set_without_regex)} libellés (seed=42)")
 
     # Final dataframe with regex predictions
     regex_predicted = pd.concat([train_set_regex_predicted, test_set_regex_predicted])

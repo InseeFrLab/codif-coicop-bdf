@@ -10,40 +10,24 @@ uv sync
 
 ## Workflow
 
-Le pipeline est orchestré via Argo Workflows (`argo/pipeline.yaml`) selon le DAG suivant :
+Ce module fournit deux étapes du pipeline (`argo/codif-pipeline.yaml`), en aval de
+l'étape de pruning unifiée (module [`prune/`](../prune/)) :
 
 ```
-                   ┌──→ prune-coicop ──→ create-vector-db ──┐
-preprocessing ─────┤                                         ├──→ run-rag
-                   └──→ prune-annotations ───────────────────┘
+prune ──→ create-vector-db ──→ run-rag
 ```
 
-### preprocessing (construction-dataset)
-
-Construit le dataset d'annotations à partir des sources brutes (COPAIN, historique, suggester).
-
-- Clone et exécute le repo `construction-dataset`
-- Exporte le dataset consolidé sur S3
-
-### 0_prunning_coicop.py
-
-Élague les hiérarchies linéaires de la nomenclature COICOP brute et exporte les notices filtrées ainsi qu'une table de correspondance vers S3.
-
-- Supprime le niveau 5 (Poste) de la nomenclature
-- Produit les notices prunées et la table de mapping niveau 4
+> Le pruning (nomenclature, mapping, annotations, suggester) est désormais centralisé
+> dans le module **`prune/`** ; les anciens scripts `0_prunning_coicop.py` et
+> `1_prune_annotations.py` ont été retirés d'ici. `create-vector-db` lit directement
+> la nomenclature prunée (`prune/nomenclature_pruned.parquet`).
 
 ### 0_create_vector_db.py
 
-Encode les notices COICOP dans une base vectorielle Qdrant (plusieurs stratégies d'indexation).
+Encode les notices COICOP **prunées** dans une base vectorielle Qdrant.
 
 1. **Génération des embeddings** : les notices sont encodées via le modèle d'embedding hébergé sur llm.lab (`LLMLAB_URL`, `LLMLAB_API_KEY`)
 2. **Stockage vectoriel** : les embeddings sont indexés dans Qdrant (`QDRANT_URL`, `QDRANT_API_KEY`, `QDRANT_API_PORT`)
-
-### 1_prune_annotations.py
-
-Tronque les codes d'annotation au niveau 4 et applique la table de correspondance COICOP pour normaliser les codes de vérité terrain.
-
-- Dépend de `0_prunning_coicop.py` (requiert la table de mapping sur S3)
 
 ### 2_run_rag.py
 
@@ -100,6 +84,7 @@ En une fois : `uv run scripts/2_run_rag.py --run-id <ID> --run-date <YYYY-MM-DD>
 
 ### Pré-requis
 
-Pour le couple `run-id` / `run-date` choisi, doivent déjà exister sur S3/services : la sortie
-de `prune-annotations`, la table de mapping de prunning, la collection Qdrant `coicop_lineage`
-et le prompt Langfuse `prompt-multi-level` (chemins/versions dans `config/config.yaml`).
+Pour le couple `run-id` / `run-date` choisi, doivent déjà exister sur S3/services : les sorties
+de l'étape `prune` (`prune/annotations_test_pruned.parquet`, `prune/nomenclature_pruned.parquet`,
+`prune/mapping_lvl4.parquet`), la collection Qdrant `coicop_lineage` et le prompt Langfuse
+`prompt-multi-level` (chemins/versions dans `config/config.yaml`).

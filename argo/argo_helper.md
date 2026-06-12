@@ -60,7 +60,7 @@ argo submit codif-pipeline.yaml --parameter-file params.yaml --watch
 For a one-off override, without touching `params.yaml`:
 
 ```bash
-argo submit codif-pipeline.yaml -p sample_size=500 -p skip-report=false --watch
+argo submit codif-pipeline.yaml -p sample-annotations=500 -p skip-report=false --watch
 ```
 
 > ⚠️ Never pass `run_id` / `run_date`: they are computed automatically and keep
@@ -92,7 +92,8 @@ argo resubmit @latest   # rerun as-is
 | `text_column` | `NAT_DEP` | label column to classify |
 | `shop_column` / `budget_column` | `MAG_DEP` / `MONT_DEP` | shop / amount |
 | `annee_column` / `source_column` | `""` | optional |
-| `sample_size` | `""` | number of rows (empty = whole file) |
+| `sample-annotations` | `""` | cap the annotation KB indexed in the vector DB (empty = all) |
+| `sample-observations` | `""` | cap the to-codify set, prod only (empty = all); sampled **once** at `codif-regex` so all classifiers code the same rows; in eval, inference uses `sample-annotations` |
 | `model-name` / `decide-model` | `gemma4-26b-moe` | LLM models |
 | `decide-concurrency` | `5` | arbitration parallelism |
 | `ttc-model-uri` | `mlflow-artifacts:/10/…/model` | TTC model (MLflow) |

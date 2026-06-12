@@ -1,18 +1,17 @@
 """
 Annotation Vector Database Creation
 ===================================
-Imports annotated **train** data (product descriptions + COICOP code), prunes the
-codes to level 4, then embeds ALL of them and uploads them to a Qdrant collection.
+Reads the **already-pruned** annotation KB (`prune/annotations_train_pruned.parquet`,
+produced by the `prune` module), embeds ALL of it and uploads it to a Qdrant collection.
 
-There is no train/test split here: the upstream preprocessing already separates
-train annotations (used by the TTC classifier — and this input) from the test
-annotations used to evaluate the pipeline. So every loaded annotation goes into
-the vector DB; `1_run_rag.py` evaluates on the separate upstream test set.
+There is no train/test split here: the upstream `preprocessing` already separates
+train annotations from the test annotations. So every loaded annotation goes into
+the vector DB; `1_run_rag.py` codifies the separate (also pruned) input set.
 
-Optionally, the **suggester** examples are added to the index as extra retrieval
-candidates. Their codes are level-5 and unpruned upstream, so they go through the
-exact same `prune_annotation_lvl4` (truncate to level 4 + linear-hierarchy mapping)
-as the annotations — guaranteeing consistent codes in the vector DB.
+Optionally, the **suggester** examples (`prune/suggester_pruned.parquet`, already pruned)
+are added to the index as extra retrieval candidates. Source filtering is applied here
+(`exclude_sources` / `exclude_sources_prod` per `--skip-eval`); the KB can be capped with
+`--sample-size`.
 
 Usage:
     uv run scripts/0_build_annotation_vector_db.py --run-id <ID> --run-date <YYYY-MM-DD>
@@ -46,6 +45,11 @@ def main():
         help="Mirrors the run step: 'true' = production (default), else evaluation. "
              "Selects which sources are excluded from the index "
              "(annotations.exclude_sources_prod vs exclude_sources).",
+    )
+    parser.add_argument(
+        "--sample-size", type=int, default=None,
+        help="Limite le nombre d'annotations indexées dans la vector DB (KB). "
+             "Vide = toutes. Échantillonnage sans remise, graine eval.seed.",
     )
     args = parser.parse_args()
 
@@ -112,6 +116,12 @@ def main():
     annotations = annotations.dropna(subset=[product_col, "code"])
     annotations = annotations[annotations[product_col].astype(str).str.strip() != ""]
     logger.info(f"  → {len(annotations)} usable annotations (dropped {before - len(annotations)})")
+
+    # Échantillonnage optionnel de la KB (sans remise, graine reproductible).
+    if args.sample_size and args.sample_size < len(annotations):
+        seed = config.get("eval", {}).get("seed", 42)
+        annotations = annotations.sample(n=args.sample_size, random_state=seed)
+        logger.info(f"  → KB échantillonnée à {len(annotations)} annotations (seed={seed})")
 
     # -----------------------------------------------------------------------
     # STEP 3: add suggester examples to the index (déjà prunés par l'étape `prune`)

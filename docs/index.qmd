@@ -136,6 +136,7 @@ argo submit argo/codif-pipeline.yaml \
   -p input_file=s3://projet-budget-famille/data/workflow_inputs/mon_fichier.csv \
   -p text_column=NAT_DEP -p shop_column=MAG_DEP -p budget_column=MONT_DEP
 
-# Limiter à N lignes pour un test
-argo submit argo/codif-pipeline.yaml -p sample_size=100
+# Limiter à N observations à coder pour un test (sampling centralisé à codif-regex,
+# hérité par tous les classifieurs). En prod, -p sample-observations=100.
+argo submit argo/codif-pipeline.yaml -p sample-annotations=100
 ```

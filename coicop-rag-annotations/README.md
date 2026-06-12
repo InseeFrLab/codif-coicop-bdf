@@ -12,24 +12,29 @@ Idée : pour coder un produit, on récupère dans une base vectorielle les produ
 
 ```
 0_build_annotation_vector_db.py        1_run_rag.py
-   import annotations TRAIN                charge le test set (amont, prune-annotations)
-   prune (niveau 4)                        embed + retrieve (Qdrant)
-   (+ suggester) → index  ───────────►     prompt few-shot → LLM
-   embed → Qdrant                          parse → évaluation (accuracy/recall par niveau)
+   lit la KB déjà prunée                   charge le test set déjà pruné
+   (prune/annotations_train_pruned)        (prune/annotations_test_pruned)
+   (+ suggester déjà pruné) → index  ──►    embed + retrieve (Qdrant)
+   embed → Qdrant                          prompt few-shot → LLM → parse → éval
 ```
 
-- `scripts/0_build_annotation_vector_db.py` — importe les annotations **de train**
-  (le split train/test est déjà fait en amont par `preprocessing`), prune les codes
-  au niveau 4, ajoute optionnellement les exemples du **suggester** à l'index, embed
-  **toutes** les descriptions et les charge dans Qdrant. Pas de split ici, pas de
-  test produit. Le suggester passe par le **même** `prune_annotation_lvl4`.
-- `scripts/1_run_rag.py` — codifie l'input et exporte les prédictions. En mode
-  **évaluation** (opt-in, `--skip-eval false`), calcule en plus accuracy + recall de
-  retrieval par niveau COICOP (MLflow + `report.txt`). En **production** (défaut),
-  prédictions seulement.
+Le pruning (troncature niveau 4 + mapping) est centralisé dans le module
+[`prune/`](../prune/) ; ce module **lit** les artefacts prunés et ne prune plus lui-même.
+
+- `scripts/0_build_annotation_vector_db.py` — lit la KB d'annotations **déjà prunée**
+  (`prune/annotations_train_pruned.parquet`), ajoute optionnellement le **suggester**
+  **déjà pruné** (`prune/suggester_pruned.parquet`), embed **toutes** les descriptions
+  et les charge dans Qdrant. Filtrage des sources via `exclude_sources` /
+  `exclude_sources_prod` selon le mode (`--skip-eval`) ; échantillonnage optionnel de la
+  KB via `--sample-size`.
+- `scripts/1_run_rag.py` — codifie l'input (`prune/annotations_test_pruned.parquet`) et
+  exporte les prédictions. En mode **évaluation** (`--skip-eval false`), calcule en plus
+  accuracy + recall de retrieval par niveau COICOP (MLflow + `report.txt`) et filtre le
+  test set par `include_sources`. En **production** (défaut), prédictions seulement, pas
+  de filtre source.
 - `prompts/annotation_rag.md` — template de prompt (sections `<<<SYSTEM>>>` /
   `<<<USER>>>`). Source de vérité locale ; peut être migré vers Langfuse.
-- `src/coicop_rag_annotations/` — utilitaires (embeddings, prunning, génération LLM
+- `src/coicop_rag_annotations/` — utilitaires (embeddings, génération LLM
   concurrente, parsing, évaluation, chargement du prompt).
 
 ### Représentation texte enrichie par le lieu d'achat
@@ -92,17 +97,17 @@ L'**évaluation** (accuracy + recall par niveau) est **opt-in** via `--skip-eval
 booléen string, testé par `!= "true"`). En production, l'input n'a pas de labels et
 l'évaluation est ignorée (un garde-fou la saute aussi s'il manque la colonne `code`).
 
-Le couple `--run-id` / `--run-date` doit correspondre à un run pour lequel l'input
-(`data.s3_path_input`) et la table de mapping de prunning (`coicop.path_mapping_lvl4`)
-existent déjà sur S3.
+Le couple `--run-id` / `--run-date` doit correspondre à un run pour lequel les sorties
+de l'étape `prune` (KB, suggester, input à codifier) existent déjà sur S3.
 
 ## Prérequis upstream
 
-- annotations **train** sur S3 (sortie de `codif-regex`) → indexées ;
-- input à codifier (`data.s3_path_input`) : test pruné labellisé en mode évaluation,
-  données à codifier en production ;
-- table de mapping de prunning niveau 4 (produite par `0_prunning_coicop.py` de `coicop-rag`) ;
-- source du suggester (CSV `liste_produits_fr_copain.csv`) si `suggester.enabled`.
+Tous produits par l'étape `prune` (module [`prune/`](../prune/)) :
+
+- KB d'annotations **prunée** (`prune/annotations_train_pruned.parquet`) → indexée ;
+- suggester **pruné** (`prune/suggester_pruned.parquet`) si `suggester.enabled` ;
+- input à codifier **pruné** (`prune/annotations_test_pruned.parquet`) : split test labellisé
+  en mode évaluation, observations à codifier en production.
 
 ## Rapport d'évaluation (mode `--skip-eval false`)
 

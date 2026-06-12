@@ -25,10 +25,9 @@ annotations:
   #
   # Deux profils selon le mode (sélectionné via --skip-eval) :
   #   - exclude_sources       → ÉVALUATION (KB = lot train restreint) ;
-  #   - exclude_sources_prod  → PRODUCTION (KB = toutes les annotations 2024 + suggester,
-  #                             on n'exclut que l'historique 2017).
+  #   - exclude_sources_prod  → PRODUCTION (KB = toutes les annotations 2024 + suggester).
   exclude_sources: [bdf_2017, copain]
-  exclude_sources_prod: [bdf_2017]
+  exclude_sources_prod: [bdf_2017, copain]
 
 # Données du suggester ajoutées à l'index, aux côtés des annotations de train.
 # Codes au niveau 5 et non prunés en amont → on leur applique exactement le même
@@ -38,11 +37,6 @@ suggester:
   # Suggester déjà pruné par l'étape `prune` unifiée (le pruning du suggester
   # — source CSV, dedup, mapping — est désormais centralisé dans coicop-rag/prune.py).
   s3_path_pruned: "s3://projet-budget-famille/data/workflow_runs/{run_date}/{run_id}/prune/suggester_pruned.parquet"
-
-coicop:
-  path_raw: "s3://projet-budget-famille/data/coicop-2018_envoi_rmes_20251022.csv"
-  # Table de mapping produite par 0_prunning_coicop.py (coicop-rag)
-  path_mapping_lvl4: "s3://projet-budget-famille/data/workflow_outputs/prunning/coicop-2018_envoi_rmes_20251022_mapping_prunning_lvl4.parquet"
 
 qdrant:
   collection_name: "coicop_annotations_without_copain_2017"
@@ -77,9 +71,9 @@ eval:
   # Valeurs possibles : copain, receipts_from_app, manual_from_app, manual_from_book
   include_sources: [receipts_from_app, manual_from_app, manual_from_book]
 
-# Produits à codifier (input du RAG) :
-#   - mode évaluation : test labellisé pruné (prune-annotations, déjà tronqué/pruné) ;
-#   - mode production  : données à codifier (sans labels).
+# Produits à codifier (input du RAG), pruné par l'étape `prune` :
+#   - mode évaluation : split test labellisé (déjà tronqué/pruné) ;
+#   - mode production  : observations à codifier (sans labels).
 # + artefact produit par ce module (prédictions).
 data:
   s3_path_input: "s3://projet-budget-famille/data/workflow_runs/{run_date}/{run_id}/prune/annotations_test_pruned.parquet"
