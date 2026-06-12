@@ -121,6 +121,8 @@ spec:
                   value: "{{workflow.parameters.run_id}}"
                 - name: run_date
                   value: "{{workflow.parameters.run_date}}"
+                - name: sample_size
+                  value: "{{workflow.parameters.sample_size}}"
 
           - name: create-vector-db
             dependencies: [prune-coicop]
@@ -270,11 +272,15 @@ spec:
             set -e
             git clone --branch up-rag https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/preprocessing
             uv sync
-            ARGS="--run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}} --input-file {{inputs.parameters.input_file}} --text-column {{inputs.parameters.text_column}}"
-            [ -n "{{inputs.parameters.shop_column}}" ]   && ARGS="$ARGS --shop-column {{inputs.parameters.shop_column}}"
-            [ -n "{{inputs.parameters.budget_column}}" ] && ARGS="$ARGS --budget-column {{inputs.parameters.budget_column}}"
-            [ -n "{{inputs.parameters.annee_column}}" ]  && ARGS="$ARGS --annee-column {{inputs.parameters.annee_column}}"
-            [ -n "{{inputs.parameters.source_column}}" ] && ARGS="$ARGS --source-column {{inputs.parameters.source_column}}"
+            ARGS="--run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}"
+            # input_file vide => mode évaluation : ne pas passer --input-file ni les colonnes (sens uniquement en prédiction)
+            if [ -n "{{inputs.parameters.input_file}}" ]; then
+              ARGS="$ARGS --input-file {{inputs.parameters.input_file}} --text-column {{inputs.parameters.text_column}}"
+              [ -n "{{inputs.parameters.shop_column}}" ]   && ARGS="$ARGS --shop-column {{inputs.parameters.shop_column}}"
+              [ -n "{{inputs.parameters.budget_column}}" ] && ARGS="$ARGS --budget-column {{inputs.parameters.budget_column}}"
+              [ -n "{{inputs.parameters.annee_column}}" ]  && ARGS="$ARGS --annee-column {{inputs.parameters.annee_column}}"
+              [ -n "{{inputs.parameters.source_column}}" ] && ARGS="$ARGS --source-column {{inputs.parameters.source_column}}"
+            fi
             uv run main.py $ARGS
         env:
           - name: AWS_ACCESS_KEY_ID
@@ -369,6 +375,7 @@ spec:
         parameters:
           - name: run_id
           - name: run_date
+          - name: sample_size
       container:
         image: inseefrlab/onyxia-vscode-r-python-julia:r4.5.3-py3.13.12
         command: [sh, -c]
@@ -376,7 +383,9 @@ spec:
           - |
             set -e
             git clone --branch up-rag https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/stats-annotations
-            Rscript R/main.R --run-id={{inputs.parameters.run_id}} --run-date={{inputs.parameters.run_date}}
+            ARGS="--run-id={{inputs.parameters.run_id}} --run-date={{inputs.parameters.run_date}}"
+            [ -n "{{inputs.parameters.sample_size}}" ] && ARGS="$ARGS --sample-size={{inputs.parameters.sample_size}}"
+            Rscript R/main.R $ARGS
         env:
           - name: AWS_ACCESS_KEY_ID
             valueFrom:

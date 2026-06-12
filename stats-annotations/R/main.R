@@ -23,9 +23,16 @@ parse_arg <- function(name) {
   if (length(hit) == 0) stop(sprintf("Missing required arg: --%s", name))
   sub(paste0("^--", name, "="), "", hit[1])
 }
+parse_arg_opt <- function(name, default = NA) {
+  hit <- grep(paste0("^--", name, "="), args, value = TRUE)
+  if (length(hit) == 0) return(default)
+  sub(paste0("^--", name, "="), "", hit[1])
+}
 run_id <- parse_arg("run-id")
 run_date <- parse_arg("run-date")
-message(sprintf("run_id=%s, run_date=%s", run_id, run_date))
+sample_size <- suppressWarnings(as.integer(parse_arg_opt("sample-size")))
+message(sprintf("run_id=%s, run_date=%s, sample_size=%s", run_id, run_date,
+                ifelse(is.na(sample_size), "NA", sample_size)))
 
 BUCKET <- "projet-budget-famille"
 run_root <- glue::glue("data/workflow_runs/{run_date}/{run_id}")
@@ -63,6 +70,14 @@ data <- DBI::dbGetQuery(con, glue::glue(
           FROM read_parquet('s3://{BUCKET}/{path}')
         ")
     )
+
+# Échantillonnage optionnel, directement sur le fichier d'input (pas de
+# déduplication préalable). Même logique que run-rag : graine 42, sans remise.
+if (!is.na(sample_size) && sample_size > 0 && sample_size < nrow(data)) {
+  set.seed(42)
+  data <- data[sample(nrow(data), sample_size), , drop = FALSE]
+  message(sprintf("✓ Sampling applied: %d lignes", sample_size))
+}
 
 # En mode prédiction, le suggester est dans un fichier dédié (bypass regex-codif).
 # On essaie ce fichier en premier ; si absent (mode normal), on lit depuis raw_train_without_regex.

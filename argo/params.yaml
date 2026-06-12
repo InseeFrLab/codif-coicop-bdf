@@ -1,0 +1,32 @@
+# codif-pipeline parameters — override the YAML defaults.
+# Usage: argo submit codif-pipeline.yaml --parameter-file params.yaml --watch
+#
+# Any uncommented line overrides the default defined in codif-pipeline.yaml
+# (spec.arguments.parameters). Commented lines keep the default.
+#
+# DO NOT set run_id / run_date: they are computed automatically by Argo and
+# guarantee consistent S3 paths across steps.
+
+# --- Input ----------------------------------------------------------------
+#input_file: s3://projet-budget-famille/data/workflow_inputs/BDF_data_tickets_appli_20260320_a_codif.csv
+input_file: "" # mode evaluation
+
+text_column: NAT_DEP        # label column to classify
+shop_column: MAG_DEP        # shop column
+budget_column: MONT_DEP     # amount column
+# annee_column: ""          # optional
+# source_column: ""         # optional
+
+# --- Volume / debugging ---------------------------------------------------
+sample_size: "50"             # e.g. "500" for a test run; empty = whole file
+
+# --- LLM models -----------------------------------------------------------
+model-name: gemma4-26b-moe          # run-rag model
+decide-model: gemma4-26b-moe        # decide-coicop arbitration model
+decide-concurrency: "5"
+ttc-model-uri: "mlflow-artifacts:/10/cacf2603514b4887bbfb77e2654c9bc1/artifacts/model"
+
+# --- Optional steps -------------------------------------------------------
+skip-vector-db: "false"      # "false" to rebuild the Qdrant vector store
+skip-report: "false"        # "true" to skip the Quarto report
+report-experiment: codif-coicop-eval
