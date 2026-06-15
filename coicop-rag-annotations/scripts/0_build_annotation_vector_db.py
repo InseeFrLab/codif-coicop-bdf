@@ -128,17 +128,17 @@ def main():
     # -----------------------------------------------------------------------
     # No train/test split here: preprocessing already split train (this input)
     # from the evaluation test set. ALL loaded annotations are indexed.
-    index_df = annotations
+    kb_data = annotations
     suggester_excluded = "suggester" in exclude_sources
     if config.get("suggester", {}).get("enabled") and not suggester_excluded:
         logger.info("STEP 3: adding suggester examples to the index")
         suggester_df = con.sql(
             f"SELECT * FROM read_parquet('{config['suggester']['s3_path_pruned']}')"
         ).to_df()
-        index_df = pd.concat([annotations, suggester_df], ignore_index=True)
+        kb_data = pd.concat([annotations, suggester_df], ignore_index=True)
         logger.info(
             f"  → index = {len(annotations)} annotations + {len(suggester_df)} suggester "
-            f"= {len(index_df)} rows"
+            f"= {len(kb_data)} rows"
         )
     elif suggester_excluded:
         logger.info("STEP 3: suggester excluded via exclude_sources — index = annotations only")
@@ -149,11 +149,11 @@ def main():
     # STEP 4: embed index product descriptions
     # -----------------------------------------------------------------------
     logger.info("STEP 4: generating embeddings for index products")
-    train_records = index_df.to_dict(orient="records")
+    kb_records = kb_data.to_dict(orient="records")
     # Canonical text = product + purchase location (shop / shop type) when known.
     texts = [
         build_location_text(r[product_col], r.get("shop"), r.get("shop_type_name"))
-        for r in train_records
+        for r in kb_records
     ]
     embeddings = embed_texts(
         client_llmlab,
@@ -190,7 +190,7 @@ def main():
                 "source": record.get("source"),
             },
         )
-        for record, text, embedding in zip(train_records, texts, embeddings)
+        for record, text, embedding in zip(kb_records, texts, embeddings)
     ]
 
     batch_size = config["qdrant"]["upload_batch_size"]

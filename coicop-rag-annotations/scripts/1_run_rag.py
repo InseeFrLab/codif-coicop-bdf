@@ -135,7 +135,7 @@ def main():
         # unlabeled production data otherwise)
         # -------------------------------------------------------------------
         logger.info("STEP 1: loading input products from %s", input_path)
-        test_df = con.sql(
+        observations = con.sql(
             f"SELECT * FROM read_parquet('{input_path}')"
         ).to_df()
 
@@ -143,21 +143,21 @@ def main():
         # Production input carries source="prediction" (no ground truth) and must
         # NOT be filtered out → the source filter only applies in evaluation mode.
         include_sources = config["eval"].get("include_sources") or []
-        if do_eval and include_sources and "source" in test_df.columns:
-            before = len(test_df)
-            test_df = test_df[test_df["source"].isin(include_sources)]
+        if do_eval and include_sources and "source" in observations.columns:
+            before = len(observations)
+            observations = observations[observations["source"].isin(include_sources)]
             logger.info(
-                f"  → test set filtered to sources {include_sources}: {before} → {len(test_df)} rows"
+                f"  → test set filtered to sources {include_sources}: {before} → {len(observations)} rows"
             )
         elif not do_eval:
             logger.info("  → production mode: no source filter applied to the input")
 
         if args.sample_size:
-            test_df = test_df.sample(n=min(args.sample_size, len(test_df)),
+            observations = observations.sample(n=min(args.sample_size, len(observations)),
                                      random_state=config["eval"]["seed"])
-        test_records = test_df.to_dict(orient="records")
-        mlflow.log_metric("num_products", len(test_records))
-        logger.info(f"  → {len(test_records)} test products")
+        observations_records = observations.to_dict(orient="records")
+        mlflow.log_metric("num_products", len(observations_records))
+        logger.info(f"  → {len(observations_records)} test products")
 
         # -------------------------------------------------------------------
         # Embed + retrieve
@@ -166,7 +166,7 @@ def main():
         # Same canonical representation as the index: product + purchase location.
         search_texts = [
             build_location_text(r[product_col], r.get("shop"), r.get("shop_type_name"))
-            for r in test_records
+            for r in observations_records
         ]
         search_embeddings = embed_texts(
             client_llmlab,
@@ -191,7 +191,7 @@ def main():
         # -------------------------------------------------------------------
         logger.info("STEP 4: building prompts")
         messages = []
-        for i, record in enumerate(test_records):
+        for i, record in enumerate(observations_records):
             budget = is_present(record.get("budget"))
             price_bloc = (
                 f"# Prix payé : {round(float(budget), 1)} euros"
@@ -232,7 +232,7 @@ def main():
         logger.info("STEP 6: parsing responses")
         records = []
         n_parse_errors = 0
-        for response, record, retr_codes in zip(llm_responses, test_records, retrieved_codes):
+        for response, record, retr_codes in zip(llm_responses, observations_records, retrieved_codes):
             if response is None:
                 parsed = {"parsed": False}
             else:
@@ -270,7 +270,7 @@ def main():
         # -------------------------------------------------------------------
         if not do_eval:
             logger.info("STEP 8: evaluation skipped (production mode)")
-        elif "code" not in test_df.columns:
+        elif "code" not in observations.columns:
             logger.warning(
                 "STEP 8: evaluation requested but no ground-truth 'code' column in input "
                 "— skipping evaluation."

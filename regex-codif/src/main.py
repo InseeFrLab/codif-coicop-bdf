@@ -68,40 +68,40 @@ def main():
     # les mêmes noms, donc tout l'aval est inchangé.
     # -----------------------------------------------------------------------
     is_prod = bool(args.input_file)
-    train_key = "train_set_prod" if is_prod else "train_set"
-    test_key = "test_set_prod" if is_prod else "test_set"
+    kb_key = "train_set_prod" if is_prod else "train_set"
+    observations_key = "test_set_prod" if is_prod else "test_set"
     logger.info(f"Mode {'production' if is_prod else 'évaluation'} : "
-                f"train={config['paths'][train_key]}, test={config['paths'][test_key]}")
+                f"kb_data={config['paths'][kb_key]}, observations={config['paths'][observations_key]}")
 
-    logger.info("Chargement du train set.")
-    query_definition = f"SELECT * FROM read_parquet('{config['paths'][train_key]}')"
-    train_set = con.sql(query_definition).to_df()
+    logger.info("Chargement de la KB (kb_data).")
+    query_definition = f"SELECT * FROM read_parquet('{config['paths'][kb_key]}')"
+    kb_data = con.sql(query_definition).to_df()
 
-    logger.info("Chargement du test set.")
-    query_definition = f"SELECT * FROM read_parquet('{config['paths'][test_key]}')"
-    test_set = con.sql(query_definition).to_df()
+    logger.info("Chargement des observations (jeu à coder).")
+    query_definition = f"SELECT * FROM read_parquet('{config['paths'][observations_key]}')"
+    observations = con.sql(query_definition).to_df()
 
     # -----------------------------------------------------------------------
     # CLASSIFICATION WITH REGEX
     # -----------------------------------------------------------------------
 
-    # Apply rules on train set raws
-    train_set_regex_predicted, train_set_without_regex = apply_regex(train_set, rules, logger)
+    # Apply rules on KB raws
+    kb_data_regex_predicted, kb_data_without_regex = apply_regex(kb_data, rules, logger)
 
-    # Apply rules on test set raws
-    test_set_regex_predicted, test_set_without_regex = apply_regex(test_set, rules, logger)
+    # Apply rules on observations raws
+    observations_regex_predicted, observations_without_regex = apply_regex(observations, rules, logger)
 
     # Échantillonnage CENTRALISÉ du jeu à coder (sans remise, graine 42) : c'est l'unique
     # point de sampling des observations. raw_test_without_regex est lu par lcs/ttc, et
     # par prune (→ annotations_test_pruned, lu par les RAG) → tous héritent du même jeu.
-    if args.sample_size and args.sample_size < len(test_set_without_regex):
-        test_set_without_regex = test_set_without_regex.sample(
+    if args.sample_size and args.sample_size < len(observations_without_regex):
+        observations_without_regex = observations_without_regex.sample(
             n=args.sample_size, random_state=42
         )
-        logger.info(f"Échantillon observations : {len(test_set_without_regex)} libellés (seed=42)")
+        logger.info(f"Échantillon observations : {len(observations_without_regex)} libellés (seed=42)")
 
     # Final dataframe with regex predictions
-    regex_predicted = pd.concat([train_set_regex_predicted, test_set_regex_predicted])
+    regex_predicted = pd.concat([kb_data_regex_predicted, observations_regex_predicted])
 
     # -----------------------------------------------------------------------
     # METRICS
@@ -148,11 +148,11 @@ def main():
         logger.info("Export du fichier final de prédiction avec des regex.")
         save_data_to_parquet(df=regex_predicted, path=config["paths"]["output"]["pred"])
 
-        logger.info("Export du test set sans les libellés prédits par REGEX.")
-        save_data_to_parquet(df=test_set_without_regex, path=config["paths"]["output"]["test_set"])
+        logger.info("Export des observations sans les libellés prédits par REGEX.")
+        save_data_to_parquet(df=observations_without_regex, path=config["paths"]["output"]["test_set"])
 
-        logger.info("Export du train set sans les libellés prédits par REGEX.")
-        save_data_to_parquet(df=train_set_without_regex, path=config["paths"]["output"]["train_set"])
+        logger.info("Export de la KB (kb_data) sans les libellés prédits par REGEX.")
+        save_data_to_parquet(df=kb_data_without_regex, path=config["paths"]["output"]["train_set"])
 
 
 if __name__ == "__main__":

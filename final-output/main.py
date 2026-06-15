@@ -104,14 +104,14 @@ def main() -> int:
     # évaluation : le split test des annotations (raw_test.parquet).
     base_file = "observations.parquet" if args.input_file else "raw_test.parquet"
     # Read full first to capture _source_input_file before stripping
-    raw_full = con.sql(f"SELECT * FROM read_parquet('{run_root}/preprocessing/{base_file}')").df()
+    observations = con.sql(f"SELECT * FROM read_parquet('{run_root}/preprocessing/{base_file}')").df()
     input_file_path = (
-        raw_full["_source_input_file"].iloc[0]
-        if "_source_input_file" in raw_full.columns and len(raw_full) > 0
+        observations["_source_input_file"].iloc[0]
+        if "_source_input_file" in observations.columns and len(observations) > 0
         else None
     )
-    initial_cols = ["id"] + [c for c in raw_full.columns if c not in PIPELINE_COLS and c != "id"]
-    raw = raw_full[initial_cols]
+    initial_cols = ["id"] + [c for c in observations.columns if c not in PIPELINE_COLS and c != "id"]
+    raw = observations[initial_cols]
     print(f"[final-output] base: {len(raw)} rows, {len(initial_cols)} columns", flush=True)
 
     # Regex predictions: rows classified by regex

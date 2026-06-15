@@ -111,10 +111,10 @@ def main():
 
         # Import RAG products (already split by 1_split_rules.py)
         mlflow.log_param("input_data_path", config['annotations']['s3_path_rag'])
-        searched_products_rag, nature_annotation = load_and_prepare_annotations(con, config)
+        observations, nature_annotation = load_and_prepare_annotations(con, config)
 
         mlflow.log_param("nature_annotation", nature_annotation)
-        mlflow.log_metric("num_products", len(searched_products_rag))
+        mlflow.log_metric("num_products", len(observations))
 
         # -----------------------------------------------------------------------
         # Execute main pipeline steps
@@ -122,7 +122,7 @@ def main():
 
         # Step 1: Generate embeddings
         search_embeddings, embedding_dim = generate_embeddings(
-            searched_products_rag,
+            observations,
             client_llmlab,
             config
         )
@@ -137,7 +137,7 @@ def main():
         
         # Step 3: Prepare prompts
         messages = prepare_prompts(
-            searched_products_rag,
+            observations,
             qdrant_results_texts,
             qdrant_results_codes,
             prompt_template
@@ -160,7 +160,7 @@ def main():
         # Step 6: Create evaluation dataset
         df_eval, df_retrieved_codes = create_evaluation_dataframe(
             llm_responses_parsed=llm_responses_parsed,
-            searched_products=searched_products_rag,
+            observations=observations,
             qdrant_results_codes=qdrant_results_codes,
             con=con,
             path_mapping_lvl4=config["coicop"]["path_mapping_lvl4"],
@@ -510,7 +510,7 @@ def load_and_prepare_annotations(con, config):
         config: Configuration dictionary
 
     Returns:
-        tuple: (searched_products, nature_annotation)
+        tuple: (observations, nature_annotation)
     """
     logger.info("Loading RAG annotations...")
 
@@ -527,26 +527,26 @@ def load_and_prepare_annotations(con, config):
         f"(type: {nature_annotation or 'all'})"
     )
 
-    searched_products = annotations.to_dict(orient="records")
+    observations = annotations.to_dict(orient="records")
 
     # Apply sampling if configured
     sample_size = int(config["annotations"]["sample_size"]) if config["annotations"]["sample_size"] else 0
     if sample_size:
         random.seed(42)
-        searched_products = random.sample(searched_products, sample_size)
+        observations = random.sample(observations, sample_size)
         logger.info(f"✓ Sampling applied: {sample_size} products")
 
-    logger.info(f"✓ Total products to process: {len(searched_products)}")
+    logger.info(f"✓ Total products to process: {len(observations)}")
 
-    return searched_products, nature_annotation
+    return observations, nature_annotation
 
 
-def generate_embeddings(searched_products, client_emb, config):
+def generate_embeddings(observations, client_emb, config):
     """
     Generate embeddings for all product descriptions
     
     Args:
-        searched_products: List of product dictionaries
+        observations: List of product dictionaries
         client_emb: OpenAI client for embedding generation
         config: Configuration dictionary
         
@@ -559,10 +559,10 @@ def generate_embeddings(searched_products, client_emb, config):
     
     search_embeddings = []
     
-    for searched_product in tqdm(searched_products, desc="Generating embeddings"):
+    for observation in tqdm(observations, desc="Generating embeddings"):
         response = client_emb.embeddings.create(
             model=config["embedding"]["model_name"],
-            input=searched_product['l_pr_product']
+            input=observation['l_pr_product']
         )
         search_embeddings.append(response.data[0].embedding)
     
@@ -616,12 +616,12 @@ def perform_vector_search(search_embeddings, client_qdrant, config):
     return qdrant_results_texts, qdrant_results_codes
 
 
-def prepare_prompts(searched_products, qdrant_results_texts, qdrant_results_codes, prompt_template):
+def prepare_prompts(observations, qdrant_results_texts, qdrant_results_codes, prompt_template):
     """
     Prepare prompts for LLM generation
     
     Args:
-        searched_products: List of product dictionaries
+        observations: List of product dictionaries
         qdrant_results_texts: Retrieved document texts
         qdrant_results_codes: Retrieved COICOP codes
         prompt_template: Langfuse prompt template
@@ -635,10 +635,10 @@ def prepare_prompts(searched_products, qdrant_results_texts, qdrant_results_code
     
     messages = []
     
-    for i, searched_product in enumerate(searched_products):
+    for i, observation in enumerate(observations):
         # Include store information if available
-        shop = searched_product.get("shop") or None
-        shop_type = searched_product.get("shop_type_name") or None
+        shop = observation.get("shop") or None
+        shop_type = observation.get("shop_type_name") or None
         if shop:
             shop_info = f"{shop} (type d'enseigne : {shop_type})" if shop_type else shop
             enseigne_bloc = (
@@ -647,16 +647,16 @@ def prepare_prompts(searched_products, qdrant_results_texts, qdrant_results_code
         else:
             enseigne_bloc = None
         
-        if searched_product["budget"] and isinstance(searched_product["budget"], float):
+        if observation["budget"] and isinstance(observation["budget"], float):
             price_bloc = (
-                f"# Pour information, ce produit a coûté : {round(searched_product['budget'], 1)} euros."
+                f"# Pour information, ce produit a coûté : {round(observation['budget'], 1)} euros."
             )
         else:
             price_bloc = None
         
         messages.append(
             prompt_template.compile(
-                product=searched_product["l_pr_product"],
+                product=observation["l_pr_product"],
                 enseigne_bloc=enseigne_bloc,
                 price_bloc=price_bloc,
                 proposed_codes="\n\n## ".join(qdrant_results_texts[i]),
@@ -774,7 +774,7 @@ def parse_llm_responses(llm_responses):
 
 def create_evaluation_dataframe(
         llm_responses_parsed,
-        searched_products,
+        observations,
         qdrant_results_codes,
         con,
         path_mapping_lvl4: str,
@@ -793,7 +793,7 @@ def create_evaluation_dataframe(
 
     Args:
         llm_responses_parsed: Parsed LLM responses.
-        searched_products: Original product data with pruned annotations.
+        observations: Original product data with pruned annotations.
         qdrant_results_codes: Retrieved COICOP codes.
         con: Active DuckDB connection (used to load the mapping table).
         path_mapping_lvl4: S3 path to the level-4 pruning mapping parquet.
@@ -808,7 +808,7 @@ def create_evaluation_dataframe(
     logger.info("=" * 80)
 
     rows = []
-    for pred, annotation in zip(llm_responses_parsed, searched_products):
+    for pred, annotation in zip(llm_responses_parsed, observations):
         rows.append(pred | annotation)
 
     df_eval = pd.DataFrame(rows)

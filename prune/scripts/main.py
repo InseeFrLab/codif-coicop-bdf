@@ -111,19 +111,19 @@ def main():
     # -----------------------------------------------------------------------
     features = cfg["features"]
 
-    logger.info("STEP 2a: pruning des annotations 'train' (KB)")
-    train_pruned = prune_annotations_file(
+    logger.info("STEP 2a: pruning de la KB (kb_data)")
+    kb_data_pruned = prune_annotations_file(
         con, cfg["annotations_train"], features, mapping_table, notices_raw, logger
     )
-    _copy_to_parquet(con, train_pruned, "annotations_train_pruned", out["annotations_train_pruned"])
-    logger.info(f"  ✓ {out['annotations_train_pruned']} ({len(train_pruned)} lignes)")
+    _copy_to_parquet(con, kb_data_pruned, "annotations_train_pruned", out["annotations_train_pruned"])
+    logger.info(f"  ✓ {out['annotations_train_pruned']} ({len(kb_data_pruned)} lignes)")
 
-    logger.info("STEP 2b: pruning des annotations 'test' (à coder)")
-    test_pruned = prune_annotations_file(
+    logger.info("STEP 2b: pruning des observations (à coder)")
+    observations_pruned = prune_annotations_file(
         con, cfg["annotations_test"], features, mapping_table, notices_raw, logger
     )
-    _copy_to_parquet(con, test_pruned, "annotations_test_pruned", out["annotations_test_pruned"])
-    logger.info(f"  ✓ {out['annotations_test_pruned']} ({len(test_pruned)} lignes)")
+    _copy_to_parquet(con, observations_pruned, "annotations_test_pruned", out["annotations_test_pruned"])
+    logger.info(f"  ✓ {out['annotations_test_pruned']} ({len(observations_pruned)} lignes)")
 
     # -----------------------------------------------------------------------
     # 3. Suggester

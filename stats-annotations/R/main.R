@@ -64,8 +64,8 @@ DBI::dbExecute(con, sprintf("
 ###############################################################################'
 # 1 - Import des tables --------------------------------------------------------
 
-# on charge le jeu de test
-data <- DBI::dbGetQuery(con, glue::glue(
+# on charge le jeu à coder (observations)
+observations <- DBI::dbGetQuery(con, glue::glue(
         " SELECT *
           FROM read_parquet('s3://{BUCKET}/{path}')
         ")
@@ -73,9 +73,9 @@ data <- DBI::dbGetQuery(con, glue::glue(
 
 # Échantillonnage optionnel, directement sur le fichier d'input (pas de
 # déduplication préalable). Même logique que run-rag : graine 42, sans remise.
-if (!is.na(sample_size) && sample_size > 0 && sample_size < nrow(data)) {
+if (!is.na(sample_size) && sample_size > 0 && sample_size < nrow(observations)) {
   set.seed(42)
-  data <- data[sample(nrow(data), sample_size), , drop = FALSE]
+  observations <- observations[sample(nrow(observations), sample_size), , drop = FALSE]
   message(sprintf("✓ Sampling applied: %d lignes", sample_size))
 }
 
@@ -103,7 +103,7 @@ suggester$code <- as.character(suggester$code)
 ###############################################################################'
 # 2 - Retraitements ------------------------------------------------------------
 
-depenses <- data |>
+depenses <- observations |>
   dplyr::select(id, s_pr_product) |>
   dplyr::rename(product = s_pr_product)
 depenses$s_pr_product |> unique() |> length() # 5533 produits différents sur 7804 lignes
