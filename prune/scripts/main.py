@@ -41,6 +41,7 @@ def load_and_prune_suggester(con, sug_cfg, product_col, mapping_table_lvl4, noti
     """Charge le suggester (source autoportante), aligne ses colonnes sur
     (`product_col`, 'code', 'coicop'), tague `source='suggester'`, puis applique
     exactement le même `prune_annotation_lvl4` que les annotations."""
+    logger.info(f"  Chargement suggester : {sug_cfg['s3_path']}")
     reader = "read_parquet" if sug_cfg["s3_path"].endswith(".parquet") else "read_csv_auto"
     raw_count = con.sql(f"SELECT COUNT(*) FROM {reader}('{sug_cfg['s3_path']}')").fetchone()[0]
 
@@ -86,6 +87,7 @@ def main():
     # 1. Nomenclature COICOP → nomenclature prunée + table de mapping
     # -----------------------------------------------------------------------
     logger.info("STEP 1: pruning de la nomenclature COICOP")
+    logger.info(f"  Chargement nomenclature : {cfg['nomenclature_raw']}")
     notices_raw = con.sql(
         f"SELECT * FROM read_csv('{cfg['nomenclature_raw']}')"
     ).to_df()

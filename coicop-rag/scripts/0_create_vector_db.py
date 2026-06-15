@@ -66,6 +66,7 @@ def main():
 
     # La nomenclature est déjà tronquée + prunée (codes canoniques) par l'étape
     # `prune` unifiée → on lit directement son artefact, sans re-traitement ici.
+    logger.info(f"  Chargement nomenclature prunée : {config['coicop']['path_prunned_lvl4']}")
     notices_df = con.sql(
         f"SELECT * FROM read_parquet('{config['coicop']['path_prunned_lvl4']}')"
     ).to_df()
@@ -75,7 +76,7 @@ def main():
         if "column" not in col.lower() and not col.endswith("_en")
     ]
     notices_df = notices_df[columns_to_keep]
-    logger.info(f"  → {len(notices_df)} notices prunées chargées depuis path_prunned_lvl4")
+    logger.info(f"  → {len(notices_df)} notices prunées chargées depuis {config['coicop']['path_prunned_lvl4']}")
 
     notices = notices_df.to_dict(orient="records")
     logger.info(f"✓ {len(notices)} notices ready")

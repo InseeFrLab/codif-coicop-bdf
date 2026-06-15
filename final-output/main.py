@@ -103,8 +103,10 @@ def main() -> int:
     # Production (--input-file) : les observations à coder (observations.parquet) ;
     # évaluation : le split test des annotations (raw_test.parquet).
     base_file = "observations.parquet" if args.input_file else "raw_test.parquet"
+    base_path = f"{run_root}/preprocessing/{base_file}"
+    print(f"[final-output] loading base: {base_path}", flush=True)
     # Read full first to capture _source_input_file before stripping
-    observations = con.sql(f"SELECT * FROM read_parquet('{run_root}/preprocessing/{base_file}')").df()
+    observations = con.sql(f"SELECT * FROM read_parquet('{base_path}')").df()
     input_file_path = (
         observations["_source_input_file"].iloc[0]
         if "_source_input_file" in observations.columns and len(observations) > 0
@@ -115,6 +117,7 @@ def main() -> int:
     print(f"[final-output] base: {len(raw)} rows, {len(initial_cols)} columns", flush=True)
 
     # Regex predictions: rows classified by regex
+    print(f"[final-output] loading regex predictions: {run_root}/codif-regex/REGEX_pred.parquet", flush=True)
     regex = con.sql(f"""
         SELECT id, predict_code
         FROM read_parquet('{run_root}/codif-regex/REGEX_pred.parquet')
@@ -123,6 +126,7 @@ def main() -> int:
     print(f"[final-output] regex predictions: {len(regex)} rows", flush=True)
 
     # LLM decisions
+    print(f"[final-output] loading LLM decisions: {run_root}/decide-coicop/predictions.parquet", flush=True)
     llm = con.sql(f"""
         SELECT id, llm_code, llm_explication, llm_confiance, llm_model
         FROM read_parquet('{run_root}/decide-coicop/predictions.parquet')

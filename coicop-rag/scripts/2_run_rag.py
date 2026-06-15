@@ -512,7 +512,7 @@ def load_and_prepare_annotations(con, config):
     Returns:
         tuple: (observations, nature_annotation)
     """
-    logger.info("Loading RAG annotations...")
+    logger.info(f"Loading RAG annotations from: {config['annotations']['s3_path_rag']}")
 
     annotations = con.sql(
         f"SELECT * FROM read_parquet('{config['annotations']['s3_path_rag']}')"
@@ -820,6 +820,7 @@ def create_evaluation_dataframe(
     )
 
     # ── 2. Apply pruning mapping ──────────────────────────────────────────────
+    logger.info(f"Loading pruning mapping from: {path_mapping_lvl4}")
     mapping = con.sql(
         f"SELECT code, code_parent_equivalent FROM read_parquet('{path_mapping_lvl4}')"
     ).df()

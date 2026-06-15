@@ -162,6 +162,7 @@ def log_to_mlflow(args, run_root, output_s3, decide_path, prediction) -> None:
             print("[report] no parsable step timings provided", flush=True)
 
         # ---- read the decide-coicop predictions (dot-separated codes) ----
+        print(f"[report] loading decide-coicop predictions (mlflow): {decide_path}", flush=True)
         con = connect_s3()
         df = con.sql(f"SELECT * FROM read_parquet('{decide_path}')").df()
         mlflow.log_metric("n_obs_total", len(df))
@@ -226,6 +227,7 @@ def main() -> int:
     env["REPORT_RUN_DATE"] = args.run_date
 
     # prediction mode: ground-truth `code` is entirely NULL
+    print(f"[report] loading decide-coicop predictions: {decide_path}", flush=True)
     con = connect_s3()
     row = con.sql(
         f"SELECT bool_and(code IS NULL) FROM read_parquet('{decide_path}')"
@@ -238,6 +240,7 @@ def main() -> int:
             final_output_path = f"{run_root}/final-output/{os.path.basename(args.input_file)}"
         env["REPORT_INPUT_PATH"] = final_output_path
         env["REPORT_DECIDE_PATH"] = decide_path
+        print(f"[report] decide-coicop input (qmd): {decide_path}", flush=True)
     else:
         env["REPORT_INPUT_PATH"] = decide_path
     print(f"[report] mode={'prediction' if prediction else 'evaluation'}", flush=True)

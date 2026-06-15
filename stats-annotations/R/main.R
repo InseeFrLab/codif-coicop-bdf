@@ -65,6 +65,7 @@ DBI::dbExecute(con, sprintf("
 # 1 - Import des tables --------------------------------------------------------
 
 # on charge le jeu à coder (observations)
+message(sprintf("Chargement observations : s3://%s/%s", BUCKET, path))
 observations <- DBI::dbGetQuery(con, glue::glue(
         " SELECT *
           FROM read_parquet('s3://{BUCKET}/{path}')
@@ -89,10 +90,12 @@ use_override <- tryCatch({
 }, error = function(e) FALSE)
 
 if (isTRUE(use_override)) {
+  message(sprintf("Chargement suggester (override) : s3://%s/%s", BUCKET, suggester_override))
   suggester <- DBI::dbGetQuery(con, glue::glue(
     "SELECT * FROM read_parquet('s3://{BUCKET}/{suggester_override}')"
   ))
 } else {
+  message(sprintf("Chargement suggester : s3://%s/%s (WHERE source = 'suggester')", BUCKET, sug_path))
   suggester <- DBI::dbGetQuery(con, glue::glue(
     "SELECT * FROM read_parquet('s3://{BUCKET}/{sug_path}') WHERE source = 'suggester'"
   ))

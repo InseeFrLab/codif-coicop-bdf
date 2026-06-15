@@ -81,7 +81,7 @@ def main():
     # -----------------------------------------------------------------------
     # STEP 1: load annotations
     # -----------------------------------------------------------------------
-    logger.info("STEP 1: loading annotations")
+    logger.info(f"STEP 1: loading annotations from {config['annotations']['s3_path']}")
     annotations = con.sql(
         f"SELECT * FROM read_parquet('{config['annotations']['s3_path']}')"
     ).to_df()
@@ -131,7 +131,7 @@ def main():
     kb_data = annotations
     suggester_excluded = "suggester" in exclude_sources
     if config.get("suggester", {}).get("enabled") and not suggester_excluded:
-        logger.info("STEP 3: adding suggester examples to the index")
+        logger.info(f"STEP 3: adding suggester examples from {config['suggester']['s3_path_pruned']}")
         suggester_df = con.sql(
             f"SELECT * FROM read_parquet('{config['suggester']['s3_path_pruned']}')"
         ).to_df()

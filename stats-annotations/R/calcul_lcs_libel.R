@@ -75,6 +75,7 @@ output_lcs <- extract_res |>
   dplyr::rename(predict_code = code_lcs)
 
 # Export de la table de comparaison avec la règle LCS
+message(sprintf("Export → s3://%s/%s/raw_test_LCS.parquet (%d lignes)", BUCKET, lcs_output_dir, nrow(output_lcs)))
 aws.s3::s3write_using(
   x = output_lcs,
   FUN = arrow::write_parquet,
@@ -105,6 +106,7 @@ comparaison[is.na(comparaison$predict_ok),] |> nrow() # 2887 NA
 # on simule, pour différentes valeurs du seuil prop_ins_2, l'évolution des bonnes pred
 
 # on exporte la table comparaison, qui sert de base de travail pour l'analyse
+message(sprintf("Export → s3://%s/%s/analyse_codif_LCS.parquet (%d lignes)", BUCKET, lcs_output_dir, nrow(comparaison)))
 aws.s3::s3write_using(
   x = comparaison,
   FUN = arrow::write_parquet,

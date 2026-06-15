@@ -90,6 +90,7 @@ def _configure_s3(con: duckdb.DuckDBPyConnection) -> None:
 def _read_parquet(path: str | Path) -> pd.DataFrame:
     """Read a parquet file from a local path or S3 URL."""
     path = str(path)
+    logger.info("Chargement parquet : %s", path)
     if path.startswith("s3://"):
         con = duckdb.connect()
         _configure_s3(con)
@@ -100,6 +101,7 @@ def _read_parquet(path: str | Path) -> pd.DataFrame:
 def _read_csv(path: str | Path) -> pd.DataFrame:
     """Read a semicolon-separated CSV from a local path or S3 URL."""
     path = str(path)
+    logger.info("Chargement CSV : %s", path)
     if path.startswith("s3://"):
         con = duckdb.connect()
         _configure_s3(con)
@@ -110,6 +112,7 @@ def _read_csv(path: str | Path) -> pd.DataFrame:
 def _write_parquet(df: pd.DataFrame, path: str | Path) -> None:
     """Write a DataFrame to a parquet file locally or on S3."""
     path = str(path)
+    logger.info("Export → %s (%d lignes)", path, len(df))
     if path.startswith("s3://"):
         con = duckdb.connect()
         _configure_s3(con)
