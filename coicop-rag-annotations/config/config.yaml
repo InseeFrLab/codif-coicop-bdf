@@ -26,6 +26,8 @@ annotations:
   # Deux profils selon le mode (sélectionné via --skip-eval) :
   #   - exclude_sources       → ÉVALUATION (KB = lot train restreint) ;
   #   - exclude_sources_prod  → PRODUCTION (KB = toutes les annotations 2024 + suggester).
+  # NB : copain est déjà exclu en amont (preprocessing, depuis 2026-06) ; il est
+  # conservé ici par défense (no-op si la source n'arrive jamais jusqu'à la KB).
   exclude_sources: [bdf_2017, copain]
   exclude_sources_prod: [bdf_2017, copain]
 

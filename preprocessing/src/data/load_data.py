@@ -28,6 +28,10 @@ def load_copain_data(s3_copain_anno, con):
     """
     Load COPAIN data (manual annotations)
 
+    CONSERVÉE COMME TRACE — la source `copain` est exclue de tout le pipeline
+    depuis 2026-06. Cette fonction n'est plus appelée par `load_data()` ; pour
+    réactiver copain, voir le bloc commenté dans `load_data()`.
+
     Args:
         s3_copain_anno : path for COPAIN annotations file
         con : connexion for duckdb database
@@ -197,7 +201,7 @@ def load_data(config, con):
     # -----------------------------------------------------------------------
 
     (
-        S3_COPAIN_ANNOTATIONS,
+        S3_COPAIN_ANNOTATIONS,  # inutilisé — copain exclu du pipeline (cf. bloc ci-dessous)
         S3_ADDITIONAL_ANNOTATIONS,
         S3_OLD_ANNOTATIONS,
         S3_APP_ANNOTATIONS,
@@ -208,10 +212,14 @@ def load_data(config, con):
     # -----------------------------------------------------------------------
     # READING COPAIN ANNOTATIONS
     # -----------------------------------------------------------------------
-
-    # TODO : récupérer le nom des magasins
-
-    annotations_copain = load_copain_data(S3_COPAIN_ANNOTATIONS, con)
+    # COPAIN EXCLU DU PIPELINE (2026-06) : la source `copain` n'est plus chargée
+    # ni intégrée au dataset annoté consolidé. On évite ainsi de lire le gros glob
+    # S3 `output-annotation/**/*.parquet` pour rien.
+    # Pour réactiver copain : décommenter l'appel ci-dessous, le réintégrer dans le
+    # tuple de retour de load_data(), dans l'unpacking de main(), dans la signature
+    # de build_annotations() et dans SOURCES_2024 (main.py).
+    #
+    # annotations_copain = load_copain_data(S3_COPAIN_ANNOTATIONS, con)
 
     # -----------------------------------------------------------------------
     # READING HISTORICAL ANNOTATIONS
@@ -254,4 +262,5 @@ def load_data(config, con):
         FROM read_csv_auto('{S3_UNCODABLE_PRODUCTS}')
         """).to_df()["raw_product"].tolist()
 
-    return annotations_copain, annotations_hors_copain, suggester, shops_mapping, uncodable_products, annotations_old
+    # copain retiré du tuple de retour (exclu du pipeline — cf. bloc COPAIN ci-dessus).
+    return annotations_hors_copain, suggester, shops_mapping, uncodable_products, annotations_old

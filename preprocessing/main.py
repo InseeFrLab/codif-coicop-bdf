@@ -31,6 +31,8 @@ BUDGET_GROUP_COLUMNS = [
 
 # Sources considérées comme données BdF 2024 (le reste — dont 2017 et suggester —
 # part dans le lot « historique » et n'est donc pas inclus dans le split test).
+# NB : "copain" est conservé ici à titre de trace (source exclue du pipeline depuis
+# 2026-06, cf. load_data.py) ; n'étant plus chargée, elle matche 0 ligne.
 SOURCES_2024 = ["copain", "receipts_from_app", "manual_from_app", "manual_from_book"]
 
 # Recodage des libellés de méthode hérités vers les noms canoniques.
@@ -136,7 +138,6 @@ def normalize_products(
 # ---------------------------------------------------------------------------
 def build_annotations(
     config,
-    annotations_copain,
     annotations_hors_copain,
     suggester,
     annotation_old,
@@ -154,8 +155,9 @@ def build_annotations(
     )
 
     # -- Consolidation des annotations 2024 + suggester ---------------------
+    # copain retiré de la consolidation (source exclue du pipeline — cf. load_data.py).
     annotations = pd.concat(
-        [annotations_copain, annotations_hors_copain, suggester], axis=0
+        [annotations_hors_copain, suggester], axis=0
     )
     logger.info("Fin du chargement et de la création du fichier d'annotation consolidé")
 
@@ -337,8 +339,8 @@ def main():
     # Chargement unique des sources annotées (annotations + ressources partagées)
     # -----------------------------------------------------------------------
     logger.info("[1/4] Chargement des fichiers annotés issus du S3 du projet")
+    # copain retiré de l'unpacking (source exclue du pipeline — cf. load_data.py).
     (
-        annotations_copain,
         annotations_hors_copain,
         suggester,
         shops_mapping,
@@ -346,9 +348,7 @@ def main():
         annotation_old,
     ) = load_data(config, con)
 
-    logger.info(
-        f"Données annotées issues de l'application COPAIN importées, {len(annotations_copain)} lignes"
-    )
+    # COPAIN exclu : plus de chargement ni de log d'import pour cette source.
     logger.info(
         f"Données annotées issues de l'annotation historique importées, {len(annotations_hors_copain)} lignes"
     )
@@ -366,7 +366,6 @@ def main():
     # -----------------------------------------------------------------------
     annotations_full, raw_train, raw_test = build_annotations(
         config,
-        annotations_copain,
         annotations_hors_copain,
         suggester,
         annotation_old,
