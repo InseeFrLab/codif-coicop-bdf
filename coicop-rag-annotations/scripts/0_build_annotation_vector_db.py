@@ -117,12 +117,6 @@ def main():
     annotations = annotations[annotations[product_col].astype(str).str.strip() != ""]
     logger.info(f"  → {len(annotations)} usable annotations (dropped {before - len(annotations)})")
 
-    # Échantillonnage optionnel de la KB (sans remise, graine reproductible).
-    if args.sample_size and args.sample_size < len(annotations):
-        seed = config.get("eval", {}).get("seed", 42)
-        annotations = annotations.sample(n=args.sample_size, random_state=seed)
-        logger.info(f"  → KB échantillonnée à {len(annotations)} annotations (seed={seed})")
-
     # -----------------------------------------------------------------------
     # STEP 3: add suggester examples to the index (déjà prunés par l'étape `prune`)
     # -----------------------------------------------------------------------
@@ -144,6 +138,15 @@ def main():
         logger.info("STEP 3: suggester excluded via exclude_sources — index = annotations only")
     else:
         logger.info("STEP 3: suggester disabled — index = annotations only")
+
+    # Échantillonnage optionnel de la KB (annotations + suggester confondus), sans
+    # remise et avec graine reproductible. Appliqué APRÈS la fusion pour que le total
+    # de points indexés == sample_size : on génère ainsi une petite vector DB rapide
+    # à construire pour tester le code (et non sample_size + tout le suggester).
+    if args.sample_size and args.sample_size < len(kb_data):
+        seed = config.get("eval", {}).get("seed", 42)
+        kb_data = kb_data.sample(n=args.sample_size, random_state=seed).reset_index(drop=True)
+        logger.info(f"  → KB échantillonnée à {len(kb_data)} points (annotations + suggester, seed={seed})")
 
     # -----------------------------------------------------------------------
     # STEP 4: embed index product descriptions
