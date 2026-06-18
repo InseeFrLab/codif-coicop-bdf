@@ -168,6 +168,9 @@ def main():
     # -----------------------------------------------------------------------
     logger.info("STEP 5: creating collection and uploading points")
     collection_name = config["qdrant"]["collection_name"]
+    if args.sample_size:
+        collection_name = collection_name + "_test"
+        logger.info(f"  → sample-size set: using test collection '{collection_name}'")
     if client_qdrant.collection_exists(collection_name):
         client_qdrant.delete_collection(collection_name)
         logger.info(f"  → existing collection deleted: {collection_name}")

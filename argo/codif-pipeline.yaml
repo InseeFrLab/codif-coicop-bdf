@@ -168,6 +168,8 @@ spec:
               parameters:
                 - name: model-name
                   value: "{{workflow.parameters.model-name}}"
+                - name: sample-annotations
+                  value: "{{workflow.parameters.sample-annotations}}"
                 - name: run_id
                   value: "{{workflow.parameters.run_id}}"
                 - name: run_date
@@ -749,6 +751,7 @@ spec:
           - name: config
             value: config/config.yaml
           - name: model-name
+          - name: sample-annotations
           - name: run_id
           - name: run_date
       container:
@@ -772,6 +775,8 @@ spec:
             if [ -n "{{inputs.parameters.model-name}}" ]; then
               ARGS="$ARGS --model_name {{inputs.parameters.model-name}}"
             fi
+            # sample-annotations non vide → collection Qdrant de test (suffix _test).
+            [ -n "{{inputs.parameters.sample-annotations}}" ] && ARGS="$ARGS --sample-annotations {{inputs.parameters.sample-annotations}}"
 
             uv run scripts/1_run_rag.py $ARGS
         env:

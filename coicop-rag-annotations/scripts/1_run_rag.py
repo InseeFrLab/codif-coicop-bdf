@@ -59,6 +59,12 @@ def setup_argument_parser():
     parser.add_argument("--run-id", required=True, help="Workflow run identifier")
     parser.add_argument("--run-date", required=True, help="Workflow run date (YYYY-MM-DD)")
     parser.add_argument("--sample_size", type=int, help="Limit number of products")
+    parser.add_argument(
+        "--sample-annotations", type=int, default=None,
+        help="Taille de la KB d'annotations (doit correspondre à ce qui a été passé à "
+             "0_build_annotation_vector_db.py). Non vide → utilise la collection de test "
+             "(suffix '_test' sur collection_name).",
+    )
     parser.add_argument("--model_name", type=str, help="LLM model name (overrides config)")
     parser.add_argument("--experiment_name", type=str, help="MLflow experiment (overrides config)")
     parser.add_argument(
@@ -87,6 +93,8 @@ def main():
     if args.experiment_name:
         config["mlflow"]["experiment_name"] = args.experiment_name
     config = expand_paths(config, run_id=args.run_id, run_date=args.run_date)
+    if args.sample_annotations:
+        config["qdrant"]["collection_name"] = config["qdrant"]["collection_name"] + "_test"
 
     product_col = config["annotations"]["product_col"]
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
