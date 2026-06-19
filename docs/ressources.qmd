@@ -1,0 +1,31 @@
+---
+title: "Les ressources"
+subtitle: "Liens utiles, outils et contacts du projet"
+---
+
+> 🚧 **Page en construction (squelette).** Compléter les liens ci-dessous.
+
+## Code et documentation
+
+- **Dépôt GitHub** : <https://github.com/InseeFrLab/codif-coicop-bdf>
+- **Documentation des modules** : voir les `README.md` / `CLAUDE.md` de chaque module.
+
+<!-- TODO: ajouter les liens internes (wiki, specs) -->
+
+## Outils du pipeline
+
+| Outil | Usage | Lien |
+|---|---|---|
+| Argo Workflows | Orchestration du pipeline | *TODO* |
+| MLflow | Suivi des expériences / métriques | *TODO* |
+| Qdrant | Base vectorielle (RAG) | *TODO* |
+| Langfuse | Traçage des prompts LLM | *TODO* |
+| LLMLab | Endpoints embeddings + génération | *TODO* |
+
+## Nomenclature COICOP (références externes)
+
+*TODO* — liens vers la nomenclature officielle COICOP et la documentation BdF.
+
+## Contacts
+
+*TODO* — équipe projet, référents.

@@ -1,0 +1,51 @@
+name: Publish website
+
+# Déploie le site Quarto (docs/) sur GitHub Pages à chaque commit sur website ou main,
+# via la méthode artifact officielle (pas de branche gh-pages).
+on:
+  push:
+    branches:
+      - website
+      - main
+  workflow_dispatch:
+
+# Permissions requises par la méthode artifact (OIDC + déploiement Pages).
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Un seul déploiement à la fois ; on ne coupe pas un déploiement en cours.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Quarto
+        uses: quarto-dev/quarto-actions/setup@v2
+
+      # Pas de setup Python/R : les pages docs/ ne contiennent aucun chunk exécutable.
+      - name: Render site
+        run: quarto render docs
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs/_site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

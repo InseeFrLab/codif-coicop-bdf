@@ -1,0 +1,40 @@
+---
+title: "Les données"
+subtitle: "Sources mobilisées par le pipeline de codification COICOP"
+---
+
+> 🚧 **Page en construction (squelette).** Compléter chaque section ci-dessous.
+
+## Vue d'ensemble
+
+Le pipeline mobilise plusieurs sources de données, en entrée comme en référence.
+
+| Source | Rôle | Format | Localisation |
+|---|---|---|---|
+| Annotations BdF 2024 | Vérité terrain / KB | parquet | S3 |
+| Annotations historiques BdF 2017 | KB (historique) | csv | S3 |
+| Suggester (liste produits) | Exemples additionnels | csv | S3 |
+| Nomenclature COICOP | Référentiel des codes | csv | S3 |
+| Observations à coder | Entrée production | parquet/csv | fourni par l'utilisateur |
+
+<!-- TODO: vérifier/compléter les chemins exacts et les volumétries -->
+
+## Les annotations
+
+*TODO* — décrire les sources d'annotations (`receipts_from_app`, `manual_from_app`,
+`manual_from_book`, `bdf_2017`), la colonne `source`, et les sources exclues du pipeline
+(ex. `copain`).
+
+## Le suggester
+
+*TODO* — décrire la liste produits (`liste_produits_fr_copain.csv`) et son usage comme
+exemples additionnels dans la KB des RAG.
+
+## La nomenclature COICOP
+
+*TODO* — structure des codes (niveaux 1 à 5), pruning niveau 4, table de mapping.
+
+## Conventions de stockage (S3)
+
+*TODO* — convention de chemins `s3://<bucket>/<run_date>/<run_id>/<step>/` et échanges
+inter-modules en parquet.

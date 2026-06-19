@@ -1,0 +1,37 @@
+---
+title: "RAG sur annotation"
+subtitle: "Codification par RAG sur exemples déjà codifiés (few-shot)"
+---
+
+> 🚧 **Page en construction (squelette).** Compléter les sections ci-dessous.
+
+## Principe
+
+Le module `coicop-rag-annotations/` code chaque produit par **RAG sur exemples annotés** :
+on récupère dans une base vectorielle les produits déjà codifiés les plus similaires, puis on
+construit un prompt *few-shot* pour demander le code COICOP à un LLM.
+
+## Étapes
+
+1. **Construction de la vector DB** (`0_build_annotation_vector_db.py`) — indexe la KB
+   d'annotations prunée (+ suggester) dans Qdrant.
+2. **Codification** (`1_run_rag.py`) — embeddings de l'input, recherche des k plus proches
+   voisins, prompt few-shot, génération, parsing JSON, export des prédictions.
+
+<!-- TODO: détailler la représentation textuelle (produit + lieu d'achat), la taille de
+     récupération (retrieval.size), le modèle d'embedding et de génération. -->
+
+## KB indexée et sources exclues
+
+*TODO* — `exclude_sources` (éval) vs `exclude_sources_prod` (prod), inclusion du suggester,
+sources exclues (ex. `copain`).
+
+## Collection Qdrant de test
+
+*TODO* — quand `sample-annotations` est non vide, une collection `_test` (suffixe sur
+`collection_name`) est utilisée pour ne pas écraser la vector DB de production.
+
+## Sortie et intégration
+
+*TODO* — colonnes `ragann_*` consommées par [l'étape de réconciliation finale](06-decide-coicop.qmd)
+(`decide-coicop`).
