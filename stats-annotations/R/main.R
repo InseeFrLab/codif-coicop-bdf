@@ -23,9 +23,16 @@ parse_arg <- function(name) {
   if (length(hit) == 0) stop(sprintf("Missing required arg: --%s", name))
   sub(paste0("^--", name, "="), "", hit[1])
 }
+parse_arg_opt <- function(name, default = NA) {
+  hit <- grep(paste0("^--", name, "="), args, value = TRUE)
+  if (length(hit) == 0) return(default)
+  sub(paste0("^--", name, "="), "", hit[1])
+}
 run_id <- parse_arg("run-id")
 run_date <- parse_arg("run-date")
-message(sprintf("run_id=%s, run_date=%s", run_id, run_date))
+sample_size <- suppressWarnings(as.integer(parse_arg_opt("sample-size")))
+message(sprintf("run_id=%s, run_date=%s, sample_size=%s", run_id, run_date,
+                ifelse(is.na(sample_size), "NA", sample_size)))
 
 BUCKET <- "projet-budget-famille"
 run_root <- glue::glue("data/workflow_runs/{run_date}/{run_id}")
@@ -57,12 +64,21 @@ DBI::dbExecute(con, sprintf("
 ###############################################################################'
 # 1 - Import des tables --------------------------------------------------------
 
-# on charge le jeu de test
-data <- DBI::dbGetQuery(con, glue::glue(
+# on charge le jeu à coder (observations)
+message(sprintf("Chargement observations : s3://%s/%s", BUCKET, path))
+observations <- DBI::dbGetQuery(con, glue::glue(
         " SELECT *
           FROM read_parquet('s3://{BUCKET}/{path}')
         ")
     )
+
+# Échantillonnage optionnel, directement sur le fichier d'input (pas de
+# déduplication préalable). Même logique que run-rag : graine 42, sans remise.
+if (!is.na(sample_size) && sample_size > 0 && sample_size < nrow(observations)) {
+  set.seed(42)
+  observations <- observations[sample(nrow(observations), sample_size), , drop = FALSE]
+  message(sprintf("✓ Sampling applied: %d lignes", sample_size))
+}
 
 # En mode prédiction, le suggester est dans un fichier dédié (bypass regex-codif).
 # On essaie ce fichier en premier ; si absent (mode normal), on lit depuis raw_train_without_regex.
@@ -74,10 +90,12 @@ use_override <- tryCatch({
 }, error = function(e) FALSE)
 
 if (isTRUE(use_override)) {
+  message(sprintf("Chargement suggester (override) : s3://%s/%s", BUCKET, suggester_override))
   suggester <- DBI::dbGetQuery(con, glue::glue(
     "SELECT * FROM read_parquet('s3://{BUCKET}/{suggester_override}')"
   ))
 } else {
+  message(sprintf("Chargement suggester : s3://%s/%s (WHERE source = 'suggester')", BUCKET, sug_path))
   suggester <- DBI::dbGetQuery(con, glue::glue(
     "SELECT * FROM read_parquet('s3://{BUCKET}/{sug_path}') WHERE source = 'suggester'"
   ))
@@ -88,7 +106,7 @@ suggester$code <- as.character(suggester$code)
 ###############################################################################'
 # 2 - Retraitements ------------------------------------------------------------
 
-depenses <- data |>
+depenses <- observations |>
   dplyr::select(id, s_pr_product) |>
   dplyr::rename(product = s_pr_product)
 depenses$s_pr_product |> unique() |> length() # 5533 produits différents sur 7804 lignes

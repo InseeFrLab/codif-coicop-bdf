@@ -18,13 +18,22 @@ import pandas as pd
 
 # Prediction columns produced by decide-coicop, in display order.
 # ``llm_code`` is the final prediction (after the LLM arbitration step).
+# ``ragann_code`` (RAG on annotated examples) is only present when the
+# annotation-RAG brick ran — methods absent from the data are skipped.
 METHODS = [
     ("LCS", "lcs_code"),
     ("RAG", "rag_code"),
+    ("RAG-annot", "ragann_code"),
     ("TTC", "ttc_code_1"),
     ("LLM", "llm_code"),
 ]
 LEVELS = [1, 2, 3, 4, 5]
+
+
+def available_methods(data: pd.DataFrame) -> list[tuple[str, str]]:
+    """METHODS whose prediction column is present in ``data`` (backward compatible
+    with runs produced before a given method existed)."""
+    return [(name, col) for name, col in METHODS if col in data.columns]
 
 
 def code_parts(s) -> list[str]:
@@ -67,7 +76,7 @@ def accuracy(truth: pd.Series, pred: pd.Series, k: int) -> tuple[int, int, float
 
 def accuracy_table(data: pd.DataFrame) -> pd.DataFrame:
     rows = []
-    for name, col in METHODS:
+    for name, col in available_methods(data):
         row = {"méthode": name}
         for k in LEVELS:
             _, n_app, acc = accuracy(data["code"], data[col], k)

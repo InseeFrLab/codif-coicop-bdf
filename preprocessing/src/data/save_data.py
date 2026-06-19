@@ -1,8 +1,12 @@
+import logging
 import os
 import pandas as pd
 
+logger = logging.getLogger(__name__)
+
 
 def export_parquet_s3(df: pd.DataFrame, path: str, schema=None) -> None:
+    logger.info(f"Export → s3://{path} ({len(df)} lignes)")
     kwargs = {"schema": schema} if schema is not None else {}
     df.to_parquet(
         f"s3://{path}",

@@ -40,6 +40,11 @@ def parse_args() -> argparse.Namespace:
                    help="Original input column name for budget")
     p.add_argument("--annee-column", default="annee",
                    help="Original input column name for year")
+    p.add_argument(
+        "--input-file", default=None,
+        help="Présence => mode production : les colonnes utilisateur proviennent de "
+             "observations.parquet. Absence => mode évaluation (raw_test.parquet).",
+    )
     return p.parse_args()
 
 
@@ -94,19 +99,25 @@ def main() -> int:
     run_root = f"s3://{args.bucket}/data/workflow_runs/{args.run_date}/{args.run_id}"
     con = init_duckdb()
 
-    # Base: all user columns from raw_test.parquet (strip internal pipeline columns)
+    # Base: all user columns from the preprocessing output (strip internal pipeline columns).
+    # Production (--input-file) : les observations à coder (observations.parquet) ;
+    # évaluation : le split test des annotations (raw_test.parquet).
+    base_file = "observations.parquet" if args.input_file else "raw_test.parquet"
+    base_path = f"{run_root}/preprocessing/{base_file}"
+    print(f"[final-output] loading base: {base_path}", flush=True)
     # Read full first to capture _source_input_file before stripping
-    raw_full = con.sql(f"SELECT * FROM read_parquet('{run_root}/preprocessing/raw_test.parquet')").df()
+    observations = con.sql(f"SELECT * FROM read_parquet('{base_path}')").df()
     input_file_path = (
-        raw_full["_source_input_file"].iloc[0]
-        if "_source_input_file" in raw_full.columns and len(raw_full) > 0
+        observations["_source_input_file"].iloc[0]
+        if "_source_input_file" in observations.columns and len(observations) > 0
         else None
     )
-    initial_cols = ["id"] + [c for c in raw_full.columns if c not in PIPELINE_COLS and c != "id"]
-    raw = raw_full[initial_cols]
+    initial_cols = ["id"] + [c for c in observations.columns if c not in PIPELINE_COLS and c != "id"]
+    raw = observations[initial_cols]
     print(f"[final-output] base: {len(raw)} rows, {len(initial_cols)} columns", flush=True)
 
     # Regex predictions: rows classified by regex
+    print(f"[final-output] loading regex predictions: {run_root}/codif-regex/REGEX_pred.parquet", flush=True)
     regex = con.sql(f"""
         SELECT id, predict_code
         FROM read_parquet('{run_root}/codif-regex/REGEX_pred.parquet')
@@ -115,6 +126,7 @@ def main() -> int:
     print(f"[final-output] regex predictions: {len(regex)} rows", flush=True)
 
     # LLM decisions
+    print(f"[final-output] loading LLM decisions: {run_root}/decide-coicop/predictions.parquet", flush=True)
     llm = con.sql(f"""
         SELECT id, llm_code, llm_explication, llm_confiance, llm_model
         FROM read_parquet('{run_root}/decide-coicop/predictions.parquet')

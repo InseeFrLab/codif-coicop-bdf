@@ -286,6 +286,7 @@ lire_csv_auto <- function(path) {
 #' @param output_names
 #' @import aws.S3, stringr, arrow
 export_liste_df <- function(df, output_names){
+  message(sprintf("Export → s3://%s/%s/eval/%s.parquet (%d lignes)", BUCKET, lcs_output_dir, output_names, nrow(df)))
   aws.s3::s3write_using(
     x = df,
     FUN = arrow::write_parquet,

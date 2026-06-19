@@ -348,7 +348,12 @@ def cmd_decide_coicop(args: argparse.Namespace) -> None:
         sys.exit(1)
 
     logger.info("Chargement des données...")
-    df = load_all_observations(args.lcs_file, args.rag_file, args.ttc_file)
+    df = load_all_observations(
+        args.lcs_file,
+        args.rag_file,
+        args.ttc_file,
+        rag_annotations_path=args.rag_annotations_file,
+    )
 
     logger.info("Chargement de la nomenclature...")
     nomenclature = load_nomenclature(args.nomenclature)
@@ -1811,6 +1816,15 @@ def main() -> int:
         type=str,
         default="predictions_rag.parquet",
         help="Parquet file with RAG model predictions (default: predictions_rag.parquet)",
+    )
+    decide_coicop_parser.add_argument(
+        "--rag-annotations-file",
+        type=str,
+        default=None,
+        help=(
+            "Optional parquet file with annotation-RAG predictions "
+            "(columns: id, code_predict, confidence, codable). Joined on 'id' when provided."
+        ),
     )
     decide_coicop_parser.add_argument(
         "--ttc-file",

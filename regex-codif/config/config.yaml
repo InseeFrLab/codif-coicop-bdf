@@ -1,6 +1,10 @@
 paths:
+  # Évaluation : split train/test des annotations.
   train_set: "s3://projet-budget-famille/data/workflow_runs/{run_date}/{run_id}/preprocessing/raw_train.parquet"
   test_set:  "s3://projet-budget-famille/data/workflow_runs/{run_date}/{run_id}/preprocessing/raw_test.parquet"
+  # Production (--input-file) : KB = toutes les annotations ; à coder = observations.
+  train_set_prod: "s3://projet-budget-famille/data/workflow_runs/{run_date}/{run_id}/preprocessing/annotations_full.parquet"
+  test_set_prod:  "s3://projet-budget-famille/data/workflow_runs/{run_date}/{run_id}/preprocessing/observations.parquet"
   error_pred: "s3://projet-budget-famille/data/workflow_runs/{run_date}/{run_id}/codif-regex/error_regex_pred.parquet"
   output:
     pred:      "s3://projet-budget-famille/data/workflow_runs/{run_date}/{run_id}/codif-regex/REGEX_pred.parquet"

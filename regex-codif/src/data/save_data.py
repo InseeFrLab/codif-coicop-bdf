@@ -1,5 +1,8 @@
+import logging
 import os
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 
 def save_data_to_parquet(df: pd.DataFrame, path: str):
@@ -9,7 +12,7 @@ def save_data_to_parquet(df: pd.DataFrame, path: str):
         df: dataframe to export
         path: path to save parquet file
     """
-
+    logger.info(f"Export → s3://{path} ({len(df)} lignes)")
     df.to_parquet(
                 f"s3://{path}",
                 storage_options={

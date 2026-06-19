@@ -9,66 +9,58 @@ sémantique : on encode la nomenclature COICOP dans une base vectorielle, on ré
 chaque produit les codes les plus proches, et on demande à un LLM de choisir parmi cette
 courte liste de candidats.
 
-Elle se décompose en quatre sous-étapes :
+Elle se décompose en trois sous-étapes (le pruning est désormais centralisé dans une étape
+`prune` commune à tout le pipeline) :
 
 | Sous-étape | Code | Rôle |
 |---|---|---|
-| `prune-coicop` | `coicop-rag/scripts/0_prunning_coicop.py` | nettoie la nomenclature |
-| `create-vector-db` | `coicop-rag/scripts/0_create_vector_db.py` | encode la nomenclature dans Qdrant |
-| `prune-annotations` | `coicop-rag/scripts/1_prune_annotations.py` | normalise les codes du jeu à coder |
+| `prune` | `prune/scripts/main.py` (module dédié) | **étape unifiée** : produit tous les artefacts prunés |
+| `create-vector-db` | `coicop-rag/scripts/0_create_vector_db.py` | encode la nomenclature prunée dans Qdrant |
 | `run-rag` | `coicop-rag/scripts/2_run_rag.py` | recherche vectorielle + génération LLM |
 
 - Code : [`coicop-rag/`](../coicop-rag/) · config : [`coicop-rag/config/config.yaml`](../coicop-rag/config/config.yaml)
 
 ::: {.callout-note}
-`prune-coicop` et `create-vector-db` ne dépendent pas du run : leurs sorties (nomenclature
-prunée, collection Qdrant) sont **partagées entre runs**. Sur la branche `codif-pipeline`, le
-paramètre `skip-vector-db=true` par défaut **saute** ces deux sous-étapes (la base est déjà
-construite).
+`create-vector-db` reste **skippable** via `skip-vector-db=true` (la collection Qdrant est
+réutilisée d'un run à l'autre). En revanche l'étape `prune` n'est **pas** skippable : elle
+produit aussi le jeu à coder pruné dont `run-rag` a besoin à chaque run.
 :::
 
-## prune-coicop — nettoyer la nomenclature
+## prune — pruning unifié
 
-La nomenclature COICOP brute (`data/coicop-2018_envoi_rmes_20251022.csv`) a 5 niveaux. Le
-*pruning* :
+Une seule étape (module dédié [`prune/`](../prune/), `prune/scripts/main.py`, exécutée après `codif-regex`) applique le même
+algorithme (troncature niveau 4 + fusion des hiérarchies linéaires → code canonique) et produit
+**tous** les artefacts prunés du pipeline. L'algorithme :
 
-1. **supprime le niveau 5** (Poste), trop granulaire pour la codification ;
-2. **fusionne les hiérarchies linéaires** : quand un code n'a qu'un seul enfant à chaque
-   niveau, la chaîne est repliée sur son code canonique (on évite de proposer au modèle deux
-   codes qui désignent en pratique la même chose).
+1. **supprime le niveau 5** (Poste) de la nomenclature, trop granulaire ;
+2. **fusionne les hiérarchies linéaires** : quand un code n'a qu'un seul enfant à chaque niveau,
+   la chaîne est repliée sur son code canonique (on évite de proposer deux codes qui désignent
+   en pratique la même chose).
 
-Sorties (chemins stables, `data/workflow_outputs/prunning/`) :
+Sorties (par run, sous `…/{run}/prune/`) :
 
-- `…_prunned_lvl4.parquet` — notices prunées (niveaux 1 à 4) ;
-- `…_mapping_prunning_lvl4.parquet` — table de correspondance `code → code canonique`.
+| Fichier | Contenu | Consommé par |
+|---|---|---|
+| `nomenclature_pruned.parquet` | nomenclature prunée (niveaux 1 à 4) | `create-vector-db` |
+| `mapping_lvl4.parquet` | table `code → code canonique` | scoring `run-rag` |
+| `annotations_train_pruned.parquet` | KB d'annotations prunées | `create-vector-db-annotations` |
+| `annotations_test_pruned.parquet` | jeu **à coder** pruné | `run-rag` et `run-rag-annotations` |
+| `suggester_pruned.parquet` | suggester pruné | `create-vector-db-annotations` |
+
+Cette étape remplace les anciennes `prune-coicop` et `prune-annotations`, et le pruning qui
+était fait à la volée dans les deux `create-vector-db*` — un seul algorithme, un seul point de
+vérité.
 
 ## create-vector-db — encoder dans Qdrant
 
-Chaque notice COICOP est mise en forme en texte (code, libellé FR, notes générales, contenu
+Chaque notice COICOP **prunée** (lue directement depuis `prune/nomenclature_pruned.parquet`,
+sans re-traitement) est mise en forme en texte (code, libellé FR, notes générales, contenu
 central, exclusions, lignage des parents) puis encodée en vecteur :
 
 - Modèle d'embedding : **`qwen3-embedding-8b`** (dimension **4096**), via l'API vLLM
   (`VLLM_EMBEDDING_URL`).
 - Base vectorielle : **Qdrant**, collection **`coicop_lineage`** (distance cosinus),
   recréée à chaque exécution.
-
-Réglages de l'indexation (`config.yaml`) :
-
-```yaml
-coicop:
-  vectors:
-    truncate_level: 4   # on n'indexe que les codes de profondeur ≤ 4
-    prune: true         # on ne garde que les codes canoniques
-```
-
-## prune-annotations — normaliser les codes du jeu
-
-Cette sous-étape aligne les codes du jeu à coder sur la nomenclature prunée : troncature au
-niveau 4 et application de la table de mapping (un code replié devient son canonique). Cela
-garantit que prédictions et vérité parlent le même vocabulaire de codes.
-
-- Entrée : `…/{run}/codif-regex/raw_test_without_regex.parquet` + table de mapping partagée
-- Sortie : `…/{run}/prune-annotations/raw_test_without_regex_pruned.parquet`
 
 ## run-rag — recherche + génération
 

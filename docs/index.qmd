@@ -49,19 +49,19 @@ s3://projet-budget-famille/data/workflow_runs/{run_date}/{run_id}/<étape>/
 ```
 
 ```
-                  ┌──→ prune-coicop ──→ create-vector-db ────────────┐  (skippés par défaut)
-  preprocessing ──┤                                                   ├──→ run-rag ─┐
-   (input_file)   └──→ codif-regex ──┬─→ prune-annotations ───────────┘             │
-                                     ├─→ codif-lcs ───────────────────────────────────┼─→ decide-coicop ─→ final-output ─→ report
-                                     └─→ run-ttc ────────────────────────────────────┘
+                                     ┌─→ create-vector-db ──────────────┐  (skippable)
+  preprocessing ──┐   ┌──→ prune ────┤                                  ├──→ run-rag(-annotations) ─┐
+   (input_file)   └──→┤              └─→ create-vector-db-annotations ──┘                           │
+                      └──→ codif-regex ─┬─→ codif-lcs ─────────────────────────────────────────────┼─→ decide-coicop ─→ final-output ─→ report
+                        (→ prune)       └─→ run-ttc ──────────────────────────────────────────────┘
 ```
 
 | # | Étape | Rôle | Page |
 |---|---|---|---|
-| 1 | `preprocessing` | Charge le fichier d'entrée, normalise les libellés, construit train/test | [→](01-preprocessing.qmd) |
+| 1 | `preprocessing` | Construit toujours les annotations (complet + train/test) ; en prédiction, prépare aussi les observations à coder | [→](01-preprocessing.qmd) |
 | 2 | `codif-regex` | Code les libellés évidents par règles regex | [→](02-codif-regex.qmd) |
 | 3 | `codif-lcs` | Code par similarité de chaîne (LCS) sur un pool de référence | [→](03-codif-lcs.qmd) |
-| 4 | `prune-coicop` / `create-vector-db` / `prune-annotations` / `run-rag` | Codification sémantique par RAG | [→](04-coicop-rag.qmd) |
+| 4 | `prune` / `create-vector-db` / `run-rag` | Codification sémantique par RAG (pruning unifié en amont) | [→](04-coicop-rag.qmd) |
 | 5 | `run-ttc` | Classifieur neuronal basique (caisses + fine-tuning BDF 2024) | [→](05-run-ttc.qmd) |
 | 6 | `decide-coicop` | Arbitrage final LLM-as-judge entre LCS / RAG / TTC | [→](06-decide-coicop.qmd) |
 | 7 | `final-output` | Assemble le résultat utilisateur (regex + décision LLM) | [→](07-final-output.qmd) |
@@ -95,7 +95,9 @@ Le pipeline n'impose pas de noms de colonnes : l'étape `preprocessing` reçoit 
 ::: {.callout-important}
 ## Mode prédiction
 Ce fichier contient des produits **à coder**, sans vérité terrain. Le pipeline tourne donc en
-**mode prédiction** : il n'y a pas de colonne `code` de référence. Cela change la dernière
+**mode prédiction** : il n'y a pas de colonne `code` de référence. Les observations préparées
+sont écrites dans `observations.parquet` (l'étape `preprocessing` produit par ailleurs toujours
+les annotations train/test). Cela change la dernière
 étape (`report`), qui bascule sur `prediction_report.qmd` (suivi des prédictions) au lieu du
 rapport d'évaluation d'exactitude. Le livrable final est le fichier produit par
 [`final-output`](07-final-output.qmd).
@@ -134,6 +136,7 @@ argo submit argo/codif-pipeline.yaml \
   -p input_file=s3://projet-budget-famille/data/workflow_inputs/mon_fichier.csv \
   -p text_column=NAT_DEP -p shop_column=MAG_DEP -p budget_column=MONT_DEP
 
-# Limiter à N lignes pour un test
-argo submit argo/codif-pipeline.yaml -p sample_size=100
+# Limiter à N observations à coder pour un test (sampling centralisé à codif-regex,
+# hérité par tous les classifieurs). En prod, -p sample-observations=100.
+argo submit argo/codif-pipeline.yaml -p sample-annotations=100
 ```
