@@ -3,38 +3,34 @@ title: "Les données"
 subtitle: "Sources mobilisées par le pipeline de codification COICOP"
 ---
 
-> 🚧 **Page en construction (squelette).** Compléter chaque section ci-dessous.
+> 🚧 **Page en construction.
+
 
 ## Vue d'ensemble
 
-Le pipeline mobilise plusieurs sources de données, en entrée comme en référence.
+Le pipeline mobilise plusieurs fichiers **en entrée** (sources externes, non produites par
+le pipeline lui-même). Tous résident dans le bucket S3 `projet-budget-famille`. 
 
-| Source | Rôle | Format | Localisation |
-|---|---|---|---|
-| Annotations BdF 2024 | Vérité terrain / KB | parquet | S3 |
-| Annotations historiques BdF 2017 | KB (historique) | csv | S3 |
-| Suggester (liste produits) | Exemples additionnels | csv | S3 |
-| Nomenclature COICOP | Référentiel des codes | csv | S3 |
-| Observations à coder | Entrée production | parquet/csv | fourni par l'utilisateur |
+A noter que ces fichiers ne sont pas utilisées de la même manière selon qu'on utilise le pipeline en mode production (il faut coder un fichier) ou en mode évaluation (on utilise des observations déjà labellisées pour évaluer le processus).
 
-<!-- TODO: vérifier/compléter les chemins exacts et les volumétries -->
+| Fichier | Définition | Format | Path S3 | Lu par | Commentaire
+|---|--------|---|---|---|--------|
+| `annotations_test_2024.csv` | Annotations manuelles BdF 2024 (vérité terrain / KB ; sources `receipts_from_app`, `manual_from_app`, `manual_from_book`) | CSV `;` | `s3://projet-budget-famille/data/codification-manuelle-anterieure/annotations_test_2024.csv` | `preprocessing` | Base produite à partir de trois fichiers fournis par l'équipe BDF. Voir ce repo : https://git.lab.sspcloud.fr/ssplab/experimentation-bdf/construction-dataset|
+| `annotations_BDF_2017.csv` | Annotations historiques de l'enquête BdF 2017 (source `bdf_2017`, KB uniquement) | CSV `;` | `s3://projet-budget-famille/data/codification-manuelle-anterieure/annotations_BDF_2017.csv` | `preprocessing` | Utilise l'ancien millésime de la Coicop (difficilement exploitable) |
+| `liste_produits_fr_copain.csv` | Liste de produits codifiés issue du *suggester* de l'application de l'enquête — exemples additionnels de la KB des RAG | CSV | `s3://projet-budget-famille/data/input-annotation/liste_produits_fr_copain.csv` | `preprocessing`, `prune` | |
+| `liste_magasins.csv` | Table de correspondance enseigne → type de magasin | CSV | `s3://projet-budget-famille/data/input-annotation/liste_magasins.csv` | `preprocessing` | |
+| `produit_non_annotable.csv` | Liste des libellés non codables (retirés en amont) | CSV | `s3://projet-budget-famille/data/codification-manuelle-anterieure/ produit_non_annotable.csv` | `preprocessing` | |
+| `coicop-2018_envoi_rmes_20251022.csv` | Nomenclature COICOP 2018 brute (référentiel des codes + libellés) | CSV | `s3://projet-budget-famille/data/coicop-2018_envoi_rmes_20251022.csv` | `prune`, `coicop-rag` | |
+| *fichier d'observations* | Entrée de **production** : libellés à coder, sans vérité terrain (paramètre Argo `input_file`) | CSV / parquet | `s3://projet-budget-famille/data/workflow_inputs/…` (ex. `BDF_data_tickets_appli_20260320_a_codif.csv`) | `preprocessing` (mode prod) | |
 
-## Les annotations
+::: {.callout-note}
+## Deux entrées particulières
+- **Modèle TTC** : le classifieur neuronal n'est pas un fichier S3 mais un artefact MLflow,
+  référencé par le paramètre Argo `ttc-model-uri`
+  (ex. `mlflow-artifacts:/10/…/artifacts/model`), lu par `run-ttc`.
+- **Les données de caisse (ddc)** : ce sont des données récoltées dans le cadre de la production de l'IPC. Il s'agit de dépenses issues de tickets de caisse avec le code Coicop correspondant (labellisation faite via un référentiel fourni par un prestataire). Ces données sont utilisées dans le cadre de l'entraînement du modèle TTC (en dehors de ce pipeline).
+- **Source `copain`** (`s3://projet-budget-famille/data/output-annotation/`) : historiquement
+  une entrée du `preprocessing`, elle est **exclue du pipeline** — son chargement est désactivé.
+- Les listes de règles pour la codification déterministe par Regex est contenue dans le code, et non dans un fichier sur S3 (https://github.com/InseeFrLab/codif-coicop-bdf/blob/main/regex-codif/config/rules.yaml).
+:::
 
-*TODO* — décrire les sources d'annotations (`receipts_from_app`, `manual_from_app`,
-`manual_from_book`, `bdf_2017`), la colonne `source`, et les sources exclues du pipeline
-(ex. `copain`).
-
-## Le suggester
-
-*TODO* — décrire la liste produits (`liste_produits_fr_copain.csv`) et son usage comme
-exemples additionnels dans la KB des RAG.
-
-## La nomenclature COICOP
-
-*TODO* — structure des codes (niveaux 1 à 5), pruning niveau 4, table de mapping.
-
-## Conventions de stockage (S3)
-
-*TODO* — convention de chemins `s3://<bucket>/<run_date>/<run_id>/<step>/` et échanges
-inter-modules en parquet.
