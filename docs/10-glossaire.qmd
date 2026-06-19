@@ -1,0 +1,97 @@
+---
+title: "Glossaire"
+---
+
+Les termes et colonnes qui reviennent dans toute la documentation, regroupés par famille.
+
+## Concepts
+
+| Terme | Définition |
+|---|---|
+| **COICOP** | *Classification of Individual Consumption According to Purpose* — nomenclature hiérarchique des dépenses de consommation (voir [l'accueil](index.qmd#la-nomenclature-coicop-en-bref)). |
+| **BDF** | Enquête **Budget de Famille** : collecte des tickets de caisse des ménages ; chaque ligne de ticket est un produit à coder. |
+| **Mode prédiction / mode évaluation** | Prédiction : le fichier d'entrée n'a pas de vérité terrain (cas du CSV BDF) ; évaluation : une colonne `code` de référence existe et permet de calculer l'exactitude ([8. Report](08-report.qmd)). |
+| **LCS** | *Longest Common Substring* — codification par plus longue sous-chaîne commune avec un pool de libellés déjà codés ([3. Codif LCS](03-codif-lcs.qmd)). |
+| **RAG** | *Retrieval-Augmented Generation* — recherche sémantique des postes COICOP les plus proches puis choix par un LLM ([4. RAG](04-coicop-rag.qmd)). |
+| **TTC** | Classifieur neuronal de texte (package *torchTextClassifiers*), pré-entraîné sur des données de caisses ([5. TTC](05-run-ttc.qmd)). |
+| **LLM-as-judge** | Arbitrage final : un LLM compare les prédictions LCS/RAG/TTC et tranche ([6. Decide](06-decide-coicop.qmd)). |
+| **Consensus** | Court-circuit de l'arbitrage : si LCS, RAG et TTC donnent le même code et que `ttc_conf_1 ≥ 0,90`, la décision est prise **sans appel LLM** (`llm_model = "consensus"`, `llm_confiance = 5`). |
+| **Suggester** | Pool de libellés de référence **déjà codés à la main** (issu de la table COPAIN), auquel LCS compare les libellés à coder. |
+| **Pruning** | Élagage de la nomenclature : suppression du niveau 5 et repli des hiérarchies linéaires sur un **code canonique** ([4. RAG](04-coicop-rag.qmd#prune-coicop-nettoyer-la-nomenclature)). |
+| **Fil rouge** | Les quatre libellés réels du CSV BDF suivis de bout en bout dans chaque page d'étape ([accueil](index.qmd#fil-rouge)). |
+| **`run_id` / `run_date`** | Identifiant et date du run de pipeline ; ils déterminent le dossier S3 du run. À fournir explicitement pour [relancer une étape](09-lancer-une-etape.qmd). |
+
+## Codes
+
+| Code / valeur | Sens |
+|---|---|
+| `01` → `01.1.1.1` | Code COICOP « produit », du niveau 1 (section) au niveau 4 (classe, le plus fin conservé). |
+| Niveau 5 (`01.1.1.1.x`) | Poste — **supprimé** au pruning, jamais prédit par le pipeline. |
+| `98.1` | Courses / alimentation non détaillée. |
+| `98.3` | Carte bancaire (ligne « Ticket CB » standardisée). |
+| `98.4` | Prélèvement ; aussi utilisé pour `illisible`. |
+| `98.5` | Remises / réductions. |
+| `99.x` | Divers non codables. |
+| `Reprise manuelle` | Valeur **littérale** (pas un code) renvoyée par certaines règles regex : ligne à recoder à la main ([2. Codif regex](02-codif-regex.qmd#le-cas-reprise-manuelle)). |
+| Code canonique | Représentant d'une chaîne de codes repliée au pruning (table de mapping `code → code canonique`). |
+
+## Colonnes du pipeline
+
+### Produites par `preprocessing`
+
+| Colonne | Sens |
+|---|---|
+| `id` | UUID unique de la ligne, clé de jointure de toutes les étapes. |
+| `raw_product` | Libellé produit d'origine (colonne `text_column` du fichier d'entrée, ex. `NAT_DEP`). |
+| `l_pr_product` | Normalisation **légère** (minuscules, accents/ligatures retirés) — utilisée par RAG et TTC. |
+| `s_pr_product` | Normalisation **forte** (bruit, stopwords retirés) — utilisée par les regex et LCS. |
+| `shop`, `budget`, `annee`, `source` | Enseigne, montant (€), année, source — renommées depuis le mappage de colonnes. |
+| `shop_type_code` / `shop_type_name` | Type de magasin déduit de l'enseigne (supermarché, restauration rapide…). |
+| `code` | Vérité terrain COICOP (NA en mode prédiction). |
+| `_source_input_file` | Chemin du fichier d'entrée d'origine (réutilisé par `final-output`). |
+
+### Prédictions des trois modèles
+
+| Colonne | Étape | Sens |
+|---|---|---|
+| `predict_code` | `codif-regex` | Code attribué par une règle regex (`method = "REGEX"`). |
+| `lcs_code` | `codif-lcs` | Code du libellé de référence le plus proche. |
+| `lcs_distance` | `codif-lcs` | Distance LCS, `1 − maxlen/max(n1, n2)` (0 = identique). |
+| `lcs_substring` | `codif-lcs` | Plus longue sous-chaîne commune trouvée. |
+| `lcs_prop` | `codif-lcs` | Part du libellé de référence couverte par la sous-chaîne. |
+| `rag_code` | `run-rag` | Code choisi par le LLM parmi les 10 candidats Qdrant. |
+| `rag_confidence`, `codable` | `run-rag` | Confiance déclarée par le LLM ; produit jugé codable ou non. |
+| `ttc_code_1 … ttc_code_10` | `run-ttc` | Top 10 des codes prédits par le classifieur neuronal. |
+| `ttc_conf_1 … ttc_conf_10` | `run-ttc` | Confiances associées, décroissantes ; `ttc_conf_1 ≥ 0,90` conditionne le consensus. |
+
+### Décision et livrable
+
+| Colonne | Étape | Sens |
+|---|---|---|
+| `llm_code` | `decide-coicop` | Code final retenu (NA si l'appel LLM a échoué). |
+| `llm_libelle` | `decide-coicop` | Libellé COICOP recopié de la nomenclature. |
+| `llm_explication` | `decide-coicop` | Justification du choix (1 phrase). |
+| `llm_confiance` | `decide-coicop` | Score de confiance **de 1 (très faible) à 5 (très élevé)** ; 5 pour un consensus. |
+| `llm_model` | `decide-coicop` | Modèle LLM utilisé, ou `"consensus"` si court-circuit sans appel. |
+| `llm_error` | `decide-coicop` | Raison de l'échec quand `llm_code` est NA (`RateLimitError`, JSON invalide…). |
+| `predicted_code` | `final-output` | Code livré : `llm_code` s'il existe, sinon `predict_code` (regex), sinon vide. |
+| `prediction_source` | `final-output` | Origine du code : `consensus` > `regex` > `llm` > *(vide)* — un indicateur de fiabilité. |
+| `llm_comment` | `final-output` | Copie de `llm_explication` dans le fichier livré. |
+
+## Infrastructure
+
+| Terme | Rôle dans le pipeline |
+|---|---|
+| **Argo Workflows** | Orchestrateur Kubernetes : le pipeline est un DAG (`argo/codif-pipeline.yaml`), chaque étape un conteneur. |
+| **S3 (run root)** | Stockage de tous les artefacts : `s3://projet-budget-famille/data/workflow_runs/{run_date}/{run_id}/<étape>/`. |
+| **Qdrant** | Base vectorielle hébergeant la collection `coicop_lineage` (notices COICOP encodées, distance cosinus). |
+| **vLLM** | Serveur de modèles : embeddings (`qwen3-embedding-8b`) et génération (`gemma4-26b-moe`). |
+| **LLMLab** | Endpoint OpenAI-compatible utilisé par `decide-coicop` (`LLMLAB_API_KEY` / `LLMLAB_URL`). |
+| **Langfuse** | Traçage des appels LLM de `run-rag` et gestion du gabarit de prompt (`prompt-multi-level`). |
+| **MLflow** | Suivi des runs (expérience `codif-coicop-eval`) : paramètres, métriques, `report.html` en artefact ; héberge aussi le modèle TTC (`ttc-model-uri`). |
+| **DuckDB** | Lecture/écriture des parquet S3 dans les étapes Python et pour [inspecter un run](09-lancer-une-etape.qmd#déboguer-un-run). |
+| **uv** | Gestionnaire d'environnements Python : chaque sous-dossier a son `pyproject.toml`/`uv.lock`. |
+
+---
+
+Retour à l'[accueil](index.qmd)

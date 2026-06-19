@@ -1,0 +1,292 @@
+---
+title: "Le pipeline codif-coicop-bdf"
+subtitle: "Fonctionnement, sorties et pistes de consolidation — pour les mainteneurs"
+date: 2026-06-10
+lang: fr
+search: false
+format:
+  revealjs:
+    theme: default
+    slide-number: true
+    transition: fade
+    footer: "codif-coicop-bdf — documentation mainteneurs"
+    code-line-numbers: false
+    code-overflow: wrap
+    toc: false
+---
+
+## Le problème en bref
+
+L'enquête **Budget de Famille** collecte les tickets de caisse des ménages ;
+chaque ligne est un libellé **court et bruité** à rattacher à la nomenclature **COICOP** :
+
+> `Bagu. Tradition U Blé Bretagne` · `Nescafé DLC Gust ESP 30 cap 165g` · `Ticket CB` · `Illisible`
+
+- Codes hiérarchiques `01` → `01.1.1.1` (le pipeline s'arrête au **niveau 4**)
+- Codes techniques `98.x` / `99.x` pour les lignes non-produit
+- Codage manuel coûteux → le pipeline **automatise et trace** chaque décision
+
+## Architecture {.smaller}
+
+```{mermaid}
+flowchart LR
+  input[/"CSV d'entrée"/] --> PRE[preprocessing]
+  PRE -- raw_test.parquet --> REG[codif-regex]
+  PRE -.->|"suggester.parquet"| LCS
+  PRE -.-> PC[prune-coicop]
+  PC -.-> VDB[create-vector-db]
+  VDB -.->|"collection Qdrant"| RAG
+  REG -- raw_test_without_regex --> LCS[codif-lcs]
+  REG -- raw_test_without_regex --> PA[prune-annotations]
+  REG -- raw_test_without_regex --> TTC[run-ttc]
+  PA --> RAG[run-rag]
+  LCS -- raw_test_LCS --> DEC[decide-coicop]
+  RAG -- predictions --> DEC
+  TTC -- predictions --> DEC
+  DEC -- predictions --> FIN[final-output]
+  REG -- REGEX_pred --> FIN
+  DEC --> REP[report]
+  FIN --> out[/"CSV livré"/]
+  REP --> html[/report.html/]
+  style PC stroke-dasharray: 5 5
+  style VDB stroke-dasharray: 5 5
+```
+
+- **Argo Workflows** ; chaque étape = un conteneur qui `git clone` (branche `codif-pipeline`) + `uv sync`
+- Un dossier S3 par run : `…/workflow_runs/{run_date}/{run_id}/<étape>/` ; `run_id`/`run_date` passés en CLI partout
+- **Deux workflows** : `codif-pipeline.yaml` (prédiction, avec `final-output`) et `pipeline.yaml` (évaluation, entrée annotée)
+- `prune-coicop` / `create-vector-db` : sorties **partagées entre runs**, sautées par défaut (`skip-vector-db=true`)
+
+## La logique de conception
+
+Aucune méthode ne couvre tout — le pipeline en croise **quatre**, puis arbitre :
+
+| Brique | Forte sur… | Aveugle sur… |
+|---|---|---|
+| Règles regex | libellés standardisés | tout le reste (voulu) |
+| LCS | quasi-doublons du stock manuel | produits jamais vus |
+| RAG | sens, libellés inédits | coût LLM, retrieval raté |
+| TTC | volume grande distribution | hors supermarché |
+
+. . .
+
+L'arbitre **LLM-as-judge** ne travaille que sur les désaccords : le **consensus**
+court-circuite l'appel LLM. C'est le compromis coût / qualité central du pipeline.
+
+## preprocessing + codif-regex {.smaller}
+
+**preprocessing** (`preprocessing/main.py`) :
+
+- mappage de colonnes configurable (`NAT_DEP` → `raw_product`…) ; `id` UUID par ligne
+- **deux normalisations** : `l_pr_product` (légère → RAG/TTC) et `s_pr_product` (forte → regex/LCS)
+- enseigne → `shop_type_name` (jointure `liste_magasins.csv`) ; retrait des non-codables
+- écrit `raw_test.parquet` + le pool `suggester.parquet` (COPAIN, codé main)
+
+**codif-regex** (`regex-codif/`, 43 règles dans `config/rules.yaml`) :
+
+- s'applique sur `s_pr_product` ; règles **ancrées** (`^…$`), périmètre volontairement étroit
+- match → `REGEX_pred.parquet`, la ligne **sort du circuit** ; sinon → `raw_test_without_regex.parquet`
+- 2 règles renvoient le littéral **`Reprise manuelle`** — il traverse tout le pipeline jusqu'au livrable
+
+## codif-lcs (R + C++) {.smaller}
+
+Plus longue sous-chaîne commune entre le libellé et chaque entrée du pool suggester :
+
+$$\text{distance} = 1 - \frac{maxlen}{\max(n_1, n_2)}$$
+
+- égalités strictes appariées d'abord (distance 0) ; ensuite distance minimale,
+  départage par proportion couverte
+- les paires `distance > 0,8` sont **écartées dès le noyau C++**
+  (`stats-annotations/C/distance_gcd_batch_cpp.cpp`) — jamais candidates
+- produit cartésien jeu × pool : calcul **par lots parallélisés** (`furrr` + Rcpp)
+- transmet à l'arbitre : `lcs_code`, `lcs_distance`, `lcs_substring`, `lcs_prop`
+
+⚠ La couverture dépend du pool : un libellé loin de tout COPAIN n'a pas de bon candidat.
+
+## Branche RAG {.smaller}
+
+Quatre scripts dans `coicop-rag/` :
+
+1. **prune-coicop** — supprime le niveau 5, replie les hiérarchies linéaires sur un
+   **code canonique** (+ table de mapping) — partagé entre runs
+2. **create-vector-db** — notices COICOP encodées par `qwen3-embedding-8b` (dim 4096)
+   → Qdrant, collection `coicop_lineage` (cosinus), **recréée à chaque exécution**
+3. **prune-annotations** — aligne le jeu à coder sur la nomenclature prunée
+4. **run-rag** — embedding de `l_pr_product` → top-**10** Qdrant → prompt
+   (enseigne + prix + candidats) → `gemma4-26b-moe`, T=0.1, **32 appels parallèles**
+
+- ⚠ Le **gabarit de prompt n'est pas dans le dépôt** : géré dans Langfuse (`prompt-multi-level` v12)
+- `retrieved_codes.parquet` permet d'auditer le retrieval **indépendamment** de la génération
+
+## run-ttc {.smaller}
+
+Classifieur neuronal **plat** (`coicop-bdf-classifier/`, package *torchTextClassifiers*) :
+
+- tokenisation **n-grammes de caractères** (type fastText) — robuste aux abréviations
+- entraîné sur des **données de caisses** (grande distribution), fine-tuné sur le **test BDF 2024**
+  (sous-commandes `train-basic` / `fine-tune-basic`, workflow `argo/ttc-pipeline.yaml`)
+- prédiction sur `l_pr_product`, renvoie `ttc_code_1..10` + `ttc_conf_1..10`
+- modèle chargé depuis **MLflow** : paramètre de workflow `ttc-model-uri`
+  (URI d'artefact, propagé au rapport pour traçabilité)
+
+⚠ Biais connu : très fiable en supermarché, moins ailleurs — compensé par l'arbitrage.
+
+## decide-coicop — 1. le consensus
+
+`try_consensus_decision()` (`coicop-bdf-classifier/src/decide_coicop.py`) tranche
+**sans appel LLM** quand :
+
+- `ttc_conf_1 ≥ 0,90` (seuil `threshold` codé en dur), **et**
+- tous les codes disponibles (`lcs_code`, `rag_code`) **égalent** `ttc_code_1`
+
+→ `llm_model = "consensus"`, `llm_confiance = 5`, zéro token.
+
+. . .
+
+C'est le premier levier de coût : seules les lignes **hors consensus** paient un appel LLM.
+
+## decide-coicop — 2. l'arbitrage {.smaller}
+
+Pour chaque ligne en désaccord :
+
+- `filter_nomenclature()` : seules les sections L1/L2 des prédictions partent dans le
+  prompt — **×4 à ×10** de tokens en moins (~700 → 50–150 codes)
+- prompt structuré : produit + contexte d'achat + les 3 avis + nomenclature filtrée
+- réponse **JSON forcé**, validée par le schéma Pydantic `DecisionCoicop`
+  (`coicop_code`, `libelle`, `explication`, `confiance` 1–5) ; T=0, `max_tokens=512`
+- erreurs **capturées, jamais bloquantes** : `RateLimitError`, `APIStatusError`,
+  troncature, JSON invalide → `llm_code = NA` + raison dans `llm_error`
+
+**Exploitation** :
+
+- checkpoint **toutes les 50 obs** ; si `--output-file` existe → **reprise automatique**
+  (relancer la même commande après un quota épuisé)
+- debug d'une ligne : `uv run main.py decide-coicop --id <uuid> --output json …`
+- tokens et latence conservés par ligne (`llm_prompt_tokens`, `llm_latency_s`)
+
+## Les sorties d'un run {.smaller}
+
+```text
+s3://projet-budget-famille/data/workflow_runs/{run_date}/{run_id}/
+├── preprocessing/      raw_test.parquet · suggester.parquet
+├── codif-regex/        REGEX_pred.parquet · raw_test_without_regex.parquet
+├── codif-lcs/          raw_test_LCS.parquet          (lcs_code, distance, substring, prop)
+├── prune-annotations/  raw_test_without_regex_pruned.parquet
+├── run-rag/            predictions.parquet (rag_code, confidence, codable)
+│                       retrieved_codes.parquet       (audit du retrieval)
+├── run-ttc/            predictions.parquet           (ttc_code_1..10, ttc_conf_1..10)
+├── decide-coicop/      predictions.parquet           (llm_code, llm_confiance 1–5,
+│                                                      llm_model, llm_error, tokens, latence)
+├── final-output/       {nom_du_fichier_d_entrée}     ← le livrable
+└── report/             report.html
+```
+
+Tout est inspectable en place (DuckDB `read_parquet('s3://…')`) — premier réflexe de debug.
+
+## Le livrable et le rapport {.smaller}
+
+**`final-output`** : fichier d'entrée d'origine + 3 colonnes — la décision LLM prime,
+sinon le code regex, sinon vide.
+
+| `prediction_source` | Lecture |
+|---|---|
+| `consensus` | les 3 modèles d'accord — le plus sûr |
+| `regex` | règle déterministe (inclut `Reprise manuelle`) |
+| `llm` | arbitrage — croiser avec `llm_confiance` et `llm_comment` |
+| *(vide)* | non codé : échec LLM, raison dans `llm_error` (fichier decide-coicop) |
+
+**`report`** : 2 gabarits choisis automatiquement (`code` tout NULL → prédiction) —
+distribution par niveau, sources, meilleur prédicteur par code, désaccords totaux ;
+en mode évaluation : accuracy par niveau/groupe, confusion, calibration.
+
+**Traçabilité** : MLflow `codif-coicop-eval` (paramètres dont `ttc_model_uri`, métriques,
+`report.html` en artefact) + traces Langfuse (run-rag).
+
+## Opérations courantes {.smaller}
+
+```bash
+# Pipeline complet (test rapide : -p sample_size=100)
+argo submit argo/codif-pipeline.yaml -p input_file=s3://…/mon_fichier.csv \
+  -p text_column=NAT_DEP -p shop_column=MAG_DEP -p budget_column=MONT_DEP
+
+# Relancer UNE étape : --entrypoint + run_id/run_date du run d'origine (sinon dossier S3 vide !)
+argo submit argo/codif-pipeline.yaml --entrypoint decide-coicop \
+  -p run_id=codif-abc12 -p run_date=2026-03-20 -p model=gemma4-26b-moe -p concurrency=5
+
+# Reprendre le DAG là où il a échoué
+argo retry codif-abc12
+```
+
+Pièges connus :
+
+- `decide-coicop` attend les inputs **`model`/`concurrency`** (pas `decide-model`/`decide-concurrency`) ;
+  `report` attend **`experiment-name`** + `step-timings` — valider avec `--dry-run`
+- chaque étape est aussi exécutable **en local** (uv / Rscript) avec les bonnes variables d'env
+
+→ guide complet : [« Lancer une étape individuellement »](09-lancer-une-etape.qmd)
+
+# Points de vigilance et pistes
+
+## Points de vigilance actuels {.smaller}
+
+Constats vérifiés dans le code, à garder en tête :
+
+- **`llm_code` n'est jamais validé** contre la nomenclature : la validation Pydantic est
+  purement formelle → hallucination (code inexistant) possible dans le livrable
+- **Pas de retry/backoff** sur les erreurs LLM transitoires : un `RateLimitError` laisse
+  la ligne en échec ; la « relance manuelle + reprise checkpoint » fait office de retry
+- **Prompt RAG hors dépôt** (Langfuse v12) : une modif de prompt n'est ni versionnée
+  ni revue avec le code
+- **Branches git incohérentes** : `run-ttc` clone `main`, les autres étapes `codif-pipeline`
+  (déjà fusionnée dans `main`) — risque de drift silencieux
+- **MLflow éclaté** : run-rag loggue dans l'expérience `test`, report dans `codif-coicop-eval`
+- **Collection Qdrant unique**, écrasée par `create-vector-db` : pas de versionnage de la
+  nomenclature embarquée ; un run en cours pendant une recréation lirait un index incohérent
+- **README en retard** sur le code (image pré-construite `run-ttc`, DAG sans `final-output`)
+
+## Pistes — fiabilité
+
+1. **Valider `predicted_code` contre la nomenclature** en sortie de `decide-coicop` :
+   flag `code_invalide` (a minima) ou re-prompt automatique du LLM avec l'erreur
+2. **Retry avec backoff exponentiel** sur `RateLimitError` / `APIConnectionError`
+   dans `call_llm_async` — le checkpoint existant rend ça peu risqué
+3. **Boucle vertueuse** : réinjecter les codifications validées par les gestionnaires
+   dans le pool **suggester** (LCS s'améliore) et dans le **fine-tuning TTC** périodique
+4. **Suivi des non-codés** : seuil d'alerte sur la part de `llm_error` / lignes vides
+   par run (métrique MLflow déjà disponible)
+
+## Pistes — industrialisation
+
+1. **CI GitHub Actions** : smoke tests `uv run … --help` par module, `argo lint`,
+   rendu du site docs (et publication GitHub Pages)
+2. **Factoriser les manifests Argo** : `envFrom: secretRef` au lieu de ~20 `secretKeyRef`
+   copiés-collés par étape ; ou un `WorkflowTemplate` partagé
+3. **MLflow Model Registry** pour le TTC : alias (`@champion`) au lieu de l'URI
+   d'artefact brut `mlflow-artifacts:/10/cacf26…` codée dans le YAML
+4. **Unifier les branches clonées** (tout sur `main`, ou tag/commit épinglé par release)
+   et **mettre le README à jour** (ou pointer vers ce site)
+5. **Harmoniser MLflow** : une seule expérience (ou convention claire run-rag vs report)
+
+## Pistes — méthode
+
+1. **Jeu d'évaluation permanent** : un échantillon annoté stable + un run
+   `pipeline.yaml` (mode évaluation) **à chaque changement** de modèle, prompt ou règle —
+   comparaison directe dans MLflow (l'infra existe déjà)
+2. **Versionner la collection Qdrant** : nom suffixé du hash de la nomenclature
+   (`coicop_lineage_<hash>`), bascule atomique au lieu d'écrasement
+3. **Vendoriser une copie du prompt Langfuse** dans le dépôt (fallback + revue de code)
+4. **Remplacer le littéral `Reprise manuelle`** par un code technique dédié (ex. `97.x`)
+   pour garder `predicted_code` typé « code »
+5. Reprendre les éléments *out of scope* de `harmonize-io-plan.md` : purge/cycle de vie
+   des dossiers `workflow_runs/`, paramètre `source_run_id` pour `ttc-pipeline.yaml`
+
+## Pour contribuer
+
+- **Site de documentation** : une page par étape (Rôle · Entrées · Traitement ·
+  Fil rouge · Sorties), construit depuis `docs/` (`quarto render docs/`)
+- Guides : [Lancer une étape individuellement](09-lancer-une-etape.qmd) ·
+  [Glossaire](10-glossaire.qmd)
+- Dépôt : [`InseeFrLab/codif-coicop-bdf`](https://github.com/InseeFrLab/codif-coicop-bdf) —
+  chaque sous-dossier est autonome (`pyproject.toml` + `uv.lock`)
+
+**Merci — questions ?**

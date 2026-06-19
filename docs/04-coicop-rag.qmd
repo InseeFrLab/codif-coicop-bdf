@@ -92,7 +92,8 @@ Pour chaque libellé à coder (`coicop-rag/scripts/2_run_rag.py`) :
    ```
 
 4. **Génération** par le LLM (`gemma4-26b-moe`, `temperature 0.1`, `max_tokens 2048`), via
-   l'API vLLM (`VLLM_GENERATION_URL`).
+   l'API vLLM (`VLLM_GENERATION_URL`), avec **32 appels parallèles** (`llm.concurrency`
+   dans `config.yaml`).
 5. **Parsing** de la réponse JSON (`extract_json_from_response`) → `code_predict`, `codable`,
    `confidence`.
 6. **Traçage** : métriques dans MLflow (expérience `test`), traces dans Langfuse.
@@ -113,5 +114,12 @@ Pour `Max garden flowers balle surprise` (Action, 3,99 €) :
 |---|---|
 | `predictions.s3_path` | `…/{run}/run-rag/predictions.parquet` (`rag_code`, `confidence`, `codable`) |
 | `predictions.s3_path_retrieved_codes` | `…/{run}/run-rag/retrieved_codes.parquet` (top-10 candidats par produit) |
+
+::: {.callout-tip}
+`retrieved_codes.parquet` permet d'**auditer le retrieval** indépendamment de la génération :
+si le bon code n'est pas dans les 10 candidats, le problème vient de l'embedding ou de la
+nomenclature indexée — pas du LLM. C'est le premier fichier à inspecter quand `rag_code`
+semble aberrant.
+:::
 
 ➡️ Étape suivante : [5. TTC](05-run-ttc.qmd)
