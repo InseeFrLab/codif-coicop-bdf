@@ -1,18 +1,16 @@
 ---
 title: "Codification COICOP des produits BDF"
-subtitle: "Documentation pas à pas du pipeline de codification automatique"
+subtitle: "Documentation de la démarche et du pipeline de codification automatique"
 ---
 
 ## À quoi sert ce pipeline ?
 
-L'enquête **Budget de Famille (BDF)** collecte les tickets de caisse des ménages. Chaque
-ligne de ticket décrit un produit acheté par un libellé court et bruité
-(`"Bagu. Tradition U Blé Bretagne"`, `"NescafÃ© DLC Gust ESP 30 cap 165g"`, `"Illisible"`…).
+L'enquête **Budget de Famille (BDF)** vise à comprendre la structure et l'évolution de la consommation des ménages et collecte pour cela les dépenses réalisées par les ménages enquêtés. Ces dépenses remontent sous forme de libellés textuels relativement courts, souvent bruités et sémantiquement différents selon leur source (descripitions manuelles, lignes de tickets de caisse, etc.).
 
 Pour exploiter ces données, chaque libellé doit être rattaché à un poste de la nomenclature
 **COICOP** (*Classification of Individual Consumption According to Purpose*). Le faire à la
 main est coûteux : le pipeline `codif-coicop-bdf` **automatise cette codification** en
-combinant plusieurs approches (règles, similarité de chaînes, classifieur neuronal, RAG) puis
+combinant plusieurs approches (règles, similarité de chaînes, machine learning supervisé, RAG) puis
 en les arbitrant via un LLM.
 
 
@@ -39,6 +37,17 @@ produit consommable :
 | `98.5` | Remises / réductions |
 | `99.x` | Divers non codables |
 
+
+## Davantage de contexte et échéances
+
+La codification porte sur le millésime BDF 2026 (dont les questionnaires remontent progressivement au cours de l'année 2026).
+
+Les résultats consolidés doivent être transmis à Eurostat en 2028.
+
+Les travaux de mise mise en place d'un pipeline de codification automatique ont débuté à l'autonne 2025, impliquant la MoA de l'enquête, la division IPC et le SSPlab.
+
+À noter que la prochaine enquête BDF aura lieu en 2030 et il convient ainsi de rendre le processus de codification pérenne et reproductible pour pouvoir l'utiliser lors de ce prochain millésime.
+
 ## Le pipeline étape par étape
 
 Le pipeline est un **DAG Argo** (`argo/codif-pipeline.yaml`). Chaque étape lit/écrit sur S3
@@ -48,62 +57,29 @@ dans un dossier propre au run :
 s3://projet-budget-famille/data/workflow_runs/{run_date}/{run_id}/<étape>/
 ```
 
-```
-                                     ┌─→ create-vector-db ──────────────┐  (skippable)
-  preprocessing ──┐   ┌──→ prune ────┤                                  ├──→ run-rag(-annotations) ─┐
-   (input_file)   └──→┤              └─→ create-vector-db-annotations ──┘                           │
-                      └──→ codif-regex ─┬─→ codif-lcs ─────────────────────────────────────────────┼─→ decide-coicop ─→ final-output ─→ report
-                        (→ prune)       └─→ run-ttc ──────────────────────────────────────────────┘
-```
 
 | # | Étape | Rôle | Page |
 |---|---|---|---|
 | 1 | `preprocessing` | Construit toujours les annotations (complet + train/test) ; en prédiction, prépare aussi les observations à coder | [→](01-preprocessing.qmd) |
 | 2 | `codif-regex` | Code les libellés évidents par règles regex | [→](02-codif-regex.qmd) |
 | 3 | `codif-lcs` | Code par similarité de chaîne (LCS) sur un pool de référence | [→](03-codif-lcs.qmd) |
-| 4 | `prune` / `create-vector-db` / `run-rag` | Codification sémantique par RAG (pruning unifié en amont) | [→](04-coicop-rag.qmd) |
-| 5 | `run-ttc` | Classifieur neuronal basique (caisses + fine-tuning BDF 2024) | [→](05-run-ttc.qmd) |
-| 6 | `decide-coicop` | Arbitrage final LLM-as-judge entre LCS / RAG / TTC | [→](06-decide-coicop.qmd) |
-| 7 | `final-output` | Assemble le résultat utilisateur (regex + décision LLM) | [→](07-final-output.qmd) |
-| 8 | `report` | Rapport Quarto (qualité ou suivi de prédiction) | [→](08-report.qmd) |
+| 4 | `prune` / `create-vector-db` / `run-rag` | Codification sémantique par RAG sur les notices COICOP (pruning unifié en amont) | [→](04-coicop-rag.qmd) |
+| 5 | `create-vector-db-annotations` / `run-rag-annotations` | Codification par RAG sur exemples déjà codifiés (few-shot) | [→](09-rag-annotation.qmd) |
+| 6 | `run-ttc` | Classifieur neuronal basique (caisses + fine-tuning BDF 2024) | [→](05-run-ttc.qmd) |
+| 7 | `decide-coicop` | Arbitrage final LLM-as-judge entre LCS / RAG notices / RAG annotations / TTC | [→](06-decide-coicop.qmd) |
+| 8 | `final-output` | Assemble le résultat utilisateur (regex + décision LLM) | [→](07-final-output.qmd) |
+| 9 | `report` | Rapport Quarto (qualité ou suivi de prédiction) | [→](08-report.qmd) |
 
-## Le fichier d'entrée et son mappage
 
-L'exemple utilisé dans toute cette documentation est
-`BDF_data_tickets_appli_20260320_a_codif.csv` (séparateur `;`, valeurs entre guillemets) :
 
-| `ID_TICK` | `NAT_DEP` (produit) | `MONT_DEP` | `MAG_DEP` (enseigne) | `COM_DEP` |
-|---|---|---|---|---|
-| `10203_91_01` | Gasoil | 30.25 | Station Netto | Saint-Vite |
-| `10203_91_06` | Ticket CB | 40.24 | Station Netto | Saint-Vite |
-| `11622_91_08` | Bagu. Tradition U Blé Bretagne | 1.00 | U | Liffré |
-| `10521_91_03` | Moyen frite Sce Pomme Frite | 4.10 | Mc Donald's | Civrieux-d'Azergues |
-| `11165_91_01` | Illisible | 0.00 | — | — |
+## Lancer le pipeline
 
-Le pipeline n'impose pas de noms de colonnes : l'étape `preprocessing` reçoit un
-**mappage configurable** (paramètres Argo). Valeurs par défaut pour ce fichier :
+Un script d'aide est présent dans le repo : **codif-coicop-bdf/argo/argo_helper.md**.
 
-| Paramètre Argo | Valeur | Colonne pipeline produite |
-|---|---|---|
-| `input_file` | `s3://…/workflow_inputs/BDF_data_tickets_appli_20260320_a_codif.csv` | — |
-| `text_column` | `NAT_DEP` | `raw_product` (libellé à coder) |
-| `shop_column` | `MAG_DEP` | `shop` (enseigne) |
-| `budget_column` | `MONT_DEP` | `budget` (montant €) |
-| `annee_column` | *(vide)* | `annee` |
-| `source_column` | *(vide)* | `source` |
+Il donne les commandes d'installation et de lancement. Par ailleurs, le script de paramétrages du workflow se trouve ici **codif-coicop-bdf/argo/params.yaml** (il permet notamment de choisir sur quel fichier s'applique la codification, choisir entre une approche de production courante ou d'évaluation, coder sur un échantillon de produits, etc.).
 
-::: {.callout-important}
-## Mode prédiction
-Ce fichier contient des produits **à coder**, sans vérité terrain. Le pipeline tourne donc en
-**mode prédiction** : il n'y a pas de colonne `code` de référence. Les observations préparées
-sont écrites dans `observations.parquet` (l'étape `preprocessing` produit par ailleurs toujours
-les annotations train/test). Cela change la dernière
-étape (`report`), qui bascule sur `prediction_report.qmd` (suivi des prédictions) au lieu du
-rapport d'évaluation d'exactitude. Le livrable final est le fichier produit par
-[`final-output`](07-final-output.qmd).
-:::
 
-## Fil rouge
+<!-- ## Fil rouge
 
 Quatre lignes réelles du CSV sont suivies de bout en bout dans les pages suivantes :
 
@@ -123,20 +99,6 @@ arbitrées par le LLM. Voir [2. Codif regex](02-codif-regex.qmd).
 :::
 
 Chaque page d'étape reprend la même structure : **Rôle · Entrées · Traitement · Exemple sur le
-fil rouge · Sorties**.
+fil rouge · Sorties**. -->
 
-## Lancer le pipeline
 
-```bash
-# Pipeline complet (défaut : skip-vector-db=true, skip-report=false)
-argo submit argo/codif-pipeline.yaml
-
-# Sur un autre fichier d'entrée et un autre mappage de colonnes
-argo submit argo/codif-pipeline.yaml \
-  -p input_file=s3://projet-budget-famille/data/workflow_inputs/mon_fichier.csv \
-  -p text_column=NAT_DEP -p shop_column=MAG_DEP -p budget_column=MONT_DEP
-
-# Limiter à N observations à coder pour un test (sampling centralisé à codif-regex,
-# hérité par tous les classifieurs). En prod, -p sample-observations=100.
-argo submit argo/codif-pipeline.yaml -p sample-annotations=100
-```
