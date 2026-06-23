@@ -81,8 +81,105 @@ Sinon, le LLM est sollicité :
   ```
 
 Le LLM par défaut est `gemma4-26b-moe` (`decide-model`), avec `decide-concurrency=5` appels
-parallèles. L'étape **reprend** automatiquement les observations déjà traitées si on la
-relance avec le même `run_id`/`run_date` (checkpoints réguliers).
+parallèles dans le pipeline (20 par défaut en CLI). Chaque appel est borné
+(`temperature=0`, `max_tokens=512`, réponse forcée en JSON).
+
+### Exemple complet prompt → réponse
+
+::: {.callout-note collapse="true"}
+## Voir le prompt construit pour le fil rouge `Max garden flowers balle surprise`
+
+Le message *system* impose le format de sortie :
+
+```text
+Tu es un expert COICOP. Réponds UNIQUEMENT avec un objet JSON valide, sans texte
+avant ni après, respectant exactement ce schéma :
+{"coicop_code": "<code exact de la nomenclature>",
+ "libelle": "<libellé copié de la nomenclature>",
+ "explication": "<1 phrase max>", "confiance": <entier 1-5>}
+```
+
+Le message *user* est produit par `build_prompt()` (valeurs des modèles illustratives) :
+
+```text
+Tu es un expert en comptabilité nationale et en statistiques de consommation.
+Ta mission est de déterminer le code COICOP le plus approprié pour un produit acheté,
+en t'appuyant sur le contexte d'achat et les prédictions de trois modèles automatiques.
+
+═══════════════════════════════════════
+PRODUIT
+═══════════════════════════════════════
+Libellé brut       : Max garden flowers balle surprise
+Libellé normalisé  : max garden flowers balle surprise
+Enseigne           : action
+Type de magasin    : magasin discount
+Montant (€)        : 3.99
+Code de référence  : N/A
+
+═══════════════════════════════════════
+PRÉDICTIONS DES MODÈLES
+═══════════════════════════════════════
+
+[LCS — Longest Common Substring]
+  Code prédit  : 09.3.1
+  Sous-chaîne  : balle (proportion dans référence : 36%)
+  Distance     : 0.853
+
+[RAG — Retrieval-Augmented Generation]
+  Code prédit  : 09.3.1.1
+  Confiance    : 60%
+  Codable      : True
+
+[TTC — Classificateur par apprentissage profond]
+  Top 1 : 09.3.1 (confiance 41%)
+  Top 2 : 05.1.1 (confiance 22%)
+  Top 3 : 09.5.4 (confiance 8%)
+
+═══════════════════════════════════════
+NOMENCLATURE COICOP (codes valides)
+═══════════════════════════════════════
+05 — Meubles, articles de ménage et entretien courant du foyer
+05.1 — Meubles, articles d'ameublement…
+…   (nomenclature filtrée aux sections 05 et 09 : ~60 lignes au lieu de ~700)
+09.3.1 — Jeux, jouets et passe-temps
+…
+
+═══════════════════════════════════════
+INSTRUCTIONS
+═══════════════════════════════════════
+1. Choisis UN code COICOP parmi ceux listés dans la nomenclature ci-dessus.
+2. Le code doit correspondre au niveau le plus précis qui te semble justifié.
+3. Explique en 1 phrase maximum comment tu as pesé les prédictions des trois modèles
+   et tout autre indice (enseigne, type de magasin, montant).
+4. Attribue un score de confiance de 1 (très faible) à 5 (très élevé).
+```
+
+Réponse du LLM (validée par le schéma Pydantic `DecisionCoicop`) :
+
+```json
+{
+  "coicop_code": "09.3.1",
+  "libelle": "Jeux, jouets et passe-temps",
+  "explication": "Deux modèles sur trois convergent vers les jouets ; le libellé (balle surprise), l'enseigne discount et le faible montant confirment un jouet plutôt qu'un article de jardin.",
+  "confiance": 4
+}
+```
+
+On peut reproduire ce prompt pour n'importe quelle ligne avec le mode mono-observation :
+`uv run main.py decide-coicop --id <uuid> --output json …`
+(voir [Lancer une étape](09-lancer-une-etape.qmd#decide-coicop-depuis-coicop-bdf-classifier)).
+:::
+
+### Reprise et coût
+
+- **Checkpoints** : la sortie est sauvegardée toutes les **50 observations**
+  (`CHECKPOINT_EVERY`). Si `--output-file` existe déjà, l'étape **reprend** automatiquement
+  les observations non traitées — relancer la même commande (même `run_id`/`run_date`)
+  suffit après une interruption ou un quota épuisé.
+- **Coût LLM maîtrisé** : seules les lignes **hors consensus** déclenchent un appel ; le
+  filtrage de nomenclature divise le prompt par 4 à 10 ; les compteurs de tokens
+  (`llm_prompt_tokens`, `llm_completion_tokens`) et la latence (`llm_latency_s`) sont
+  conservés dans la sortie pour suivre la consommation réelle d'un run.
 
 ## Exemple sur le fil rouge
 

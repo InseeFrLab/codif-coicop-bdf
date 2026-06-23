@@ -32,18 +32,34 @@ website:
           - href: 07-final-output.qmd
             text: Final output
           - href: 08-report.qmd
-            text: Report
-      - href: ressources.qmd
-        text: Les ressources
-    tools:
-      - icon: github
-        href: https://github.com/InseeFrLab/codif-coicop-bdf
-  page-navigation: true
-  back-to-top-navigation: true
-  reader-mode: true
-  page-footer:
-    left: "INSEE — Codification COICOP BDF"
-    right: "Construit avec [Quarto](https://quarto.org)"
+            text: 8. Report
+      - text: Guides
+        menu:
+          - href: 09-lancer-une-etape.qmd
+            text: Lancer une étape individuellement
+          - href: 10-glossaire.qmd
+            text: Glossaire
+      - href: slides.qmd
+        text: Présentation
+  sidebar:
+    style: docked
+    search: true
+    contents:
+      - index.qmd
+      - section: "Étapes du pipeline"
+        contents:
+          - 01-preprocessing.qmd
+          - 02-codif-regex.qmd
+          - 03-codif-lcs.qmd
+          - 04-coicop-rag.qmd
+          - 05-run-ttc.qmd
+          - 06-decide-coicop.qmd
+          - 07-final-output.qmd
+          - 08-report.qmd
+      - section: "Guides"
+        contents:
+          - 09-lancer-une-etape.qmd
+          - 10-glossaire.qmd
 
 format:
   html:

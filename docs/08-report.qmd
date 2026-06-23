@@ -37,6 +37,16 @@ Le CSV BDF est codé **sans vérité terrain** → c'est le **mode prédiction**
 
 ## Mode prédiction (cas du CSV BDF)
 
+Sections réelles du gabarit `prediction_report.qmd`, et la question à laquelle chacune répond :
+
+| Section du rapport | Question |
+|---|---|
+| Métadonnées du run | quel run, quel fichier d'entrée, quels modèles, quelles durées d'étapes ? |
+| Distribution des prédictions par niveau COICOP | quels postes ressortent, à chaque profondeur de code ? |
+| Source des prédictions | combien de lignes codées par regex / consensus / LLM, et avec quelle confiance ? |
+| Meilleur prédicateur par code COICOP | sur les lignes arbitrées, quel modèle amont le LLM suit-il le plus souvent, code par code ? |
+| Observations à désaccord total entre les trois prédicateurs | quelles lignes étaient les plus ambiguës (LCS ≠ RAG ≠ TTC) ? |
+
 Le rapport décrit la campagne de codification réalisée, sans calcul d'exactitude :
 
 - **Répartition par source de prédiction** : nombre de lignes codées par `regex`, par
@@ -61,16 +71,27 @@ l'éventail des valeurs possibles de `predicted_code` sur la page
 ## Mode évaluation (jeu annoté)
 
 Quand une vérité terrain est disponible (jeu de test annoté, hors CSV BDF), `report.qmd`
-calcule l'**exactitude** :
+calcule l'**exactitude**. Ses sections :
 
-- accuracy par **niveau COICOP** (1 à 5) pour LCS, RAG, TTC et LLM ;
-- accuracy par **enseigne**, **type de magasin** et **quartile de budget** ;
-- **matrice de confusion** (top 20 paires `code` vs `llm_code` au niveau 4) ;
-- **calibration** : accuracy par tranche de `llm_confiance`.
+- **Métadonnées du run** ;
+- **Accuracy globale par niveau** COICOP (1 à 5) pour LCS, RAG, TTC et LLM (tableau + graphique) ;
+- **Accuracy par groupe** : niveau COICOP 1 et 2, `shop`, `shop_type_name`, **décile de `budget`** ;
+- **Analyse d'erreurs** : matrice de confusion (top 20 paires `code` vs `llm_code` au
+  niveau 4), **calibration** (accuracy par tranche de `llm_confiance`), accord entre les
+  sources amont (combien de modèles trouvent la vérité, et apport de l'arbitrage) ;
+- **Récapitulatif**.
 
 Méthodologie de l'accuracy par niveau : on tronque `code` et la prédiction aux `k` premiers
 segments ; les observations dont la vérité a moins de `k` niveaux sont exclues du dénominateur
 à ce niveau.
+
+## Rendre le rapport à la main
+
+Les gabarits lisent leurs entrées via des **variables d'environnement** plutôt que des
+paramètres Quarto : `REPORT_INPUT_PATH` (fichier de prédictions), `REPORT_DECIDE_PATH`
+(sortie `decide-coicop`, mode prédiction), `REPORT_RUN_ID`, `REPORT_RUN_DATE`. C'est
+`report/main.py` qui les positionne avant d'appeler `quarto render` ; pour itérer sur le
+gabarit en local, il suffit de les exporter soi-même puis de rendre le `.qmd` directement.
 
 ## Traçabilité MLflow
 

@@ -40,7 +40,22 @@ pour tracer quel modèle a servi à chaque run.
 ## Traitement
 
 Le classifieur est **basique (« flat »)** : il prédit directement le code COICOP à partir du
-libellé, sans cascade par niveaux. Pour chaque produit, il renvoie les **10 meilleurs** codes
+libellé, sans cascade par niveaux. Architecture
+(`coicop-bdf-classifier/src/classifiers/basic_classifier.py`, package *torchTextClassifiers*) :
+
+- **tokenisation par n-grammes de caractères** (type fastText) : robuste aux abréviations et
+  fautes des libellés de tickets (`bagu`, `tradit`…) ;
+- un **classifieur plat multi-classes** sur l'ensemble des codes COICOP vus à l'entraînement
+  (les codes techniques `98.x`/`99.x` sont exclus des données d'entraînement) ;
+- le texte passe par le même prétraitement que `s_pr_product` (unidecode, minuscules,
+  retrait du bruit et des stopwords) avant tokenisation.
+
+L'entraînement et le fine-tuning ont leurs propres sous-commandes (`train-basic`,
+`fine-tune-basic` dans `coicop-bdf-classifier/main.py`) et leur propre workflow Argo
+(`argo/ttc-pipeline.yaml`) ; le modèle entraîné est stocké dans **MLflow** et référencé par
+l'URI `ttc-model-uri`.
+
+Pour chaque produit, le classifieur renvoie les **10 meilleurs** codes
 avec leur score de confiance (`--top-k 10`).
 
 ```

@@ -1,0 +1,259 @@
+---
+title: "Lancer une étape individuellement"
+---
+
+Le pipeline complet se lance d'un seul `argo submit` (voir l'[accueil](index.qmd#lancer-le-pipeline)).
+Mais pour **déboguer**, **relancer une étape échouée** ou **itérer sur une seule brique**, on
+peut exécuter chaque étape isolément — soit via Argo, soit en local. Cette page rassemble les
+commandes vérifiées pour les deux modes.
+
+::: {.callout-important}
+## Toujours fournir `run_id` et `run_date`
+Par défaut, `run_id` vaut le **nom du workflow Argo** et `run_date` sa date de création.
+Une étape relancée isolément crée donc un **nouveau** dossier S3 vide si on ne lui passe pas
+explicitement le `run_id`/`run_date` du run d'origine — et elle ne trouvera pas ses entrées.
+Récupérez-les depuis le nom du workflow d'origine (`argo list`) ou depuis le chemin S3
+`…/workflow_runs/{run_date}/{run_id}/`.
+:::
+
+## Prérequis : secrets et variables d'environnement
+
+Via Argo, les secrets sont injectés depuis `secret-codif-coicop-bdf` (cf. `README.md`). En
+local, il faut exporter soi-même les variables requises par l'étape :
+
+| Étape | Variables d'environnement requises |
+|---|---|
+| `preprocessing`, `codif-regex`, `codif-lcs`, `final-output` | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `AWS_S3_ENDPOINT`, `AWS_ENDPOINT_URL` |
+| `prune-coicop`, `prune-annotations` | `AWS_*` + `DDC_ENCRYPTION_KEY` |
+| `create-vector-db` | `AWS_*` + `DDC_ENCRYPTION_KEY` + `LLMLAB_URL`, `LLMLAB_API_KEY` + `QDRANT_URL`, `QDRANT_API_KEY`, `QDRANT_API_PORT` |
+| `run-rag` | `AWS_*` + `DDC_ENCRYPTION_KEY` + `LLMLAB_*` + `QDRANT_*` + `MLFLOW_TRACKING_URI`, `MLFLOW_TRACKING_USERNAME`, `MLFLOW_TRACKING_PASSWORD` + `LANGFUSE_BASE_URL`, `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY` |
+| `run-ttc` | `AWS_*` + `MLFLOW_TRACKING_*` (chargement du modèle depuis MLflow) |
+| `decide-coicop` | `AWS_*` + `LLMLAB_API_KEY` (+ `LLMLAB_URL` pour un endpoint non-OpenAI) |
+| `report` | `AWS_*` + `MLFLOW_TRACKING_*` (facultatif : sans `MLFLOW_TRACKING_URI`, le log MLflow est sauté) |
+
+## Mode 1 — via Argo (`--entrypoint`)
+
+Chaque étape est un **template nommé** dans `argo/codif-pipeline.yaml`. L'option
+`--entrypoint` lance ce template seul ; ses paramètres d'entrée sont résolus **par nom**
+depuis les `-p` passés en ligne de commande.
+
+```bash
+# Étapes simples : seuls run_id / run_date sont requis
+argo submit argo/codif-pipeline.yaml --entrypoint codif-regex \
+  -p run_id=codif-abc12 -p run_date=2026-03-20
+argo submit argo/codif-pipeline.yaml --entrypoint codif-lcs \
+  -p run_id=codif-abc12 -p run_date=2026-03-20
+argo submit argo/codif-pipeline.yaml --entrypoint prune-annotations \
+  -p run_id=codif-abc12 -p run_date=2026-03-20
+
+# preprocessing : il faut aussi le fichier d'entrée et le mappage de colonnes
+argo submit argo/codif-pipeline.yaml --entrypoint preprocessing \
+  -p run_id=codif-abc12 -p run_date=2026-03-20 \
+  -p input_file=s3://projet-budget-famille/data/workflow_inputs/mon_fichier.csv \
+  -p text_column=NAT_DEP -p shop_column=MAG_DEP -p budget_column=MONT_DEP \
+  -p annee_column= -p source_column=
+
+# run-rag : sample_size / model-name sont déjà des arguments du workflow
+argo submit argo/codif-pipeline.yaml --entrypoint run-rag \
+  -p run_id=codif-abc12 -p run_date=2026-03-20 -p sample_size=100
+
+# run-ttc : ttc-model-uri a une valeur par défaut, surchargeable
+argo submit argo/codif-pipeline.yaml --entrypoint run-ttc \
+  -p run_id=codif-abc12 -p run_date=2026-03-20
+
+# final-output : reprend le mappage de colonnes pour restaurer les noms d'origine
+argo submit argo/codif-pipeline.yaml --entrypoint final-output \
+  -p run_id=codif-abc12 -p run_date=2026-03-20 \
+  -p text_column=NAT_DEP -p shop_column=MAG_DEP -p budget_column=MONT_DEP -p annee_column=
+```
+
+::: {.callout-warning}
+## Noms d'inputs ≠ noms d'arguments du workflow
+Deux templates déclarent des inputs dont le nom **diffère** des paramètres globaux du
+workflow. En `--entrypoint`, c'est le **nom de l'input du template** qu'il faut passer :
+
+```bash
+# decide-coicop : inputs "model" et "concurrency"
+# (et non decide-model / decide-concurrency)
+argo submit argo/codif-pipeline.yaml --entrypoint decide-coicop \
+  -p run_id=codif-abc12 -p run_date=2026-03-20 \
+  -p model=gemma4-26b-moe -p concurrency=5
+
+# report : inputs "experiment-name" (et non report-experiment) et "step-timings"
+argo submit argo/codif-pipeline.yaml --entrypoint report \
+  -p run_id=codif-abc12 -p run_date=2026-03-20 \
+  -p input_file= -p experiment-name=codif-coicop-eval \
+  -p sample_size= -p model-name= -p decide-model=gemma4-26b-moe \
+  -p decide-concurrency=5 -p ttc-model-uri= -p skip-vector-db=true \
+  -p skip-report=false -p step-timings='{}'
+```
+
+En cas de doute, valider avec `argo submit --dry-run …` avant de soumettre.
+:::
+
+::: {.callout-tip}
+## Relancer uniquement les étapes échouées
+Plutôt que de relancer étape par étape, `argo retry <nom-du-workflow>` reprend le DAG
+d'origine **là où il a échoué**, avec les mêmes paramètres (donc le même `run_id`).
+:::
+
+## Mode 2 — en local
+
+Chaque sous-dossier est autonome (`pyproject.toml` + `uv.lock`). Les commandes ci-dessous
+sont celles exécutées par les conteneurs Argo, à lancer depuis la racine du dépôt après avoir
+exporté les variables d'environnement du tableau ci-dessus.
+
+```bash
+RUN_ID=codif-abc12
+RUN_DATE=2026-03-20
+RUN_ROOT="s3://projet-budget-famille/data/workflow_runs/$RUN_DATE/$RUN_ID"
+```
+
+### 1. preprocessing
+
+```bash
+cd preprocessing && uv sync
+uv run main.py --run-id $RUN_ID --run-date $RUN_DATE \
+  --input-file s3://projet-budget-famille/data/workflow_inputs/mon_fichier.csv \
+  --text-column NAT_DEP --shop-column MAG_DEP --budget-column MONT_DEP
+```
+
+### 2. codif-regex
+
+```bash
+cd regex-codif && uv sync
+uv run src/main.py --run-id $RUN_ID --run-date $RUN_DATE
+```
+
+### 3. codif-lcs (R)
+
+```bash
+cd stats-annotations
+Rscript R/main.R --run-id=$RUN_ID --run-date=$RUN_DATE
+```
+
+::: {.callout-note}
+Le parsing des options de `R/main.R` impose la syntaxe `--option=valeur` (signe `=`,
+pas d'espace).
+:::
+
+### 4. Branche RAG (depuis `coicop-rag/`)
+
+```bash
+cd coicop-rag && uv sync
+
+# Partagés entre runs — à ne refaire que si la nomenclature change :
+uv run scripts/0_prunning_coicop.py  --config config/config.yaml
+uv run scripts/0_create_vector_db.py --config config/config.yaml
+
+# Propres au run :
+uv run scripts/1_prune_annotations.py --config config/config.yaml \
+  --run-id $RUN_ID --run-date $RUN_DATE
+uv run scripts/2_run_rag.py --config config/config.yaml \
+  --run-id $RUN_ID --run-date $RUN_DATE \
+  --sample_size 100 --model_name gemma4-26b-moe   # facultatifs
+```
+
+::: {.callout-note}
+Attention au mélange de styles : `2_run_rag.py` attend `--run-id`/`--run-date` (tirets)
+mais `--sample_size`/`--model_name` (tirets bas).
+:::
+
+### 5. run-ttc (depuis `coicop-bdf-classifier/`)
+
+```bash
+cd coicop-bdf-classifier && uv sync
+uv run main.py predict-basic \
+  --model "mlflow-artifacts:/10/cacf2603514b4887bbfb77e2654c9bc1/artifacts/model" \
+  --file   "$RUN_ROOT/codif-regex/raw_test_without_regex.parquet" \
+  --output "$RUN_ROOT/run-ttc/predictions.parquet" \
+  --text-column l_pr_product --top-k 10
+```
+
+L'URI du modèle est le paramètre de workflow `ttc-model-uri` (cf. `argo/codif-pipeline.yaml`).
+
+### 6. decide-coicop (depuis `coicop-bdf-classifier/`)
+
+```bash
+uv run main.py decide-coicop \
+  --lcs-file "$RUN_ROOT/codif-lcs/raw_test_LCS.parquet" \
+  --rag-file "$RUN_ROOT/run-rag/predictions.parquet" \
+  --ttc-file "$RUN_ROOT/run-ttc/predictions.parquet" \
+  --output-file "$RUN_ROOT/decide-coicop/predictions.parquet" \
+  --extra-columns-file "$RUN_ROOT/preprocessing/raw_test.parquet" \
+  --model gemma4-26b-moe --concurrency 5
+```
+
+Si `--output-file` existe déjà, l'étape **reprend automatiquement** les observations non
+traitées (checkpoint toutes les 50 observations) — relancer la même commande suffit après une
+interruption.
+
+Pour déboguer **une seule observation** (affiche le prompt et la décision, n'écrit rien) :
+
+```bash
+uv run main.py decide-coicop --id <uuid-de-la-ligne> --output json \
+  --model gemma4-26b-moe \
+  --lcs-file "$RUN_ROOT/codif-lcs/raw_test_LCS.parquet" \
+  --rag-file "$RUN_ROOT/run-rag/predictions.parquet" \
+  --ttc-file "$RUN_ROOT/run-ttc/predictions.parquet"
+```
+
+### 7. final-output
+
+```bash
+cd final-output && uv sync
+uv run main.py --run-id $RUN_ID --run-date $RUN_DATE \
+  --text-column NAT_DEP --shop-column MAG_DEP --budget-column MONT_DEP
+```
+
+### 8. report
+
+```bash
+cd report && uv sync
+uv run main.py --run-id $RUN_ID --run-date $RUN_DATE \
+  --experiment-name codif-coicop-eval
+```
+
+Le mode (évaluation ou prédiction) est détecté automatiquement (voir
+[8. Report](08-report.qmd)). Sans `MLFLOW_TRACKING_URI`, le log MLflow est simplement sauté.
+
+## Déboguer un run
+
+**Logs des étapes.** Chaque étape tourne dans son pod :
+
+```bash
+argo list                          # retrouver le workflow
+argo get  <nom-du-workflow>        # statut du DAG, étape par étape
+argo logs <nom-du-workflow>        # logs agrégés (ou --container main, -f pour suivre)
+```
+
+**Inspecter les fichiers intermédiaires sur S3.** Toutes les sorties d'étapes sont des
+parquet sous `$RUN_ROOT/<étape>/`. DuckDB permet de les interroger directement :
+
+```python
+import duckdb, os
+con = duckdb.connect()
+con.execute(f"""
+    CREATE SECRET (TYPE S3,
+        KEY_ID '{os.environ["AWS_ACCESS_KEY_ID"]}',
+        SECRET '{os.environ["AWS_SECRET_ACCESS_KEY"]}',
+        SESSION_TOKEN '{os.environ["AWS_SESSION_TOKEN"]}',
+        ENDPOINT '{os.environ["AWS_S3_ENDPOINT"]}',
+        URL_STYLE 'path');
+""")
+con.sql(f"SELECT * FROM read_parquet('{RUN_ROOT}/decide-coicop/predictions.parquet') LIMIT 10")
+```
+
+**Comprendre un code manquant.** Dans le fichier livré, `predicted_code` vide signifie
+« ni regex, ni LLM ». La raison de l'échec LLM est dans la colonne **`llm_error`** de
+`$RUN_ROOT/decide-coicop/predictions.parquet`
+(cf. [6. Decide](06-decide-coicop.qmd#que-peut-renvoyer-la-décision)).
+
+**Tracer les appels LLM.** Les appels de `run-rag` sont tracés dans **Langfuse**
+(prompt, réponse, latence par produit). Les paramètres et métriques de chaque run sont
+loggués dans **MLflow** (expérience `codif-coicop-eval`) par l'étape `report`, avec le
+`report.html` en artefact.
+
+---
+
+Retour à l'[accueil](index.qmd)
