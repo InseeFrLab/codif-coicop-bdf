@@ -48,8 +48,21 @@ rules:
     code: "11.1.2"
 ```
 
-Le fichier contient une quarantaine de règles. Quelques codes spéciaux apparaissent :
+Le fichier contient **43 règles**. Quelques codes spéciaux apparaissent :
 `"Reprise manuelle"` (à recoder à la main) et les codes techniques `98.x` / `99.x`.
+
+### Le cas « Reprise manuelle »
+
+Deux des 43 règles ne renvoient pas un code COICOP mais le **littéral `"Reprise manuelle"`** :
+des libellés reconnus comme réels mais impossibles à coder automatiquement de façon fiable.
+Ce littéral se comporte ensuite comme n'importe quel code regex :
+
+- la ligne est considérée **codée** (elle ne passe pas par les modèles ni par le LLM) ;
+- la valeur traverse le pipeline telle quelle jusqu'à la colonne `predicted_code` du fichier
+  livré, avec `prediction_source = "regex"` (voir le
+  [tableau des valeurs possibles](07-final-output.qmd#quelles-valeurs-pour-predicted_code)) ;
+- côté aval, il faut donc **filtrer `predicted_code == "Reprise manuelle"`** pour constituer
+  la pile de recodage humain.
 
 ### Application
 

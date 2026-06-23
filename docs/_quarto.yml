@@ -27,6 +27,14 @@ website:
             text: 7. Final output
           - href: 08-report.qmd
             text: 8. Report
+      - text: Guides
+        menu:
+          - href: 09-lancer-une-etape.qmd
+            text: Lancer une étape individuellement
+          - href: 10-glossaire.qmd
+            text: Glossaire
+      - href: slides.qmd
+        text: Présentation
   sidebar:
     style: docked
     search: true
@@ -42,6 +50,10 @@ website:
           - 06-decide-coicop.qmd
           - 07-final-output.qmd
           - 08-report.qmd
+      - section: "Guides"
+        contents:
+          - 09-lancer-une-etape.qmd
+          - 10-glossaire.qmd
 
 format:
   html:

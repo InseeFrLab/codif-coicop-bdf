@@ -48,13 +48,44 @@ dans un dossier propre au run :
 s3://projet-budget-famille/data/workflow_runs/{run_date}/{run_id}/<étape>/
 ```
 
+Le diagramme ci-dessous montre les étapes **et les fichiers qui circulent entre elles**
+(tous au format parquet, sauf le livrable final) :
+
+```{mermaid}
+flowchart LR
+  input[/"CSV d'entrée<br/>(input_file)"/] --> PRE[preprocessing]
+  PRE -- raw_test.parquet --> REG[codif-regex]
+  PRE -.->|"suggester.parquet"| LCS
+  PRE -.-> PC[prune-coicop]
+  PC -.-> VDB[create-vector-db]
+  VDB -.->|"collection Qdrant"| RAG
+  REG -- raw_test_without_regex.parquet --> LCS[codif-lcs]
+  REG -- raw_test_without_regex.parquet --> PA[prune-annotations]
+  REG -- raw_test_without_regex.parquet --> TTC[run-ttc]
+  PA -- "…_pruned.parquet" --> RAG[run-rag]
+  LCS -- raw_test_LCS.parquet --> DEC[decide-coicop]
+  RAG -- predictions.parquet --> DEC
+  TTC -- predictions.parquet --> DEC
+  DEC -- predictions.parquet --> FIN[final-output]
+  REG -- REGEX_pred.parquet --> FIN
+  DEC -- predictions.parquet --> REP[report]
+  FIN --> out[/"CSV livré<br/>(+ predicted_code)"/]
+  REP --> html[/report.html/]
+  style PC stroke-dasharray: 5 5
+  style VDB stroke-dasharray: 5 5
 ```
-                                     ┌─→ create-vector-db ──────────────┐  (skippable)
-  preprocessing ──┐   ┌──→ prune ────┤                                  ├──→ run-rag(-annotations) ─┐
-   (input_file)   └──→┤              └─→ create-vector-db-annotations ──┘                           │
-                      └──→ codif-regex ─┬─→ codif-lcs ─────────────────────────────────────────────┼─→ decide-coicop ─→ final-output ─→ report
-                        (→ prune)       └─→ run-ttc ──────────────────────────────────────────────┘
-```
+
+Les nœuds en pointillé (`prune-coicop`, `create-vector-db`) sont **sautés par défaut**
+(`skip-vector-db=true`) : leurs sorties — nomenclature prunée et base vectorielle — sont
+partagées entre les runs.
+
+::: {.callout-note}
+## Deux variantes du pipeline
+Le dépôt contient deux workflows Argo : **`argo/codif-pipeline.yaml`** (mode **prédiction** —
+celui décrit ici, avec `final-output` pour livrer le CSV enrichi) et **`argo/pipeline.yaml`**
+(mode **évaluation** — entrée annotée, sans `final-output`, rapport d'exactitude). Les étapes
+Argo clonent la branche `codif-pipeline` du dépôt ; son contenu est fusionné dans `main`.
+:::
 
 | # | Étape | Rôle | Page |
 |---|---|---|---|
@@ -140,3 +171,8 @@ argo submit argo/codif-pipeline.yaml \
 # hérité par tous les classifieurs). En prod, -p sample-observations=100.
 argo submit argo/codif-pipeline.yaml -p sample-annotations=100
 ```
+
+Pour relancer ou déboguer **une seule étape** (via Argo ou en local), voir
+[Lancer une étape individuellement](09-lancer-une-etape.qmd). Les termes et colonnes du
+pipeline sont définis dans le [glossaire](10-glossaire.qmd). Une
+[présentation reveal.js](slides.qmd) résume le pipeline pour un public mixte.

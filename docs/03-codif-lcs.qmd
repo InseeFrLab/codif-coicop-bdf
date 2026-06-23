@@ -26,6 +26,15 @@ C'est une approche robuste pour les libellés qui ressemblent fortement à des l
 En mode prédiction, `main.R` détecte automatiquement le fichier `suggester.parquet` dédié et
 l'utilise en priorité.
 
+::: {.callout-note}
+## D'où vient le pool suggester ?
+Le pool provient de la table **COPAIN** (`liste_produits_fr_copain.csv`, dans
+`preprocessing/data/input-annotation/`) : des libellés produits **codés à la main** lors de
+campagnes antérieures. C'est `preprocessing` qui l'écrit en `suggester.parquet` dans le
+dossier du run. La couverture de LCS dépend directement de la richesse de ce pool : un
+libellé jamais vu (ou très éloigné de tout libellé du pool) n'aura pas de bon candidat.
+:::
+
 ## Traitement
 
 ### Étape 0 — égalités strictes
@@ -35,8 +44,30 @@ sont appariés directement : `distance = 0`, proportion = 1, le code du suggeste
 
 ### Étape 1 — distance LCS
 
-Pour les libellés restants, on calcule la plus longue sous-chaîne commune avec chaque libellé
-du pool, et on en déduit une distance. Pour chaque libellé à coder, on retient le candidat de
+Pour les libellés restants, on calcule la plus longue sous-chaîne commune (*longest common
+substring*, comparaison insensible à la casse) avec chaque libellé du pool, et on en déduit
+une distance :
+
+$$
+\text{distance} = 1 - \frac{\text{longueur de la plus longue sous-chaîne commune}}{\max(n_1, n_2)}
+$$
+
+où $n_1$ et $n_2$ sont les longueurs des deux libellés
+(`stats-annotations/R/fonctions.R`, noyau C++ `distance_gcd_batch_cpp.cpp`).
+
+Exemple : entre `bagu tradition u ble bretagne` (29 caractères) et `baguette tradition`
+(18 caractères), la plus longue sous-chaîne commune est `" tradition"` (10 caractères, espace
+compris) ; la distance vaut `1 − 10/29 ≈ 0,66`. Deux libellés identiques donnent une distance
+de 0.
+
+Deux garde-fous s'appliquent dès le calcul :
+
+- les paires de **distance > 0,8** sont **écartées directement** dans le noyau C++ (jamais
+  retournées comme candidates) — un candidat trop éloigné est pire que pas de candidat ;
+- le calcul est fait **par lots parallélisés** (`furrr` + Rcpp), le produit cartésien
+  jeu × pool étant volumineux.
+
+Pour chaque libellé à coder, on retient ensuite le candidat de
 **distance minimale** (départage par proportion couverte décroissante) :
 
 ```r
