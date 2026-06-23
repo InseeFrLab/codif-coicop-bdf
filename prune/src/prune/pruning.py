@@ -11,7 +11,7 @@ child codes are considered equivalent to their most aggregated parent.
 
 import logging
 import pandas as pd
-from coicop_rag.utils import truncate_code
+from prune.utils import truncate_code
 
 
 logger = logging.getLogger(__name__)

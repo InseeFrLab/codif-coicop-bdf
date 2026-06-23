@@ -4,7 +4,7 @@
 
 ###############################################################################'
 # 0 - Test égalité stricte -------
-egal_str <- data |>
+egal_str <- observations |>
   dplyr::select(id, source, annee, raw_product, s_pr_product, l_pr_product, shop, shop_type_name, budget, code) |>
   dplyr::inner_join(liste_produits |> dplyr::select(s_pr_product, code), by = "s_pr_product", suffix = c("", "_lcs")) |>
   dplyr::filter(s_pr_product != "")
@@ -43,7 +43,7 @@ extract_res <- results |>
   dplyr::group_by(id) |>
   dplyr::slice_head(n = 1) |> # il peut y avoir ds doublons, alors on prend le premier de la liste
   dplyr::ungroup() |> 
-  dplyr::left_join(data |> dplyr::select(id, source, annee, raw_product, s_pr_product, l_pr_product, shop, shop_type_name, budget, code), by = "id", suffix = c("_lcs", "")) |>
+  dplyr::left_join(observations |> dplyr::select(id, source, annee, raw_product, s_pr_product, l_pr_product, shop, shop_type_name, budget, code), by = "id", suffix = c("_lcs", "")) |>
   dplyr::bind_rows(egal_str) |> # on ajoute les égalités strictes, qui n'ont pas été ajoutées
   dplyr::group_by(id) |>
   dplyr::slice_min(distance, n = 1) |>
@@ -62,7 +62,7 @@ extract_res <- extract_res |>
   ))
 
 # regardons les libellés qui n'ont pas été classés par la LCS
-no_class_lcs <- data |>
+no_class_lcs <- observations |>
   dplyr::anti_join(extract_res |> dplyr::select(id), by = "id")
 no_class_lcs |> nrow() # 51 libels ayant été classés par la méthode LCS
 
@@ -75,6 +75,7 @@ output_lcs <- extract_res |>
   dplyr::rename(predict_code = code_lcs)
 
 # Export de la table de comparaison avec la règle LCS
+message(sprintf("Export → s3://%s/%s/raw_test_LCS.parquet (%d lignes)", BUCKET, lcs_output_dir, nrow(output_lcs)))
 aws.s3::s3write_using(
   x = output_lcs,
   FUN = arrow::write_parquet,
@@ -83,7 +84,7 @@ aws.s3::s3write_using(
   opts = list("region" = "")
 )
 
-is_prediction_mode <- all(is.na(data$code))
+is_prediction_mode <- all(is.na(observations$code))
 if (!is_prediction_mode) {
 
 ###############################################################################'
@@ -105,6 +106,7 @@ comparaison[is.na(comparaison$predict_ok),] |> nrow() # 2887 NA
 # on simule, pour différentes valeurs du seuil prop_ins_2, l'évolution des bonnes pred
 
 # on exporte la table comparaison, qui sert de base de travail pour l'analyse
+message(sprintf("Export → s3://%s/%s/analyse_codif_LCS.parquet (%d lignes)", BUCKET, lcs_output_dir, nrow(comparaison)))
 aws.s3::s3write_using(
   x = comparaison,
   FUN = arrow::write_parquet,

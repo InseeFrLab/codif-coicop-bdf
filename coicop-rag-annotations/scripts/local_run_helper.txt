@@ -1,0 +1,12 @@
+cd /home/onyxia/work/codif-coicop-bdf/coicop-rag-annotations
+uv sync && mkdir -p logs
+RUN_ID="pipeline-5jqsd"
+RUN_DATE="2026-06-03"
+
+# 1. Construire la base vectorielle (annotations train + suggester)
+uv run scripts/0_build_annotation_vector_db.py --run-id "$RUN_ID" --run-date "$RUN_DATE"
+# 2. Lancer le RAG
+#    - production (prédictions seules) :
+uv run scripts/1_run_rag.py --run-id "$RUN_ID" --run-date "$RUN_DATE"
+#    - évaluation (métriques vs labels) :
+uv run scripts/1_run_rag.py --run-id "$RUN_ID" --run-date "$RUN_DATE" --skip-eval false --sample_size 10

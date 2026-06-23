@@ -28,6 +28,10 @@ def load_copain_data(s3_copain_anno, con):
     """
     Load COPAIN data (manual annotations)
 
+    CONSERVÉE COMME TRACE — la source `copain` est exclue de tout le pipeline
+    depuis 2026-06. Cette fonction n'est plus appelée par `load_data()` ; pour
+    réactiver copain, voir le bloc commenté dans `load_data()`.
+
     Args:
         s3_copain_anno : path for COPAIN annotations file
         con : connexion for duckdb database
@@ -35,6 +39,7 @@ def load_copain_data(s3_copain_anno, con):
     Return:
         anno_copain: COPAIN annotation dataframe
     """
+    logger.info(f"Chargement annotations COPAIN : {s3_copain_anno}/**/*.parquet")
     query_definition = f"SELECT product as raw_product, code, coicop, day FROM read_parquet('{s3_copain_anno}/**/*.parquet', hive_partitioning = true)"
 
     anno_copain = con.sql(query_definition).to_df()
@@ -47,6 +52,7 @@ def load_additionnal_anno(s3_add_anno, con):
     """
     Load historical annotations files from S3 files
     """
+    logger.info(f"Chargement annotations historiques : {s3_add_anno}")
     additionnal_annotations = con.sql(
         f"""
         FROM read_csv_auto(
@@ -97,6 +103,7 @@ def load_additionnal_anno(s3_add_anno, con):
 
 
 def load_old_annotations(s3_old_anno, con) -> pd.DataFrame:
+    logger.info(f"Chargement annotations BdF 2017 : {s3_old_anno}")
     old_annotations = con.sql(
         f"""
         FROM read_csv_auto(
@@ -146,6 +153,7 @@ def load_shops_mapping(s3_shop_types, con) -> pd.DataFrame:
 
     """
     # on récupère la nomenclature des enseignes qui ont été déjà codées dans l'input des tickets de caisse
+    logger.info(f"Chargement mapping enseignes : {s3_shop_types}")
     shops_mapping = con.sql(
         f"FROM read_csv_auto('{s3_shop_types}') "
         'SELECT DISTINCT shop, code_mag as shop_type_code, "Nomen_mag" as shop_type_name'
@@ -193,7 +201,7 @@ def load_data(config, con):
     # -----------------------------------------------------------------------
 
     (
-        S3_COPAIN_ANNOTATIONS,
+        S3_COPAIN_ANNOTATIONS,  # inutilisé — copain exclu du pipeline (cf. bloc ci-dessous)
         S3_ADDITIONAL_ANNOTATIONS,
         S3_OLD_ANNOTATIONS,
         S3_APP_ANNOTATIONS,
@@ -204,10 +212,14 @@ def load_data(config, con):
     # -----------------------------------------------------------------------
     # READING COPAIN ANNOTATIONS
     # -----------------------------------------------------------------------
-
-    # TODO : récupérer le nom des magasins
-
-    annotations_copain = load_copain_data(S3_COPAIN_ANNOTATIONS, con)
+    # COPAIN EXCLU DU PIPELINE (2026-06) : la source `copain` n'est plus chargée
+    # ni intégrée au dataset annoté consolidé. On évite ainsi de lire le gros glob
+    # S3 `output-annotation/**/*.parquet` pour rien.
+    # Pour réactiver copain : décommenter l'appel ci-dessous, le réintégrer dans le
+    # tuple de retour de load_data(), dans l'unpacking de main(), dans la signature
+    # de build_annotations() et dans SOURCES_2024 (main.py).
+    #
+    # annotations_copain = load_copain_data(S3_COPAIN_ANNOTATIONS, con)
 
     # -----------------------------------------------------------------------
     # READING HISTORICAL ANNOTATIONS
@@ -232,6 +244,7 @@ def load_data(config, con):
     # READING SUGGESTER LIST
     # -----------------------------------------------------------------------
 
+    logger.info(f"Chargement suggester (liste produits) : {S3_APP_ANNOTATIONS}")
     suggester = con.sql(f"""
         SELECT
             DISTINCT code, product as raw_product, coicop
@@ -242,10 +255,12 @@ def load_data(config, con):
     suggester["annee"] = 2017
 
     # Reading uncodable products
+    logger.info(f"Chargement produits non codables : {S3_UNCODABLE_PRODUCTS}")
     uncodable_products = con.sql(f"""
         SELECT
             DISTINCT produit AS raw_product
         FROM read_csv_auto('{S3_UNCODABLE_PRODUCTS}')
         """).to_df()["raw_product"].tolist()
 
-    return annotations_copain, annotations_hors_copain, suggester, shops_mapping, uncodable_products, annotations_old
+    # copain retiré du tuple de retour (exclu du pipeline — cf. bloc COPAIN ci-dessus).
+    return annotations_hors_copain, suggester, shops_mapping, uncodable_products, annotations_old
