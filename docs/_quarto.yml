@@ -4,27 +4,33 @@ project:
 
 website:
   title: "Codification COICOP — BDF"
-  description: "Documentation pas à pas du pipeline de codification automatique des produits BDF selon la nomenclature COICOP."
+  description: "Documentation du pipeline de codification automatique des produits BDF selon la nomenclature COICOP."
   navbar:
     left:
       - href: index.qmd
-        text: Accueil
-      - text: Étapes
+        text: Introduction
+      - href: donnees.qmd
+        text: Les données
+      - text: Le processus
         menu:
+          - href: 00-generalites.qmd
+            text: Généralités
           - href: 01-preprocessing.qmd
-            text: 1. Preprocessing
+            text: Le preprocessing
           - href: 02-codif-regex.qmd
-            text: 2. Codif regex
+            text: La codification par regex
           - href: 03-codif-lcs.qmd
-            text: 3. Codif LCS
-          - href: 04-coicop-rag.qmd
-            text: 4. RAG (prune, vector-db, run-rag)
+            text: LCS
           - href: 05-run-ttc.qmd
-            text: 5. TTC
+            text: TTC
+          - href: 04-coicop-rag.qmd
+            text: RAG sur COICOP
+          - href: 09-rag-annotation.qmd
+            text: RAG sur annotation
           - href: 06-decide-coicop.qmd
-            text: 6. Decide (LLM-as-judge)
+            text: Étape de réconciliation finale
           - href: 07-final-output.qmd
-            text: 7. Final output
+            text: Final output
           - href: 08-report.qmd
             text: 8. Report
       - text: Guides
@@ -57,11 +63,17 @@ website:
 
 format:
   html:
-    theme: cosmo
+    theme:
+      light: [flatly, brand.scss]
+      dark: [darkly, brand.scss]
     toc: true
     toc-depth: 3
     toc-title: "Sur cette page"
     code-copy: true
     code-overflow: wrap
     number-sections: false
+    anchor-sections: true
+    smooth-scroll: true
+    link-external-icon: true
+    link-external-newwindow: true
     lang: fr

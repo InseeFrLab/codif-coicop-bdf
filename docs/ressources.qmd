@@ -1,0 +1,20 @@
+---
+title: "Les ressources"
+subtitle: "Liens utiles, outils et contacts du projet"
+---
+
+
+## Code et documentation
+
+- **Dépôt GitHub** : <https://github.com/InseeFrLab/codif-coicop-bdf>
+
+- **Présentation du projet à ISI 2026** : <https://github.com/Lagaims/prez-coicop-isi>
+
+## Nomenclature COICOP (références externes)
+
+https://www.insee.fr/fr/metadonnees/coicop2018/division/01?champRecherche=true
+
+## Application Copain (solution OJS pour faire de l'annotation)
+
+- App : https://ssplab.pages.lab.sspcloud.fr/experimentation-bdf/copain/
+- Code : https://git.lab.sspcloud.fr/ssplab/experimentation-bdf/copain/pages#overview
