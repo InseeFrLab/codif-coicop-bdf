@@ -41,6 +41,8 @@ website:
             text: Glossaire
       - href: slides.qmd
         text: Présentation
+      - href: ressources.qmd
+        text: Les ressources
   sidebar:
     style: docked
     search: true
