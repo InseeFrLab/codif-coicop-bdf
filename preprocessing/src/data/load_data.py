@@ -187,7 +187,7 @@ def load_input_file(path: str, con) -> pd.DataFrame:
     if ext.endswith(".parquet"):
         df = con.sql(f"SELECT * FROM read_parquet('{path}')").to_df()
     else:
-        df = con.sql(f"SELECT * FROM read_csv_auto('{path}', delim=';', nullstr='NA')").to_df()
+        df = con.sql(f"SELECT * FROM read_csv_auto('{path}', delim=';', nullstr='NA', types={{'ID_SABIANE': 'VARCHAR'}})").to_df()
 
     return df
 
