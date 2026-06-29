@@ -1,6 +1,6 @@
 ---
 title: "Rapport de prédiction COICOP"
-subtitle: "Distribution des prédictions et analyse du consensus"
+subtitle: "Distribution des prédictions, accords entre classifieurs et arbitrage du juge LLM"
 format:
   html:
     toc: true
@@ -20,6 +20,7 @@ jupyter: python3
 ```{python}
 # | tags: [setup]
 import os
+from collections import Counter
 from textwrap import dedent
 
 import duckdb
@@ -82,14 +83,64 @@ source_input_file = (
     else None
 )
 
-LEVEL_WIDTHS = [2, 4, 6, 8, 10]
-LEVEL_NAMES  = ["L1 (2 pos.)", "L2 (4 pos.)", "L3 (6 pos.)", "L4 (8 pos.)", "L5 (10 pos.)"]
+# ── Niveaux COICOP ────────────────────────────────────────────────────────────
+# Un code COICOP est hiérarchique et pointé (ex. « 01.1.2.3.4 »). Le niveau Lk
+# correspond aux k premières composantes. Le nombre de *positions* (chiffres) vaut
+# 2 pour L1 (la division, ex. « 01 ») puis augmente de 1 à chaque niveau : 2, 3, 4,
+# 5, 6 — et non 2, 4, 6, 8, 10 (qui comptait à tort les points).
+LEVELS = [1, 2, 3, 4, 5]
+LEVEL_POS = {1: 2, 2: 3, 3: 4, 4: 5, 5: 6}
+LEVEL_NAMES = {lvl: f"L{lvl} ({LEVEL_POS[lvl]} pos.)" for lvl in LEVELS}
 
+
+def at_level(series: pd.Series, level: int) -> pd.Series:
+    """Tronque des codes COICOP pointés au niveau hiérarchique demandé (1–5)."""
+    s = series.astype("string")
+    return s.str.split(".").str[:level].str.join(".")
+
+
+# ── Classifieurs amont (détectés dynamiquement) ───────────────────────────────
+# Le pipeline produit jusqu'à 4 prédictions par observation : LCS (plus longue
+# sous-chaîne commune), RAG sur notice, RAG sur exemples annotés (ragann), et TTC
+# (réseau de neurones). Le RAG-annotations a été ajouté après la première version
+# de ce rapport : on ne l'inclut que s'il est présent dans les données.
+_CANDIDATE_PREDICTORS = [
+    ("LCS", "lcs_code"),
+    ("RAG", "rag_code"),
+    ("RAG-ann", "ragann_code"),
+    ("TTC", "ttc_code_1"),
+]
 PREDICTORS = {
-    "LCS": "lcs_code",
-    "RAG": "rag_code",
-    "TTC": "ttc_code_1",
+    name: col
+    for name, col in _CANDIDATE_PREDICTORS
+    if df_decide is not None and col in df_decide.columns
 }
+PRED_COLS = list(PREDICTORS.values())
+N_PRED = len(PREDICTORS)
+
+# Libellés de colonnes lisibles pour les tableaux d'exemples
+COL_LABELS = {
+    "raw_product": "Produit",
+    "llm_code": "LLM (juge)",
+    "llm_confiance": "Confiance",
+    "llm_explication": "Explication LLM",
+    "ttc_code_2": "TTC top2",
+    "ttc_code_3": "TTC top3",
+}
+COL_LABELS.update({col: name for name, col in PREDICTORS.items()})
+
+# Sous-ensembles utiles sur df_decide :
+#   _is_consensus  : décision prise sans appel LLM (les modèles s'accordaient déjà)
+#   _is_arbitrated : décision réellement arbitrée par le LLM (cas difficiles)
+if df_decide is not None:
+    df_decide = df_decide.copy()
+    df_decide["_is_consensus"] = (
+        df_decide["llm_model"] == "consensus" if "llm_model" in df_decide.columns else False
+    )
+    df_decide["_is_decided"] = (
+        df_decide["llm_code"].notna() if "llm_code" in df_decide.columns else False
+    )
+    df_decide["_is_arbitrated"] = df_decide["_is_decided"] & ~df_decide["_is_consensus"]
 ```
 
 ## Métadonnées du run
@@ -101,6 +152,7 @@ PREDICTORS = {
 | Fichier d'entrée | `{python} source_input_file if source_input_file else "—"` |
 | Fichier de sortie final | `{python} INPUT` |
 | Observations totales | `{python} f"{n_total:,}".replace(",", " ")` |
+| Classifieurs amont | `{python} ", ".join(PREDICTORS) if PREDICTORS else "—"` |
 | Classées par regex | `{python} f"{n_regex:,} ({n_regex/n_total*100:.1f} %)".replace(",", " ") if n_total else "—"` |
 | Consensus automatique | `{python} f"{n_consensus:,} ({n_consensus/n_total*100:.1f} %)".replace(",", " ") if n_total else "—"` |
 | Arbitrées par le LLM | `{python} f"{n_llm:,} ({n_llm/n_total*100:.1f} %)".replace(",", " ") if n_total else "—"` |
@@ -109,14 +161,14 @@ PREDICTORS = {
 ## Distribution des prédictions par niveau COICOP
 
 ```{python}
-def distribution_table(n_chars):
-    col = df["predicted_code"].dropna().str[:n_chars]
+def distribution_table(level):
+    col = at_level(df["predicted_code"].dropna(), level)
     counts = col.value_counts().reset_index()
     counts.columns = ["code", "nb_obs"]
 
-    if df_decide is not None and "llm_libelle" in df_decide.columns:
+    if df_decide is not None and "llm_libelle" in df_decide.columns and "llm_code" in df_decide.columns:
         tmp = df_decide[df_decide["llm_code"].notna()].copy()
-        tmp["_lvl"] = tmp["llm_code"].str[:n_chars]
+        tmp["_lvl"] = at_level(tmp["llm_code"], level)
         libelles = (
             tmp.groupby("_lvl")["llm_libelle"]
             .agg(lambda s: s.mode().iloc[0] if not s.mode().empty else "")
@@ -134,9 +186,9 @@ def distribution_table(n_chars):
 ```
 
 ```{python}
-for w, name in zip(LEVEL_WIDTHS, LEVEL_NAMES):
-    tbl = distribution_table(w)
-    display(Markdown(f"### Niveau {name}"))
+for lvl in LEVELS:
+    tbl = distribution_table(lvl)
+    display(Markdown(f"### Niveau {LEVEL_NAMES[lvl]}"))
     display(Markdown(tbl.to_markdown(index=False)))
 ```
 
@@ -183,134 +235,323 @@ if df_decide is not None and "llm_confiance" in df_decide.columns and n_llm > 0:
         display(Markdown(conf_by_src.to_markdown()))
 ```
 
-## Meilleur prédicateur par code COICOP (observations arbitrées par le LLM)
+## Accord entre les classifieurs
 
-*Pour chaque groupe COICOP de niveau L2, taux d'accord de chaque prédicateur avec la décision LLM, sur les observations arbitrées (hors consensus et hors regex).*
+*Structure de l'accord entre les prédictions des classifieurs amont (avant arbitrage). Pour chaque observation où tous les classifieurs ont produit un code, on regarde combien proposent exactement le même : accord total, accords partiels, ou désaccord total.*
 
 ```{python}
-if df_decide is None:
-    display(Markdown("*Données de décision non disponibles.*"))
-elif n_llm == 0:
-    display(Markdown("*Aucune observation arbitrée par le LLM.*"))
+if df_decide is None or N_PRED < 2:
+    display(Markdown("*Données de décision insuffisantes pour cette analyse.*"))
 else:
-    llm_ids = df[df["prediction_source"] == "llm"][["id"]]
-    non_cons = llm_ids.merge(
-        df_decide[["id", "lcs_code", "rag_code", "ttc_code_1", "llm_code"]],
-        on="id", how="left",
+    complete = df_decide.dropna(subset=PRED_COLS).copy()
+    n_complete = len(complete)
+    n_incomplete = len(df_decide) - n_complete
+
+    def signature(row):
+        codes = [str(row[c]) for c in PRED_COLS]
+        return tuple(sorted(Counter(codes).values(), reverse=True))
+
+    def sig_label(sig):
+        k = sum(sig)
+        if sig[0] == k:
+            return f"Accord total ({k}/{k})"
+        if len(sig) == k:
+            return f"Désaccord total ({k} codes distincts)"
+        return f"{sig[0]} d'accord ({'+'.join(map(str, sig))})"
+
+    complete["_sig"] = complete.apply(signature, axis=1)
+    complete["_sig_label"] = complete["_sig"].apply(sig_label)
+
+    sig_counts = complete["_sig_label"].value_counts().reset_index()
+    sig_counts.columns = ["Configuration (code exact)", "Nb obs."]
+    sig_counts["% obs. complètes"] = (
+        sig_counts["Nb obs."] / n_complete * 100
+    ).round(1).astype(str) + " %"
+
+    msg = (
+        f"**{n_complete:,}** observations ont les {N_PRED} prédictions renseignées"
+        .replace(",", " ")
     )
+    if n_incomplete:
+        msg += f" ({n_incomplete:,} écartées pour prédiction(s) manquante(s))".replace(",", " ")
+    display(Markdown(msg + "."))
+    display(Markdown(sig_counts.to_markdown(index=False)))
+```
 
-    non_cons["_L2"] = non_cons["llm_code"].str[:4]
+```{python}
+if df_decide is not None and N_PRED >= 2 and n_complete > 0:
+    # Répartition des configurations d'accord selon le niveau hiérarchique :
+    # plus le niveau est grossier, plus les classifieurs convergent.
+    def level_sig_distribution(level):
+        trunc = pd.DataFrame({c: at_level(complete[c], level) for c in PRED_COLS})
+        sig = trunc.apply(
+            lambda r: sig_label(tuple(sorted(Counter(r.astype(str)).values(), reverse=True))),
+            axis=1,
+        )
+        return sig.value_counts(normalize=True) * 100
 
-    rows = []
-    for grp, sub in non_cons.groupby("_L2"):
-        nb = len(sub)
-        rates = {}
-        for name, col in PREDICTORS.items():
-            if col in sub.columns:
-                rates[name] = (sub[col] == sub["llm_code"]).mean()
-            else:
-                rates[name] = np.nan
-        best = max(rates, key=lambda k: rates[k] if not pd.isna(rates[k]) else -1)
-        rows.append({
-            "Code L2": grp,
-            "Nb obs.": nb,
-            **{f"{k} ↔ LLM": f"{v*100:.0f} %" if not pd.isna(v) else "—" for k, v in rates.items()},
-            "Meilleur prédicateur": best,
-        })
+    stack = pd.DataFrame(
+        {LEVEL_NAMES[l]: level_sig_distribution(l) for l in LEVELS}
+    ).T.fillna(0.0)
+    # Ordonner les catégories du plus « accord » au plus « désaccord »
+    stack = stack[stack.sum().sort_values(ascending=False).index]
 
-    summary = pd.DataFrame(rows).sort_values("Nb obs.", ascending=False)
-
-    best_counts = summary["Meilleur prédicateur"].value_counts()
-    fig, axes = plt.subplots(1, 2, figsize=(12, 4))
-
-    axes[0].bar(best_counts.index, best_counts.values, color=["#FF5722", "#9C27B0", "#FF9800"])
-    axes[0].set_title("Nb de groupes L2 où chaque prédicateur est le meilleur")
-    axes[0].set_xlabel("Prédicateur")
-    axes[0].set_ylabel("Nb de groupes COICOP L2")
-
-    for name, col in PREDICTORS.items():
-        if f"{name} ↔ LLM" in summary.columns:
-            vals = summary[f"{name} ↔ LLM"].str.replace(" %", "").replace("—", np.nan).astype(float)
-            axes[1].scatter(summary["Nb obs."], vals, alpha=0.6, label=name)
-    axes[1].set_xlabel("Nb observations dans le groupe L2")
-    axes[1].set_ylabel("Taux d'accord avec LLM (%)")
-    axes[1].set_title("Taux d'accord avec LLM par prédicateur et groupe")
-    axes[1].legend()
-
+    fig, ax = plt.subplots(figsize=(9, 4.5))
+    bottom = np.zeros(len(stack))
+    cmap = plt.get_cmap("RdYlGn_r")
+    for i, cat in enumerate(stack.columns):
+        ax.bar(
+            stack.index, stack[cat].values, bottom=bottom,
+            label=cat, color=cmap(i / max(len(stack.columns) - 1, 1)),
+            edgecolor="white",
+        )
+        bottom += stack[cat].values
+    ax.set_ylabel("% des observations complètes")
+    ax.set_title(f"Structure de l'accord entre les {N_PRED} classifieurs par niveau COICOP")
+    ax.legend(bbox_to_anchor=(1.02, 1), loc="upper left", fontsize=8)
     plt.tight_layout()
     plt.show()
 
-    display(Markdown("**Tableau détaillé par code L2 :**"))
-    display(Markdown(summary.to_markdown(index=False)))
+    # Tableau synthétique : accord total vs désaccord total par niveau
+    rows = []
+    for lvl in LEVELS:
+        trunc = pd.DataFrame({c: at_level(complete[c], lvl) for c in PRED_COLS})
+        n_distinct = trunc.nunique(axis=1)
+        rows.append({
+            "Niveau": LEVEL_NAMES[lvl],
+            "Accord total": f"{(n_distinct == 1).mean() * 100:.1f} %",
+            "Désaccord total": f"{(n_distinct == N_PRED).mean() * 100:.1f} %",
+        })
+    display(Markdown("**Accord total / désaccord total selon le niveau :**"))
+    display(Markdown(pd.DataFrame(rows).to_markdown(index=False)))
 ```
 
-## Observations à désaccord total entre les trois prédicateurs
+```{python}
+if df_decide is not None and N_PRED >= 2 and n_complete > 0:
+    full_disagree = complete[complete["_sig"].apply(lambda s: len(s) == N_PRED)]
+    n_fd = len(full_disagree)
+    pct_fd = n_fd / n_complete * 100 if n_complete else 0
+    display(Markdown(
+        f"**Désaccord total** (les {N_PRED} classifieurs proposent {N_PRED} codes "
+        f"différents) : **{n_fd:,}** obs. ({pct_fd:.1f} %).".replace(",", " ")
+    ))
+    if n_fd > 0:
+        ex_cols = ["raw_product"] + PRED_COLS + (["llm_code"] if "llm_code" in full_disagree.columns else [])
+        ex_cols = [c for c in ex_cols if c in full_disagree.columns]
+        examples = full_disagree[ex_cols].sample(min(8, n_fd), random_state=42)
+        examples = examples.rename(columns=COL_LABELS)
+        display(Markdown(f"\n**{min(8, n_fd)} exemples tirés aléatoirement :**"))
+        display(Markdown(examples.to_markdown(index=False)))
+```
 
-*Observations pour lesquelles LCS, RAG et TTC proposent chacun un code différent.*
+## Accord de chaque classifieur avec le juge LLM
+
+*Dans quelle mesure chaque classifieur propose-t-il le même code que la décision finale du juge LLM ? La colonne « toutes décisions » inclut les cas de consensus (où, par construction, tous les classifieurs s'accordent avec le code retenu) et surestime donc l'accord ; la colonne « cas arbitrés » se restreint aux observations réellement tranchées par le LLM et reflète la qualité de chaque classifieur sur les cas difficiles.*
 
 ```{python}
-if df_decide is None:
+if df_decide is None or not PREDICTORS or "llm_code" not in df_decide.columns:
     display(Markdown("*Données de décision non disponibles.*"))
 else:
-    pred_cols = {k: v for k, v in PREDICTORS.items() if v in df_decide.columns}
+    decided = df_decide[df_decide["_is_decided"]]
+    arb = df_decide[df_decide["_is_arbitrated"]]
 
-    if len(pred_cols) < 3:
-        display(Markdown("*Colonnes de prédiction insuffisantes pour cette analyse.*"))
-    else:
-        lcs_col, rag_col, ttc_col = "lcs_code", "rag_code", "ttc_code_1"
-        sub = df_decide[[
-            "id", "raw_product", lcs_col, rag_col, ttc_col,
-            "llm_code", "llm_confiance", "llm_explication",
-        ]].dropna(subset=[lcs_col, rag_col, ttc_col])
+    names = list(PREDICTORS)
+    all_rates, arb_rates, table_rows = [], [], []
+    for name, col in PREDICTORS.items():
+        d = decided.dropna(subset=[col, "llm_code"])
+        a = arb.dropna(subset=[col, "llm_code"])
+        ar = (d[col] == d["llm_code"]).mean() * 100 if len(d) else np.nan
+        br = (a[col] == a["llm_code"]).mean() * 100 if len(a) else np.nan
+        all_rates.append(ar)
+        arb_rates.append(br)
+        table_rows.append({
+            "Classifieur": name,
+            "Accord (toutes décisions)": f"{ar:.1f} %" if not pd.isna(ar) else "—",
+            "Accord (cas arbitrés)": f"{br:.1f} %" if not pd.isna(br) else "—",
+            "Nb arbitrés évalués": len(a),
+        })
 
-        total_disagreement = (
-            (sub[lcs_col] != sub[rag_col]) &
-            (sub[lcs_col] != sub[ttc_col]) &
-            (sub[rag_col] != sub[ttc_col])
-        )
-        disag = sub[total_disagreement].copy()
+    display(Markdown(pd.DataFrame(table_rows).to_markdown(index=False)))
 
-        n_disag = len(disag)
-        n_all_pred = len(sub)
-        pct = n_disag / n_all_pred * 100 if n_all_pred else 0
+    x = np.arange(len(names))
+    width = 0.38
+    fig, ax = plt.subplots(figsize=(8, 4))
+    ax.bar(x - width / 2, [0 if pd.isna(v) else v for v in all_rates], width,
+           label="Toutes décisions", color="#90CAF9", edgecolor="white")
+    ax.bar(x + width / 2, [0 if pd.isna(v) else v for v in arb_rates], width,
+           label="Cas arbitrés", color="#1565C0", edgecolor="white")
+    ax.set_xticks(x)
+    ax.set_xticklabels(names)
+    ax.set_ylabel("Accord avec le juge (%)")
+    ax.set_title("Taux d'accord de chaque classifieur avec la décision LLM")
+    ax.legend()
+    plt.tight_layout()
+    plt.show()
+```
 
-        display(Markdown(
-            f"**{n_disag:,}** observations en désaccord total sur {n_all_pred:,} "
-            f"observations avec les 3 prédicteurs renseignés ({pct:.1f} %)."
-            .replace(",", " ")
-        ))
-
-        if n_disag > 0:
-            llm_dist = disag["llm_code"].str[:4].value_counts().head(10).reset_index()
-            llm_dist.columns = ["Code L2 (LLM)", "Nb obs."]
-            display(Markdown("\n**Top 10 codes L2 choisis par le LLM sur ces cas :**"))
-            display(Markdown(llm_dist.to_markdown(index=False)))
-
-            if "llm_confiance" in disag.columns:
-                fig, ax = plt.subplots(figsize=(6, 3))
-                conf_vals = disag["llm_confiance"].dropna().astype(int).value_counts().sort_index()
-                ax.bar(conf_vals.index, conf_vals.values, color="#E91E63", edgecolor="white")
-                ax.set_title("Confiance LLM sur les cas à désaccord total")
-                ax.set_xlabel("Score de confiance (1–5)")
-                ax.set_ylabel("Nb observations")
-                ax.xaxis.set_major_locator(mticker.MaxNLocator(integer=True))
-                plt.tight_layout()
-                plt.show()
-
-            example_cols = ["raw_product", lcs_col, rag_col, ttc_col, "llm_code"]
-            if "llm_explication" in disag.columns:
-                example_cols.append("llm_explication")
-            if "llm_confiance" in disag.columns:
-                example_cols.append("llm_confiance")
-
-            examples = disag[example_cols].sample(min(10, n_disag), random_state=42)
-            examples.columns = [
-                c.replace("lcs_code", "LCS").replace("rag_code", "RAG")
-                 .replace("ttc_code_1", "TTC").replace("llm_code", "LLM")
-                 .replace("llm_explication", "Explication LLM")
-                 .replace("llm_confiance", "Confiance")
-                for c in examples.columns
+```{python}
+if df_decide is not None and PREDICTORS and "llm_code" in df_decide.columns:
+    arb = df_decide[df_decide["_is_arbitrated"]]
+    if len(arb) > 0:
+        fig, ax = plt.subplots(figsize=(8, 4))
+        for name, col in PREDICTORS.items():
+            a = arb.dropna(subset=[col, "llm_code"])
+            if not len(a):
+                continue
+            ys = [
+                (at_level(a[col], lvl) == at_level(a["llm_code"], lvl)).mean() * 100
+                for lvl in LEVELS
             ]
-            display(Markdown(f"\n**{min(10, n_disag)} exemples tirés aléatoirement :**"))
+            ax.plot([LEVEL_NAMES[l] for l in LEVELS], ys, marker="o", label=name)
+        ax.set_ylabel("Accord avec le juge (%)")
+        ax.set_title("Accord avec le juge LLM par niveau COICOP (cas arbitrés)")
+        ax.legend()
+        plt.tight_layout()
+        plt.show()
+```
+
+### Détail par groupe COICOP L2 (cas arbitrés)
+
+*Pour chaque groupe COICOP de niveau L2, taux d'accord de chaque classifieur avec la décision LLM, sur les observations arbitrées (hors consensus et hors regex).*
+
+```{python}
+if df_decide is None or not PREDICTORS:
+    display(Markdown("*Données de décision non disponibles.*"))
+else:
+    arb = df_decide[df_decide["_is_arbitrated"]].dropna(subset=["llm_code"]).copy()
+    if len(arb) == 0:
+        display(Markdown("*Aucune observation arbitrée par le LLM.*"))
+    else:
+        arb["_L2"] = at_level(arb["llm_code"], 2)
+
+        rows = []
+        for grp, sub in arb.groupby("_L2"):
+            nb = len(sub)
+            rates = {}
+            for name, col in PREDICTORS.items():
+                s = sub.dropna(subset=[col])
+                rates[name] = (s[col] == s["llm_code"]).mean() if len(s) else np.nan
+            best = max(rates, key=lambda k: rates[k] if not pd.isna(rates[k]) else -1)
+            rows.append({
+                "Code L2": grp,
+                "Nb obs.": nb,
+                **{f"{k} ↔ LLM": f"{v*100:.0f} %" if not pd.isna(v) else "—" for k, v in rates.items()},
+                "Meilleur": best,
+            })
+
+        summary = pd.DataFrame(rows).sort_values("Nb obs.", ascending=False)
+
+        best_counts = summary["Meilleur"].value_counts()
+        fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+
+        axes[0].bar(best_counts.index, best_counts.values, color="#673AB7", edgecolor="white")
+        axes[0].set_title("Nb de groupes L2 où chaque classifieur est le meilleur")
+        axes[0].set_xlabel("Classifieur")
+        axes[0].set_ylabel("Nb de groupes COICOP L2")
+
+        for name in PREDICTORS:
+            col_lbl = f"{name} ↔ LLM"
+            if col_lbl in summary.columns:
+                vals = summary[col_lbl].str.replace(" %", "", regex=False).replace("—", np.nan).astype(float)
+                axes[1].scatter(summary["Nb obs."], vals, alpha=0.6, label=name)
+        axes[1].set_xlabel("Nb observations dans le groupe L2")
+        axes[1].set_ylabel("Taux d'accord avec LLM (%)")
+        axes[1].set_title("Accord avec le juge par classifieur et groupe L2")
+        axes[1].legend()
+
+        plt.tight_layout()
+        plt.show()
+
+        display(Markdown("**Tableau détaillé par code L2 :**"))
+        display(Markdown(summary.to_markdown(index=False)))
+```
+
+## Décisions du juge hors des prédictions des classifieurs
+
+*Cas où le code final retenu par le juge LLM ne figure dans aucune des prédictions des classifieurs. On distingue les cas où le code reste néanmoins disponible au juge via le top-2/3 du classifieur TTC, et ceux où le juge propose un code totalement inédit. Analyse restreinte aux observations réellement arbitrées (les cas de consensus retiennent par construction un code prédit).*
+
+```{python}
+if df_decide is None or not PREDICTORS or "llm_code" not in df_decide.columns:
+    display(Markdown("*Données de décision non disponibles.*"))
+else:
+    arb = df_decide[df_decide["_is_arbitrated"]].dropna(subset=["llm_code"]).copy()
+    n_arb = len(arb)
+    if n_arb == 0:
+        display(Markdown("*Aucune observation arbitrée par le LLM.*"))
+    else:
+        extra_cols = [c for c in ["ttc_code_2", "ttc_code_3"] if c in arb.columns]
+
+        def main_set(row):
+            return {str(row[c]) for c in PRED_COLS if pd.notna(row[c])}
+
+        def avail_set(row):
+            s = main_set(row)
+            for c in extra_cols:
+                if pd.notna(row[c]):
+                    s.add(str(row[c]))
+            return s
+
+        arb["_in_main"] = arb.apply(lambda r: str(r["llm_code"]) in main_set(r), axis=1)
+        arb["_in_avail"] = arb.apply(lambda r: str(r["llm_code"]) in avail_set(r), axis=1)
+
+        n_out_main = int((~arb["_in_main"]).sum())
+        n_out_avail = int((~arb["_in_avail"]).sum())
+
+        lines = [
+            f"Sur **{n_arb:,}** observations arbitrées par le LLM :".replace(",", " "),
+            "",
+            f"- **{n_out_main:,}** ({n_out_main/n_arb*100:.1f} %) ont un code final **hors** des "
+            f"{N_PRED} codes proposés par les classifieurs ;".replace(",", " "),
+        ]
+        if extra_cols:
+            lines.append(
+                f"- **{n_out_avail:,}** ({n_out_avail/n_arb*100:.1f} %) sont hors de *tous* les "
+                f"codes vus par le juge (y compris TTC top-2/3) — codes réellement inédits."
+                .replace(",", " ")
+            )
+        display(Markdown("\n".join(lines)))
+
+        # Parmi les cas hors périmètre : le juge reste-t-il dans le même groupe L2 ?
+        out = arb[~arb["_in_main"]].copy()
+        if len(out) > 0:
+            def shares_l2(row):
+                llm_l2 = ".".join(str(row["llm_code"]).split(".")[:2])
+                return any(
+                    pd.notna(row[c]) and ".".join(str(row[c]).split(".")[:2]) == llm_l2
+                    for c in PRED_COLS
+                )
+
+            out["_same_l2"] = out.apply(shares_l2, axis=1)
+            n_same = int(out["_same_l2"].sum())
+            display(Markdown(
+                f"Parmi ces {len(out):,} cas hors périmètre, **{n_same:,}** "
+                f"({n_same/len(out)*100:.1f} %) partagent malgré tout le groupe L2 d'au moins un "
+                f"classifieur (le juge affine ou généralise dans le même groupe), tandis que "
+                f"**{len(out)-n_same:,}** ({(len(out)-n_same)/len(out)*100:.1f} %) s'en écartent "
+                f"complètement.".replace(",", " ")
+            ))
+
+        # Confiance du juge selon qu'il reste ou non dans le périmètre des classifieurs
+        if "llm_confiance" in arb.columns:
+            in_conf = arb.loc[arb["_in_main"], "llm_confiance"].dropna().astype(float)
+            out_conf = arb.loc[~arb["_in_main"], "llm_confiance"].dropna().astype(float)
+            if len(in_conf) and len(out_conf):
+                display(Markdown(
+                    f"Confiance moyenne du juge : **{in_conf.mean():.2f}/5** lorsque le code "
+                    f"retenu fait partie des prédictions, contre **{out_conf.mean():.2f}/5** "
+                    f"lorsqu'il en sort."
+                ))
+
+        # Exemples de décisions hors périmètre
+        if len(out) > 0:
+            ex_cols = ["raw_product"] + PRED_COLS + extra_cols + ["llm_code"]
+            if "llm_confiance" in out.columns:
+                ex_cols.append("llm_confiance")
+            if "llm_explication" in out.columns:
+                ex_cols.append("llm_explication")
+            ex_cols = [c for c in ex_cols if c in out.columns]
+            examples = out[ex_cols].sample(min(10, len(out)), random_state=42)
+            examples = examples.rename(columns=COL_LABELS)
+            display(Markdown(f"\n**{min(10, len(out))} exemples tirés aléatoirement :**"))
             display(Markdown(examples.to_markdown(index=False)))
 ```

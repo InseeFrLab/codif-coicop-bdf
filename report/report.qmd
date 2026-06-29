@@ -1,6 +1,6 @@
 ---
 title: "Rapport de codification COICOP"
-subtitle: "Comparaison LCS / RAG / TTC / LLM et analyse d'erreurs"
+subtitle: "Comparaison LCS / RAG / RAG-annot / TTC / LLM, accords et analyse d'erreurs"
 format:
   html:
     toc: true
@@ -20,6 +20,7 @@ jupyter: python3
 ```{python}
 # | tags: [setup]
 import os
+from collections import Counter
 from textwrap import dedent
 
 import duckdb
@@ -331,78 +332,259 @@ else:
     Markdown("_Pas de valeur `llm_confiance` disponible._")
 ```
 
-### Valeur ajoutée de l'arbitrage LLM : consensus vs désaccord
+## Accord entre les classifieurs et valeur ajoutée de l'arbitrage
 
-On compare l'accuracy du LLM selon que les sources amont (LCS, RAG, RAG-annot, TTC top-1) sont d'accord ou non, tronquées au niveau 4. Les sources absentes du run sont ignorées.
+On regarde la structure de l'accord entre les sources amont (LCS, RAG, RAG-annot, TTC top-1), tronquées au niveau 4. Pour chaque configuration (accord total, accords partiels, désaccord total) on confronte l'accuracy du juge LLM à ce que les sources permettaient d'atteindre. Les sources absentes du run sont ignorées ; les observations avec moins de deux sources exploitables ne sont pas évaluées.
 
 ```{python}
 # | label: tbl-agreement
-from collections import Counter
+# Sources amont présentes dans ce run (hors llm_code final).
+PREDICTORS = {
+    name: col
+    for name, col in (
+        ("LCS", "lcs_code"),
+        ("RAG", "rag_code"),
+        ("RAG-annot", "ragann_code"),
+        ("TTC", "ttc_code_1"),
+    )
+    if col in scorable.columns
+}
+PRED_COLS = list(PREDICTORS.values())
+N_PRED = len(PREDICTORS)
 
-def key(s):
-    return s.map(lambda x: ".".join(code_parts(x)[:4]) if len(code_parts(x)) >= 4 else None)
-
-
-# Upstream source columns present in this run (excludes the final llm_code).
-SRC_COLS = [
-    c for c in ("lcs_code", "rag_code", "ragann_code", "ttc_code_1")
-    if c in scorable.columns
-]
-
-agree = scorable.assign(t=key(scorable["code"]), p=key(scorable["llm_code"]))
-for c in SRC_COLS:
-    agree[f"_{c}"] = key(scorable[c])
-agree = agree.dropna(subset=["t", "p"])
-
-
-def _source_vals(row):
-    vals = [row[f"_{c}"] for c in SRC_COLS]
-    return [v for v in vals if v is not None]
+K_EVAL = 4  # niveau cible de l'enquête
 
 
-# Nombre de sources amont qui s'accordent avec la vérité terrain
-def count_sources_correct(row):
-    return sum(1 for v in _source_vals(row) if v == row["t"])
+def keyk(s: pd.Series, k: int = K_EVAL) -> pd.Series:
+    """Tronque des codes COICOP pointés aux k premiers segments (None si trop court)."""
+    return s.map(lambda x: ".".join(code_parts(x)[:k]) if len(code_parts(x)) >= k else None)
 
 
-# Pattern d'accord entre les sources elles-mêmes (indépendamment de la vérité)
-def source_agreement_bucket(row):
-    vals = _source_vals(row)
-    n = len(vals)
-    if n < 2:
-        return "sources manquantes"
-    top = Counter(vals).most_common(1)[0][1]
-    if top == n:
-        return f"{n}/{n} d'accord"
-    if top > n / 2:
-        return f"majorité ({top}/{n})"
-    return "désaccord"
+work = scorable.assign(_truth=keyk(scorable["code"]), _llm=keyk(scorable["llm_code"]))
+for col in PRED_COLS:
+    work[f"_{col}"] = keyk(scorable[col])
+work = work.dropna(subset=["_truth", "_llm"])
+pred_keys = [f"_{c}" for c in PRED_COLS]
 
 
-agree["bucket"] = agree.apply(source_agreement_bucket, axis=1)
-agree["llm_correct"] = agree["p"] == agree["t"]
-agree["best_source_correct"] = agree.apply(count_sources_correct, axis=1) > 0
+def _src_vals(row):
+    return [row[k] for k in pred_keys if row[k] is not None]
 
+
+def agreement_signature(row):
+    vals = _src_vals(row)
+    if len(vals) < 2:
+        return None
+    return tuple(sorted(Counter(vals).values(), reverse=True))
+
+
+def sig_label(sig):
+    k = sum(sig)
+    if sig[0] == k:
+        return f"Accord total ({k}/{k})"
+    if len(sig) == k:
+        return f"Désaccord total ({k} distincts)"
+    return f"{sig[0]} d'accord ({'+'.join(map(str, sig))})"
+
+
+work["_sig"] = work.apply(agreement_signature, axis=1)
+evaluable = work[work["_sig"].notna()].copy()
+evaluable["Configuration"] = evaluable["_sig"].apply(sig_label)
+evaluable["_llm_ok"] = evaluable["_llm"] == evaluable["_truth"]
+evaluable["_any_src_ok"] = evaluable.apply(
+    lambda r: any(v == r["_truth"] for v in _src_vals(r)), axis=1
+)
+evaluable["_plurality_ok"] = evaluable.apply(
+    lambda r: Counter(_src_vals(r)).most_common(1)[0][0] == r["_truth"], axis=1
+)
+
+n_eval = len(evaluable)
 summary = (
-    agree.groupby("bucket")
+    evaluable.groupby("Configuration")
     .agg(
-        n=("llm_correct", "size"),
-        llm_accuracy=("llm_correct", "mean"),
-        une_source_au_moins_juste=("best_source_correct", "mean"),
+        n=("_llm_ok", "size"),
+        acc_llm=("_llm_ok", "mean"),
+        plurality=("_plurality_ok", "mean"),
+        any_src=("_any_src_ok", "mean"),
     )
     .reset_index()
     .sort_values("n", ascending=False)
 )
-summary["llm_accuracy"] = (100 * summary["llm_accuracy"]).round(1)
-summary["une_source_au_moins_juste"] = (100 * summary["une_source_au_moins_juste"]).round(1)
+summary["% éval."] = (100 * summary["n"] / n_eval).round(1) if n_eval else np.nan
+for c in ["acc_llm", "plurality", "any_src"]:
+    summary[c] = (100 * summary[c]).round(1)
 summary = summary.rename(columns={
-    "llm_accuracy": "accuracy LLM (%)",
-    "une_source_au_moins_juste": "≥1 source amont juste (%)",
+    "acc_llm": "accuracy LLM (%)",
+    "plurality": "code majoritaire juste (%)",
+    "any_src": "≥1 source juste (%)",
 })
+summary = summary[[
+    "Configuration", "n", "% éval.",
+    "accuracy LLM (%)", "code majoritaire juste (%)", "≥1 source juste (%)",
+]]
 Markdown(summary.to_markdown(index=False))
 ```
 
-**Lecture :** quand toutes les sources s'accordent, on attend une accuracy LLM ≈ celle des sources (le LLM ne fait que confirmer, grâce au raccourci consensus de `decide-coicop`). Sur les cas de désaccord, comparer `accuracy LLM` à `≥1 source amont juste` indique si le LLM parvient à choisir la bonne source (idéalement la première colonne s'approche de la seconde).
+```{python}
+# | label: fig-agreement
+if len(summary):
+    order = summary.sort_values("n", ascending=False)
+    x = np.arange(len(order))
+    w = 0.38
+    fig, ax = plt.subplots(figsize=(9, 4))
+    ax.bar(x - w / 2, order["accuracy LLM (%)"], w, label="accuracy LLM", color="#4C72B0")
+    ax.bar(x + w / 2, order["≥1 source juste (%)"], w, label="≥1 source juste", color="#DD8452")
+    ax.set_xticks(x)
+    ax.set_xticklabels(order["Configuration"], rotation=20, ha="right")
+    ax.set_ylim(0, 100)
+    ax.set_ylabel("%")
+    ax.set_title(f"Performance par configuration d'accord (niveau {K_EVAL})")
+    ax.legend()
+    plt.tight_layout()
+    plt.show()
+```
+
+**Lecture :** sur les cas d'accord total, l'accuracy LLM doit avoisiner celle des sources (le juge ne fait que confirmer, via le raccourci consensus de `decide-coicop`). Sur les configurations de désaccord, l'écart entre `accuracy LLM` et `≥1 source juste` mesure la capacité du juge à retrouver la bonne source quand elle existe ; l'écart avec `code majoritaire juste` indique s'il fait mieux qu'un simple vote majoritaire.
+
+## Accord de chaque classifieur avec le juge LLM
+
+Dans quelle mesure chaque classifieur propose-t-il le même code (niveau 4) que la décision finale du juge LLM ? On compare aussi l'accuracy propre du classifieur, et l'accuracy du juge selon qu'il suit ou non ce classifieur — un classifieur « suivi avec profit » est celui dont l'accord avec le juge coïncide avec une bonne accuracy.
+
+```{python}
+# | label: tbl-classifier-vs-judge
+if not PREDICTORS:
+    Markdown("_Aucune source amont disponible._")
+else:
+    rows = []
+    for name, col in PREDICTORS.items():
+        kcol = f"_{col}"
+        sub = work.dropna(subset=[kcol])
+        same = sub[kcol] == sub["_llm"]
+        rows.append({
+            "Classifieur": name,
+            "Accord avec juge (%)": round(same.mean() * 100, 1) if len(sub) else None,
+            "Accuracy classifieur (%)": round((sub[kcol] == sub["_truth"]).mean() * 100, 1) if len(sub) else None,
+            "Acc. juge si accord (%)": round((sub.loc[same, "_llm"] == sub.loc[same, "_truth"]).mean() * 100, 1) if same.any() else None,
+            "Acc. juge si désaccord (%)": round((sub.loc[~same, "_llm"] == sub.loc[~same, "_truth"]).mean() * 100, 1) if (~same).any() else None,
+        })
+    Markdown(pd.DataFrame(rows).to_markdown(index=False))
+```
+
+```{python}
+# | label: fig-classifier-vs-judge-levels
+if PREDICTORS:
+    fig, ax = plt.subplots(figsize=(8, 4))
+    for name, col in PREDICTORS.items():
+        ys = []
+        for lvl in LEVELS:
+            tk = keyk(scorable["llm_code"], lvl)
+            ck = keyk(scorable[col], lvl)
+            m = tk.notna() & ck.notna()
+            ys.append((tk[m] == ck[m]).mean() * 100 if m.any() else np.nan)
+        ax.plot([f"niv{l}" for l in LEVELS], ys, marker="o", label=name)
+    ax.set_ylabel("Accord avec le juge (%)")
+    ax.set_title("Accord classifieur ↔ juge par niveau COICOP")
+    ax.set_ylim(0, 100)
+    ax.legend()
+    plt.tight_layout()
+    plt.show()
+```
+
+## Décisions du juge hors des prédictions des classifieurs
+
+Cas où le code final retenu par le juge ne figure dans aucune prédiction des classifieurs. On distingue les codes restés accessibles via le top-2/3 de TTC et les codes totalement inédits, et — grâce à la vérité terrain — on mesure si sortir du périmètre des classifieurs aide ou nuit (accuracy niveau 4). Analyse restreinte aux observations réellement arbitrées (les consensus retiennent par construction un code prédit).
+
+```{python}
+# | label: tbl-judge-outside
+arb = scorable.copy()
+if "llm_model" in arb.columns:
+    arb = arb[(arb["llm_model"] != "consensus") & arb["llm_code"].notna()].copy()
+else:
+    arb = arb[arb["llm_code"].notna()].copy()
+
+if not PREDICTORS or len(arb) == 0:
+    display(Markdown("_Pas d'observation arbitrée par le LLM, ou aucune source amont._"))
+else:
+    extra_cols = [c for c in ["ttc_code_2", "ttc_code_3"] if c in arb.columns]
+
+    def main_set(row):
+        return {str(row[c]) for c in PRED_COLS if pd.notna(row[c])}
+
+    def avail_set(row):
+        s = main_set(row)
+        for c in extra_cols:
+            if pd.notna(row[c]):
+                s.add(str(row[c]))
+        return s
+
+    arb["_in_main"] = arb.apply(lambda r: str(r["llm_code"]) in main_set(r), axis=1)
+    arb["_in_avail"] = arb.apply(lambda r: str(r["llm_code"]) in avail_set(r), axis=1)
+    arb["_llm_ok"] = accuracy_series(arb["code"], arb["llm_code"], 4) == True  # noqa: E712
+    src_ok_cols = []
+    for c in PRED_COLS:
+        oc = f"_ok_{c}"
+        arb[oc] = accuracy_series(arb["code"], arb[c], 4) == True  # noqa: E712
+        src_ok_cols.append(oc)
+    arb["_any_src_ok"] = arb[src_ok_cols].any(axis=1)
+
+    n_arb = len(arb)
+    n_out_main = int((~arb["_in_main"]).sum())
+    n_out_avail = int((~arb["_in_avail"]).sum())
+
+    def perim(row):
+        if row["_in_main"]:
+            return "Dans les prédictions"
+        if row["_in_avail"]:
+            return "Hors prédict., vu (TTC top2/3)"
+        return "Totalement inédit"
+
+    arb["Périmètre"] = arb.apply(perim, axis=1)
+    order_p = ["Dans les prédictions", "Hors prédict., vu (TTC top2/3)", "Totalement inédit"]
+    ptbl = (
+        arb.groupby("Périmètre")
+        .agg(n=("_llm_ok", "size"), acc=("_llm_ok", "mean"), src=("_any_src_ok", "mean"))
+        .reindex(order_p)
+        .dropna(how="all")
+        .reset_index()
+    )
+    ptbl["% arbitrées"] = (100 * ptbl["n"] / n_arb).round(1)
+    ptbl["accuracy juge (%)"] = (100 * ptbl["acc"]).round(1)
+    ptbl["≥1 source juste (%)"] = (100 * ptbl["src"]).round(1)
+    ptbl["n"] = ptbl["n"].astype(int)
+
+    display(Markdown(
+        f"Sur **{n_arb:,}** observations arbitrées (vérité terrain disponible) : "
+        f"**{n_out_main:,}** ({n_out_main / n_arb * 100:.1f} %) ont un code final hors des "
+        f"{N_PRED} codes prédits, dont **{n_out_avail:,}** ({n_out_avail / n_arb * 100:.1f} %) "
+        f"totalement inédits (hors même du top-2/3 de TTC).".replace(",", " ")
+    ))
+    display(Markdown(
+        ptbl[["Périmètre", "n", "% arbitrées", "accuracy juge (%)", "≥1 source juste (%)"]]
+        .to_markdown(index=False)
+    ))
+
+    out = arb[~arb["_in_main"]]
+    if len(out):
+        missed = out[out["_any_src_ok"] & ~out["_llm_ok"]]
+        display(Markdown(
+            f"**Opportunités manquées :** parmi les {len(out):,} décisions hors périmètre, "
+            f"**{len(missed):,}** ({len(missed) / len(out) * 100:.1f} %) sont fausses au niveau 4 "
+            f"alors qu'au moins une source amont proposait le bon code — le juge a écarté une "
+            f"prédiction correcte.".replace(",", " ")
+        ))
+
+        labels = {"raw_product": "Produit", "code": "Vérité", "llm_code": "LLM (juge)",
+                  "llm_confiance": "Confiance"}
+        labels.update({c: n for n, c in PREDICTORS.items()})
+        labels.update({"ttc_code_2": "TTC top2", "ttc_code_3": "TTC top3"})
+        ex_cols = ["raw_product"] + PRED_COLS + extra_cols + ["code", "llm_code"]
+        if "llm_confiance" in out.columns:
+            ex_cols.append("llm_confiance")
+        ex_cols = [c for c in ex_cols if c in out.columns]
+        ex = out[ex_cols].sample(min(10, len(out)), random_state=42).rename(columns=labels)
+        display(Markdown(f"\n**{min(10, len(out))} exemples (juge hors périmètre) :**"))
+        display(Markdown(ex.to_markdown(index=False)))
+```
 
 ## Récapitulatif
 
