@@ -1,0 +1,18 @@
+---
+title: "Présentations"
+listing:
+  id: presentations
+  contents: cards
+  sort: "order asc"
+  categories: false
+  template: listing-grid.ejs
+page-layout: full
+toc: false
+---
+
+Supports de présentation relatifs au pipeline de codification automatique COICOP des données de l'enquête **Budget de Famille**.
+
+Les sources de chaque présentation sont dans le dépôt, sous [`docs/slides/`](https://github.com/InseeFrLab/codif-coicop-bdf/tree/main/docs/slides). Cliquez sur une carte pour ouvrir le support (il s'ouvre dans un nouvel onglet).
+
+::: {#presentations}
+:::

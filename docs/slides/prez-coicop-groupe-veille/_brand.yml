@@ -1,0 +1,11 @@
+typography:
+  fonts:
+    - family: Open Sans
+      source: google
+    - family: Arial
+      source: system
+    - family: Helvetica
+      source: system
+  base: Open Sans
+  headings: Open Sans
+  

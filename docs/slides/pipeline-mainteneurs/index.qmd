@@ -223,7 +223,7 @@ Pièges connus :
   `report` attend **`experiment-name`** + `step-timings` — valider avec `--dry-run`
 - chaque étape est aussi exécutable **en local** (uv / Rscript) avec les bonnes variables d'env
 
-→ guide complet : [« Lancer une étape individuellement »](09-lancer-une-etape.qmd)
+→ guide complet : [« Lancer une étape individuellement »](../../09-lancer-une-etape.qmd)
 
 # Points de vigilance et pistes
 
@@ -284,8 +284,8 @@ Constats vérifiés dans le code, à garder en tête :
 
 - **Site de documentation** : une page par étape (Rôle · Entrées · Traitement ·
   Fil rouge · Sorties), construit depuis `docs/` (`quarto render docs/`)
-- Guides : [Lancer une étape individuellement](09-lancer-une-etape.qmd) ·
-  [Glossaire](10-glossaire.qmd)
+- Guides : [Lancer une étape individuellement](../../09-lancer-une-etape.qmd) ·
+  [Glossaire](../../10-glossaire.qmd)
 - Dépôt : [`InseeFrLab/codif-coicop-bdf`](https://github.com/InseeFrLab/codif-coicop-bdf) —
   chaque sous-dossier est autonome (`pyproject.toml` + `uv.lock`)
 

@@ -156,5 +156,5 @@ argo submit argo/codif-pipeline.yaml -p sample-annotations=100
 
 Pour relancer ou déboguer **une seule étape** (via Argo ou en local), voir
 [Lancer une étape individuellement](09-lancer-une-etape.qmd). Les termes et colonnes du
-pipeline sont définis dans le [glossaire](10-glossaire.qmd). Une
-[présentation reveal.js](slides.qmd) résume le pipeline pour un public mixte.
+pipeline sont définis dans le [glossaire](10-glossaire.qmd). Des
+[présentations](presentations.qmd) résument le pipeline pour différents publics.
