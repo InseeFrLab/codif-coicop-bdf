@@ -18,8 +18,8 @@ import numpy as np
 from torchTextClassifiers import ModelConfig, TrainingConfig, torchTextClassifiers
 from torchTextClassifiers.tokenizers import NGramTokenizer
 
-if TYPE_CHECKING:
-    import pandas as pd
+import pandas as pd
+
 
 from ..preprocessing.data_preparation import COICOP_LEVELS
 
