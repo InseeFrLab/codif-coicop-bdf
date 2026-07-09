@@ -175,6 +175,7 @@ class BasicCOICOPClassifier:
             batch_size=self.config.batch_size,
             lr=self.config.lr,
             patience_early_stopping=self.config.patience,
+            raw_labels=False,
             save_path=save_dir or "basic_model",
             trainer_params=merged_trainer_params,
         )
@@ -284,6 +285,7 @@ class BasicCOICOPClassifier:
             batch_size=ft_batch_size,
             lr=ft_lr,
             patience_early_stopping=ft_patience,
+            raw_labels=False,
             save_path=save_dir or "basic_model_ft",
             trainer_params=ft_merged_trainer_params,
         )
@@ -321,8 +323,12 @@ class BasicCOICOPClassifier:
         if not self._is_trained:
             raise RuntimeError("Classifier must be trained before prediction.")
 
+        import torch
+
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+
         X = np.array(texts)
-        result = self.classifier.predict(X, top_k=top_k)
+        result = self.classifier.predict(X, raw_categorical_inputs=False, device=device, top_k=top_k)
 
         if top_k > 1:
             pred_indices = result["prediction"].numpy()  # (n, top_k)

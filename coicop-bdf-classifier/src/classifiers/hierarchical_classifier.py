@@ -107,12 +107,15 @@ class HierarchicalCOICOPClassifier:
 
     def _batched_predict(self, classifier, X, top_k=1):
         """Predict in batches to avoid OOM on large datasets."""
+        import torch
+
+        device = "cuda" if torch.cuda.is_available() else "cpu"
         batch_size = self.config.predict_batch_size
         all_preds = []
         all_confs = []
         for start in range(0, len(X), batch_size):
             batch = X[start:start + batch_size]
-            result = classifier.predict(batch, top_k=top_k)
+            result = classifier.predict(batch, raw_categorical_inputs=False, device=device, top_k=top_k)
             all_preds.append(result["prediction"].numpy())
             all_confs.append(result["confidence"].numpy())
         return {
@@ -305,7 +308,7 @@ class HierarchicalCOICOPClassifier:
         X = self._prepare_input_with_features(texts, parent_code_indices, confidence_buckets)
 
         # Get model predictions
-        result = classifier.predict(X, top_k=1)
+        result = classifier.predict(X, raw_categorical_inputs=False, top_k=1)
         pred_indices = result["prediction"].numpy().flatten()
         pred_confidence = result["confidence"].numpy().flatten()
 
@@ -618,6 +621,8 @@ class HierarchicalCOICOPClassifier:
                 batch_size=self.config.batch_size,
                 lr=self.config.lr,
                 patience_early_stopping=self.config.patience,
+                raw_labels=False,
+                raw_categorical_inputs=False,
                 save_path=save_path or f"hierarchical_{level_name}",
                 num_workers=self.config.num_workers,
                 dataloader_params={"pin_memory": self.config.pin_memory},
@@ -887,6 +892,8 @@ class HierarchicalCOICOPClassifier:
                     batch_size=ft_batch_size,
                     lr=ft_lr,
                     patience_early_stopping=ft_patience,
+                    raw_labels=False,
+                    raw_categorical_inputs=False,
                     save_path=save_path or f"finetune_{level_name}",
                     num_workers=self.config.num_workers,
                     dataloader_params={"pin_memory": self.config.pin_memory},
@@ -1015,7 +1022,10 @@ class HierarchicalCOICOPClassifier:
             X = self._prepare_input_with_features(texts, parent_code_indices, conf_buckets)
 
             # Predict
-            result = classifier.predict(X, top_k=top_k)
+            import torch
+
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            result = classifier.predict(X, raw_categorical_inputs=False, device=device, top_k=top_k)
             idx_to_label = self.level_idx_to_label[level_name]
 
             if top_k > 1:
