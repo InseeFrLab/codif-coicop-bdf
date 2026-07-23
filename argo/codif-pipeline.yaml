@@ -15,6 +15,10 @@ spec:
 
   arguments:
     parameters:
+      # Branche du dépôt clonée par TOUS les steps (git clone --branch ...).
+      # Défaut = main ; surcharger pour tester une feature branch sans merge.
+      - name: git-branch
+        value: main
       - name: input_file
         value: s3://projet-budget-famille/data/workflow_inputs/BDF_data_tickets_appli_20260320_a_codif.csv
       - name: text_column
@@ -275,7 +279,7 @@ spec:
         args:
           - |
             set -e
-            git clone --branch main https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/preprocessing
+            git clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/preprocessing
             uv sync
             ARGS="--run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}"
             # input_file vide => mode évaluation : ne pas passer --input-file ni les colonnes (sens uniquement en prédiction)
@@ -335,7 +339,7 @@ spec:
         args:
           - |
             set -e
-            git clone --branch main https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/regex-codif
+            git clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/regex-codif
             uv sync
             ARGS="--run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}"
             # input_file non vide => mode production (train=annotations_full, test=observations)
@@ -394,7 +398,7 @@ spec:
         args:
           - |
             set -e
-            git clone --branch main https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/stats-annotations
+            git clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/stats-annotations
             # Échantillonnage centralisé en amont (codif-regex) → pas de sampling ici.
             ARGS="--run-id={{inputs.parameters.run_id}} --run-date={{inputs.parameters.run_date}}"
             Rscript R/main.R $ARGS
@@ -448,7 +452,7 @@ spec:
         args:
           - |
             set -e
-            git clone --branch main https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/prune
+            git clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/prune
             uv sync
             uv run scripts/main.py --config {{inputs.parameters.config}} --run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}
         env:
@@ -496,7 +500,7 @@ spec:
         args:
           - |
             set -e
-            git clone --branch main https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/coicop-rag
+            git clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/coicop-rag
             uv run scripts/0_create_vector_db.py --config {{inputs.parameters.config}} --run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}
         env:
           - name: AWS_ACCESS_KEY_ID
@@ -569,7 +573,7 @@ spec:
         args:
           - |
             set -e
-            git clone --branch main https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/coicop-rag
+            git clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/coicop-rag
             mkdir -p logs prompts
 
             ARGS="--config {{inputs.parameters.config}} --run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}"
@@ -680,7 +684,7 @@ spec:
         args:
           - |
             set -e
-            git clone --branch main https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/coicop-rag-annotations
+            git clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/coicop-rag-annotations
             # input_file vide => évaluation (skip-eval=false) ; non vide => production (skip-eval=true)
             SKIP_EVAL=true
             [ -z "{{workflow.parameters.input_file}}" ] && SKIP_EVAL=false
@@ -760,7 +764,7 @@ spec:
         args:
           - |
             set -e
-            git clone --branch main https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/coicop-rag-annotations
+            git clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/coicop-rag-annotations
             mkdir -p logs
 
             ARGS="--config {{inputs.parameters.config}} --run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}"
@@ -878,7 +882,7 @@ spec:
         args:
           - |
             set -e
-            git clone --branch main https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/codif-ttc
+            git clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/codif-ttc
             uv sync
 
             RUN_ROOT="s3://projet-budget-famille/data/workflow_runs/{{inputs.parameters.run_date}}/{{inputs.parameters.run_id}}"
@@ -946,7 +950,7 @@ spec:
         args:
           - |
             set -e
-            git clone --branch main https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/decide-coicop
+            git clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/decide-coicop
             uv sync
 
             RUN_ROOT="s3://projet-budget-famille/data/workflow_runs/{{inputs.parameters.run_date}}/{{inputs.parameters.run_id}}"
@@ -1029,7 +1033,7 @@ spec:
         args:
           - |
             set -e
-            git clone --branch main https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/final-output
+            git clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/final-output
             uv sync
             ARGS="--run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}"
             [ -n "{{inputs.parameters.text_column}}" ]   && ARGS="$ARGS --text-column {{inputs.parameters.text_column}}"
@@ -1096,7 +1100,7 @@ spec:
         args:
           - |
             set -e
-            git clone --branch main https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/report
+            git clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/report
             uv sync
 
             ARGS="--run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}} \
