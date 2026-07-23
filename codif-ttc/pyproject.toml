@@ -1,5 +1,5 @@
 [project]
-name = "coicop-bdf-classifier"
+name = "codif-ttc"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
@@ -18,7 +18,6 @@ dependencies = [
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.34.0",
     "openai>=2.16.0",
-    "prune",
 ]
 
 [project.optional-dependencies]
@@ -27,7 +26,4 @@ synth = [
     "langchain-experimental>=0.4.1",
     "langchain-openai>=0.3.0",
 ]
-
-[tool.uv.sources]
-prune = { path = "../prune" }
 

@@ -26,7 +26,8 @@ Le pruning (troncature niv.4 + élagage des hiérarchies linéaires) est central
 | `coicop-rag-annotations/` | `create-vector-db-annotations`, `run-rag-annotations` | Python |
 | `regex-codif/` | `codif-regex` | Python |
 | `stats-annotations/` | `codif-lcs` | R |
-| `coicop-bdf-classifier/` | `run-ttc`, `decide-coicop` | Python |
+| `codif-ttc/` | `run-ttc` | Python |
+| `decide-coicop/` | `decide-coicop` | Python |
 | `report/` | `report` | Python + Quarto |
 | `final-output/` | `final-output` | Python |
 
@@ -75,11 +76,11 @@ Inter-module data exchange goes through S3 (parquet files). The path convention 
 
 **`coicop-rag-annotations/`** — RAG sur exemples annotés : `0_build_annotation_vector_db.py` indexe la KB prunée (+ suggester), `1_run_rag.py` codifie l'input pruné (éval/prod via `--skip-eval`).
 
-**`decide-coicop`** (subcommand in `coicop-bdf-classifier/`) — LLM-as-judge merging outputs from `codif-lcs`, `run-rag`, `run-rag-annotations`, `run-ttc`. Consensus short-circuit: if all three agree and TTC confidence ≥ 0.90, no LLM call is made. Supports resume: re-running with the same `run_id`/`run_date` resumes from existing output.
+**`decide-coicop/`** — Module autonome : LLM-as-judge fusionnant les sorties de `codif-lcs`, `run-rag`, `run-rag-annotations`, `run-ttc`. Normalise d'abord les codes LCS/TTC (troncature niv.4 + élagage, via `prune`, dépendance path). Consensus short-circuit : si les quatre s'accordent et que la confiance TTC ≥ 0.90, aucun appel LLM. Reprise supportée : relancer avec le même `run_id`/`run_date` reprend depuis la sortie existante. Entrée `main.py decide-coicop`.
 
 **`stats-annotations/`** — R scripts only; entry point is `R/main.R`.
 
-**`coicop-bdf-classifier/`** — Has its own `CLAUDE.md` covering classifier-specific commands, architecture, and conventions.
+**`codif-ttc/`** — Classifieur neuronal COICOP (torchtextclassifiers : hierarchical/multihead/basic, train/predict/serve ; étape `run-ttc` via `predict-basic`). A son propre `CLAUDE.md`.
 
 ## Required Kubernetes Secret
 

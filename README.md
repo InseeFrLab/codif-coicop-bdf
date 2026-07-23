@@ -75,7 +75,7 @@ Code le jeu à coder via un RAG sur des **exemples déjà annotés** (few-shot).
 
 Prédictions TTC via un classifieur pré-entraîné.
 
-- Code dans [`coicop-bdf-classifier/`](./coicop-bdf-classifier/) (ex-repo `coicop_bdf_classifier`, bientôt archivé en amont)
+- Code dans [`codif-ttc/`](./codif-ttc/) (ex-repo `coicop_bdf_classifier`, bientôt archivé en amont)
 - L'étape argo utilise actuellement l'image pré-construite `ghcr.io/micedre/coicop_bdf_classifier:latest`
 - Étape destinée à être supprimée à terme
 
@@ -83,7 +83,7 @@ Prédictions TTC via un classifieur pré-entraîné.
 
 Arbitrage final des prédictions par un LLM-as-judge : fusionne les sorties de `codif-lcs`, `run-rag`, `run-rag-annotations` et `run-ttc` et sélectionne le meilleur code COICOP par observation.
 
-- Code dans [`coicop-bdf-classifier/`](./coicop-bdf-classifier/) (sous-commande `uv run main.py decide-coicop`)
+- Code dans [`decide-coicop/`](./decide-coicop/) (`uv run main.py decide-coicop`)
 - Entrées :
   - `s3://.../codif-lcs/raw_test_LCS.parquet`
   - `s3://.../run-rag/predictions.parquet`
@@ -124,7 +124,8 @@ Ce dépôt rassemble le code de toutes les étapes du pipeline, auparavant dispe
 | [`coicop-rag/`](./coicop-rag/) | `coicop-rag` | Étapes `create-vector-db`, `run-rag` |
 | [`coicop-rag-annotations/`](./coicop-rag-annotations/) | — | Étapes `create-vector-db-annotations`, `run-rag-annotations` |
 | [`stats-annotations/`](./stats-annotations/) | `stats-annotations` | Étape `codif-lcs` (R) |
-| [`coicop-bdf-classifier/`](./coicop-bdf-classifier/) | `coicop_bdf_classifier` | Étapes `run-ttc`, `decide-coicop` |
+| [`codif-ttc/`](./codif-ttc/) | `coicop_bdf_classifier` | Étape `run-ttc` |
+| [`decide-coicop/`](./decide-coicop/) | — | Étape `decide-coicop` (arbitrage LLM) |
 | [`final-output/`](./final-output/) | — | Étape `final-output` (livrable utilisateur) |
 | [`report/`](./report/) | — | Rapport Quarto d'exactitude (étape `report`, opt-in) |
 

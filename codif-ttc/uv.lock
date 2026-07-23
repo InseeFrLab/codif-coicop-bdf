@@ -296,7 +296,7 @@ wheels = [
 ]
 
 [[package]]
-name = "coicop-bdf-classifier"
+name = "codif-ttc"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
@@ -306,7 +306,6 @@ dependencies = [
     { name = "mlflow" },
     { name = "openai" },
     { name = "pandas" },
-    { name = "prune" },
     { name = "pyarrow" },
     { name = "requests" },
     { name = "scikit-learn" },
@@ -334,7 +333,6 @@ requires-dist = [
     { name = "mlflow", specifier = ">=3.9.0" },
     { name = "openai", specifier = ">=2.16.0" },
     { name = "pandas", specifier = ">=2.0.0" },
-    { name = "prune", directory = "../prune" },
     { name = "pyarrow", specifier = ">=12.0.0" },
     { name = "requests", specifier = ">=2.32.5" },
     { name = "scikit-learn", specifier = ">=1.3.0" },
@@ -2203,23 +2201,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/c5/f5/65d838092fd01c44d16037953fd4c2cc851e783de9b8f02b27ec4ffd906f/protobuf-6.33.5-cp39-abi3-manylinux2014_s390x.whl", hash = "sha256:8afa18e1d6d20af15b417e728e9f60f3aa108ee76f23c3b2c07a2c3b546d3afd", size = 339411, upload-time = "2026-01-29T21:51:27.446Z" },
     { url = "https://files.pythonhosted.org/packages/9b/53/a9443aa3ca9ba8724fdfa02dd1887c1bcd8e89556b715cfbacca6b63dbec/protobuf-6.33.5-cp39-abi3-manylinux2014_x86_64.whl", hash = "sha256:cbf16ba3350fb7b889fca858fb215967792dc125b35c7976ca4818bee3521cf0", size = 323465, upload-time = "2026-01-29T21:51:28.925Z" },
     { url = "https://files.pythonhosted.org/packages/57/bf/2086963c69bdac3d7cff1cc7ff79b8ce5ea0bec6797a017e1be338a46248/protobuf-6.33.5-py3-none-any.whl", hash = "sha256:69915a973dd0f60f31a08b8318b73eab2bd6a392c79184b3612226b0a3f8ec02", size = 170687, upload-time = "2026-01-29T21:51:32.557Z" },
-]
-
-[[package]]
-name = "prune"
-version = "0.1.0"
-source = { directory = "../prune" }
-dependencies = [
-    { name = "duckdb" },
-    { name = "pandas" },
-    { name = "pyyaml" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "duckdb", specifier = ">=1.4.3" },
-    { name = "pandas", specifier = ">=2.3.3" },
-    { name = "pyyaml", specifier = ">=6.0" },
 ]
 
 [[package]]

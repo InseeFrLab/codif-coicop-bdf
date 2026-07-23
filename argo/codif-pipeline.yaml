@@ -878,7 +878,7 @@ spec:
         args:
           - |
             set -e
-            git clone --branch main https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/coicop-bdf-classifier
+            git clone --branch main https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/codif-ttc
             uv sync
 
             RUN_ROOT="s3://projet-budget-famille/data/workflow_runs/{{inputs.parameters.run_date}}/{{inputs.parameters.run_id}}"
@@ -946,7 +946,7 @@ spec:
         args:
           - |
             set -e
-            git clone --branch main https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/coicop-bdf-classifier
+            git clone --branch main https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/decide-coicop
             uv sync
 
             RUN_ROOT="s3://projet-budget-famille/data/workflow_runs/{{inputs.parameters.run_date}}/{{inputs.parameters.run_id}}"
