@@ -10,11 +10,11 @@
 # --- Code source ----------------------------------------------------------
 # Branche du dépôt clonée par tous les steps (défaut YAML: main).
 # La mettre sur une feature branch permet de tester sans merger dans main.
-git-branch: tronc-prune-lcs-ttc
+git-branch: main
 
 # --- Input ----------------------------------------------------------------
-input_file: s3://projet-budget-famille/data/workflow_inputs/BDF_data_saisie_vague1_a_codif.csv
-#input_file: "" # mode evaluation
+# input_file: s3://projet-budget-famille/data/workflow_inputs/BDF_data_saisie_vague1_a_codif.csv
+input_file: "" # mode evaluation
 
 text_column: NAT_DEP        # label column to classify
 shop_column: MAG_DEP        # shop column
@@ -32,8 +32,8 @@ budget_column: MONT_DEP     # amount column
 # garantissant qu'ils codent exactement les mêmes lignes.
 # En évaluation, les observations = split test des annotations → on utilise
 # sample-annotations (sample-observations est ignoré).
-sample-annotations: "50"        # ex. "500"
-sample-observations: "50"       # ex. "50" (prod)
+sample-annotations: ""        # ex. "500"
+sample-observations: ""       # ex. "50" (prod)
 
 # --- LLM models -----------------------------------------------------------
 model-name: gemma4-26b-moe          # run-rag model
