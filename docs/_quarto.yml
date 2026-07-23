@@ -39,8 +39,8 @@ website:
             text: Lancer une étape individuellement
           - href: 10-glossaire.qmd
             text: Glossaire
-      - href: slides.qmd
-        text: Présentation
+      - href: presentations.qmd
+        text: Présentations
       - href: ressources.qmd
         text: Les ressources
   sidebar:

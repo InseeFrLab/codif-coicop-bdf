@@ -1,0 +1,13 @@
+---
+title: "Automating COICOP Coding for Household Budget Surveys"
+subtitle: "ISI Regional Conference 2026  - Malta"
+image: https://www.isi-next.org/media/conferences/isi-rsc-malta-2026.jpg
+date: "2026-06-06"
+description: |
+  <b>Description :</b> Support présenté au ISI Regional Conference 2026 sur la codification automatique dans la nomenclature COICOP des libellés de produits issus de l'enquête Budget de Famille.
+author: Laura Gaimard
+slides:
+  text: Slides
+  url: slides/prez-coicop-isi/index.html
+order: 3
+---

@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg id="Calque_1" xmlns="http://www.w3.org/2000/svg" version="1.1" viewBox="0 0 429.35 470.76">
+  <!-- Generator: Adobe Illustrator 29.1.0, SVG Export Plug-In . SVG Version: 2.1.0 Build 142)  -->
+  <defs>
+    <style>
+      .st0 {
+        fill: #7a57ff;
+      }
+
+      .st1 {
+        fill: #c869ff;
+      }
+
+      .st2 {
+        fill: #248bff;
+      }
+    </style>
+  </defs>
+  <g id="Emblème">
+    <rect class="st1" x="266.46" y="102.55" width="60.35" height="205.09"/>
+    <rect class="st0" x="184.5" y="181.24" width="60.35" height="126.4"/>
+    <polygon class="st2" points="102.55 369.21 107.03 369.21 162.89 307.64 162.89 144.14 102.55 144.14 102.55 369.21"/>
+  </g>
+</svg>

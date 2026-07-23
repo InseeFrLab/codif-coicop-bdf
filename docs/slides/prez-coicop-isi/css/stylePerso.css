@@ -1,0 +1,99 @@
+/**********************CSS PERSONNALISE****************************/
+
+/* Force uniform borders on all table rows (remove odd/even alternation) */
+.reveal .table-all-borders table tr.odd,
+.reveal .table-all-borders table tr.even {
+  background-color: transparent !important;
+}
+.reveal .table-all-borders table td,
+.reveal .table-all-borders table th {
+  border-bottom: 1px solid currentColor !important;
+}
+.reveal .table-all-borders table tbody tr:last-child td,
+.reveal .table-all-borders table tbody tr:last-child th {
+  border-bottom: none !important;
+}
+
+/*.reveal section {
+  border: 5px solid black;
+}*/
+
+.border {
+  border: solid 2px black;
+}
+
+.titreAnimeAvant {
+  margin-top: 200px; 
+  font-size: 2.5em; 
+  font-weight: bold;
+  color: #0F417A;
+}
+
+.titreAnimeApres {
+  color: #0F417A;
+  position: absolute;
+  top: -0.5em;
+  left: 20%;
+  text-align: left;
+  font-weight: bold;
+}
+
+.logoPageFin {
+  width: 200px;
+  height: 200px;
+  bottom: 50px;
+  position: relative;
+}
+
+#imageLogoInseeModal{
+  width: 70%;
+  left: 15%;
+  position: relative;
+}
+
+.width70{
+  width: 70%;
+}
+
+.width65{
+  width: 65%;
+}
+
+/* Title slide: keep author/date block visible within the SVG background area */
+#title-slide .reveal .title {
+  padding-top: 15%;
+  font-size: 1.7em;
+}
+
+#title-slide .quarto-title-authors {
+  margin-top: 0.4em;
+}
+
+#title-slide .quarto-title-affiliation {
+  font-size: 0.75em;
+  line-height: 1.3;
+}
+
+#title-slide p.date {
+  top: 30em;
+}
+
+/* Final page: swap the Merci background for an EN version (Merci paths stripped) */
+/* and overlay a "Thank you" text where Merci used to sit. */
+div.backgroundPageFinale {
+  background-image: url(../img/Diapo-finale-EN.svg) !important;
+}
+
+#pageDeFin::before {
+  content: "Thank you";
+  position: absolute;
+  top: 33%;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 3em;
+  font-weight: 900;
+  color: #001e63;
+  z-index: 5;
+  pointer-events: none;
+  white-space: nowrap;
+}

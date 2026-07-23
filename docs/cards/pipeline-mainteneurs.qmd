@@ -1,0 +1,13 @@
+---
+title: "Le pipeline codif-coicop-bdf"
+subtitle: "Documentation pour les mainteneurs"
+image: /docs/cards/img/illustration-pipeline.png
+date: "2026-06-10"
+description: |
+  <b>Description :</b> Fonctionnement, sorties et pistes de consolidation du pipeline de codification COICOP à destination des mainteneurs du projet.
+author: Julien Pramil
+slides:
+  text: Slides
+  url: slides/pipeline-mainteneurs/index.html
+order: 2
+---

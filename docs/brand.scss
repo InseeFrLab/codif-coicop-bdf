@@ -5,3 +5,21 @@ $h1-font-size: 2.1rem;
 $h2-font-size: 1.5rem;
 $toc-font-size: 0.85rem;
 $border-radius: 0.5rem;
+
+/*-- scss:rules --*/
+
+/* Galerie de présentations (page presentations.qmd) */
+.no-anchor.card-title.listing-title {
+  font-weight: bolder !important;
+  color: $primary !important;
+}
+
+.grid-item-link {
+  color: inherit;
+  text-decoration: none;
+  transition: transform 0.2s ease-in-out;
+}
+
+.grid-item-link:hover {
+  transform: scale(1.03);
+}

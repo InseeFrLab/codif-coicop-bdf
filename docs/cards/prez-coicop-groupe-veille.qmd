@@ -1,0 +1,13 @@
+---
+title: "Automating COICOP Coding for Household Budget Surveys"
+subtitle: "Groupe de veille en analyse textuelle"
+image: slides/prez-coicop-groupe-veille/img/overview_coicop.png
+date: "2026-06-30"
+description: |
+  <b>Description :</b> Présentation de l'approche hybride de codification COICOP au groupe de veille en analyse textuelle.
+author: Laura Gaimard, Cédric Couralet, Julien Pramil
+slides:
+  text: Slides
+  url: slides/prez-coicop-groupe-veille/index.html
+order: 1
+---
