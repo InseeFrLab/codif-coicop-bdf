@@ -957,6 +957,7 @@ spec:
                   --rag-file $RUN_ROOT/run-rag/predictions.parquet \
                   --rag-annotations-file $RUN_ROOT/rag-annotation/predictions.parquet \
                   --ttc-file $RUN_ROOT/run-ttc/predictions.parquet \
+                  --mapping-file $RUN_ROOT/prune/mapping_lvl4.parquet \
                   --output-file $RUN_ROOT/decide-coicop/predictions.parquet \
                   --extra-columns-file $EXTRA_COLUMNS_FILE \
                   --concurrency {{inputs.parameters.concurrency}}"

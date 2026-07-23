@@ -18,6 +18,7 @@ import duckdb
 import openai
 import pandas as pd
 from openai import AsyncOpenAI, OpenAI
+from prune.pruning import trunc_and_prune_lvl4
 from pydantic import BaseModel, Field
 
 # ── Logger ────────────────────────────────────────────────────────────────────
@@ -253,17 +254,43 @@ def filter_nomenclature(nomen: pd.DataFrame, obs: dict, full: bool = False) -> s
     return _nomen_to_str(filtered)
 
 
+def _prune_predicted_codes(
+    df: pd.DataFrame, mapping_path: Path | str, code_cols: list[str]
+) -> pd.DataFrame:
+    """Applique la troncature niveau 4 + élagage des hiérarchies linéaires aux
+    colonnes de codes prédits indiquées, en réutilisant la logique centralisée du
+    module `prune` (aucune duplication). Les RAG produisent déjà des codes prunés ;
+    seuls LCS et TTC doivent être normalisés pour que le consensus et l'arbitrage
+    LLM raisonnent sur un espace de codes homogène.
+    """
+    mapping = _read_parquet(mapping_path)
+    for col in code_cols:
+        if col not in df.columns:
+            continue
+        df = trunc_and_prune_lvl4(df, mapping, code_name=col)
+        df[col] = df[f"{col}_tpruned"]
+        df = df.drop(columns=[f"{col}_tpruned"])
+    return df
+
+
 def load_all_observations(
     lcs_path: Path | str,
     rag_path: Path | str,
     ttc_path: Path | str,
     rag_annotations_path: Path | str | None = None,
+    mapping_path: Path | str | None = None,
 ) -> pd.DataFrame:
     """Fusionne les fichiers de prédictions parquet et retourne le DataFrame complet.
 
     `rag_annotations_path` (RAG sur exemples annotés) est optionnel : s'il est fourni,
     ses prédictions sont jointes sur 'id' (colonnes ragann_code / ragann_confidence /
     ragann_codable).
+
+    `mapping_path` (table de mapping `mapping_lvl4.parquet` produite par l'étape
+    `prune`) est optionnel : s'il est fourni, les codes LCS et TTC sont tronqués au
+    niveau 4 et élagués comme les codes RAG, afin que le court-circuit consensus et
+    l'arbitrage LLM comparent des codes homogènes (et ne laissent pas fuiter un code
+    non pruné).
     """
     lcs_raw = _read_parquet(lcs_path)
     rag_raw = _read_parquet(rag_path)
@@ -326,6 +353,13 @@ def load_all_observations(
             }
         )
         merged = merged.merge(ragann, on="id", how="left")
+
+    # Normalisation troncature niveau 4 + élagage des codes LCS/TTC (les codes RAG
+    # sont déjà prunés en amont). Idempotent sur un code déjà pruné.
+    if mapping_path is not None:
+        merged = _prune_predicted_codes(
+            merged, mapping_path, ["lcs_code", "ttc_code_1", "ttc_code_2", "ttc_code_3"]
+        )
 
     return merged
 

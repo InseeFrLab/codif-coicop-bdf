@@ -353,6 +353,7 @@ def cmd_decide_coicop(args: argparse.Namespace) -> None:
         args.rag_file,
         args.ttc_file,
         rag_annotations_path=args.rag_annotations_file,
+        mapping_path=args.mapping_file,
     )
 
     logger.info("Chargement de la nomenclature...")
@@ -1837,6 +1838,17 @@ def main() -> int:
         type=str,
         default="data/coicop_et_codes_techniques.csv",
         help="Path to COICOP nomenclature CSV (default: data/coicop_et_codes_techniques.csv)",
+    )
+    decide_coicop_parser.add_argument(
+        "--mapping-file",
+        type=str,
+        default=None,
+        help=(
+            "Optional parquet mapping table (mapping_lvl4.parquet from the `prune` "
+            "step). When provided, LCS and TTC predicted codes are truncated to "
+            "level 4 and linearly pruned so the consensus and LLM arbitration "
+            "compare codes on the same pruned space."
+        ),
     )
     decide_coicop_parser.add_argument(
         "--id",

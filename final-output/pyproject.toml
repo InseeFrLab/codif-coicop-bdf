@@ -9,4 +9,8 @@ dependencies = [
     "pandas>=2.2",
     "pyarrow>=16",
     "s3fs>=2024",
+    "prune",
 ]
+
+[tool.uv.sources]
+prune = { path = "../prune" }
