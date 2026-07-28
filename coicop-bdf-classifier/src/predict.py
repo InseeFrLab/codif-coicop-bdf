@@ -128,6 +128,11 @@ class _HierarchicalBasePredictor:
                 "combined_confidence": result["combined_confidence"][i],
             }
 
+            # Only the multi-level classifier reports cross-level agreement;
+            # the cascading classifiers enforce it structurally.
+            if "levels_consistent" in result:
+                pred["levels_consistent"] = result["levels_consistent"][i]
+
             if return_all_levels and "all_levels" in result:
                 pred["levels"] = {}
                 for level_name, level_data in result["all_levels"].items():
@@ -210,6 +215,10 @@ class _HierarchicalBasePredictor:
         result_df["combined_confidence"] = [
             p["combined_confidence"] for p in predictions
         ]
+        if predictions and "levels_consistent" in predictions[0]:
+            result_df["levels_consistent"] = [
+                p["levels_consistent"] for p in predictions
+            ]
 
         if predictions and "levels" in predictions[0]:
             for level_name in predictions[0]["levels"]:
@@ -303,6 +312,130 @@ class MultiHeadCOICOPPredictor(_HierarchicalBasePredictor):
         self.model_path = _resolve_mlflow_path(model_path)
         self.classifier = MultiHeadCOICOPClassifier.load(self.model_path)
         logger.info(f"Loaded multi-head model from {model_path}")
+
+
+class MultilevelCOICOPPredictor(_HierarchicalBasePredictor):
+    """Predictor class for the interpretable multi-level COICOP classifier.
+
+    Adds a ``levels_consistent`` column (independent heads may disagree across
+    levels) and optional per-word explanations.
+    """
+
+    def __init__(self, model_path: str | Path):
+        from .classifiers.multilevel_classifier import MultilevelCOICOPClassifier
+
+        self.model_path = _resolve_mlflow_path(model_path)
+        self.classifier = MultilevelCOICOPClassifier.load(self.model_path)
+        logger.info(f"Loaded multi-level model from {model_path}")
+
+    def explain(self, texts: list[str], top_words: int = 10) -> list[dict]:
+        """Return per-level, per-word contributions for each text."""
+        return self.classifier.explain(texts, top_words=top_words)
+
+    def predict_dataframe(
+        self,
+        df: pd.DataFrame,
+        text_column: str = "product",
+        batch_size: int = 64,
+        top_k: int = 1,
+        confidence_threshold: float | None = None,
+        beam_size: int = 1,
+        explain: bool = False,
+        explain_top_words: int = 10,
+    ) -> pd.DataFrame:
+        """Predict codes for a DataFrame, optionally with explanations.
+
+        When ``explain`` is set, an ``explanation`` column holds a JSON string
+        mapping each level to its top contributing words.
+        """
+        result_df = super().predict_dataframe(
+            df,
+            text_column=text_column,
+            batch_size=batch_size,
+            top_k=top_k,
+            confidence_threshold=confidence_threshold,
+        )
+
+        # Promote the alternatives of whichever level produced predicted_code
+        # into predicted_code_top{rank}. Without these, evaluate-report and
+        # decide-coicop see only the top-1 and report flat top-k accuracy.
+        # Sourced per row from final_level, which a confidence threshold can
+        # make vary between rows.
+        for rank in range(2, top_k + 1):
+            codes = pd.Series("", index=result_df.index, dtype=object)
+            confs = pd.Series(0.0, index=result_df.index, dtype=float)
+            # Vectorised per level rather than row-wise: only a handful of
+            # distinct final_level values, and predict_file runs over the full
+            # to-codify set.
+            for level_name, rows in result_df.groupby("final_level").groups.items():
+                if not level_name:
+                    continue
+                src_code = f"predicted_{level_name}_top{rank}"
+                src_conf = f"confidence_{level_name}_top{rank}"
+                if src_code in result_df.columns:
+                    codes.loc[rows] = result_df.loc[rows, src_code]
+                if src_conf in result_df.columns:
+                    confs.loc[rows] = result_df.loc[rows, src_conf]
+            result_df[f"predicted_code_top{rank}"] = codes
+            result_df[f"confidence_top{rank}"] = confs
+
+        if explain:
+            import json
+
+            texts = df[text_column].tolist()
+            explanations = []
+            for start in range(0, len(texts), batch_size):
+                explanations.extend(
+                    self.classifier.explain(
+                        texts[start : start + batch_size], top_words=explain_top_words
+                    )
+                )
+            result_df["explanation"] = [
+                json.dumps(
+                    {
+                        level: [[word, round(score, 6)] for word, score in words]
+                        for level, words in per_level.items()
+                    },
+                    ensure_ascii=False,
+                )
+                for per_level in explanations
+            ]
+
+        return result_df
+
+    def predict_file(
+        self,
+        input_path: str | Path,
+        output_path: str | Path,
+        text_column: str = "product",
+        batch_size: int = 64,
+        top_k: int = 1,
+        confidence_threshold: float | None = None,
+        beam_size: int = 1,
+        explain: bool = False,
+        explain_top_words: int = 10,
+    ) -> None:
+        """Predict codes for a file and save results."""
+        input_path = Path(input_path)
+        output_path = Path(output_path)
+
+        logger.info(f"Loading texts from {input_path}...")
+        df = _read_input_file(input_path)
+        df = preprocess_text(df, text_column, _load_stopwords())
+        logger.info(f"Loaded {len(df)} samples from {input_path}")
+
+        result_df = self.predict_dataframe(
+            df,
+            text_column=text_column,
+            batch_size=batch_size,
+            top_k=top_k,
+            confidence_threshold=confidence_threshold,
+            explain=explain,
+            explain_top_words=explain_top_words,
+        )
+
+        _write_output_file(result_df, output_path)
+        logger.info(f"Saved predictions to {output_path}")
 
 
 class BasicCOICOPPredictor:

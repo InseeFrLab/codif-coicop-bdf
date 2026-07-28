@@ -176,3 +176,10 @@ class MultiHeadCOICOPPyfuncWrapper(_HierarchicalPyfuncWrapper):
 
     _classifier_class = "MultiHeadCOICOPClassifier"
     _classifier_module = ".classifiers.multihead_classifier"
+
+
+class MultilevelCOICOPPyfuncWrapper(_HierarchicalPyfuncWrapper):
+    """Pyfunc wrapper for MultilevelCOICOPClassifier."""
+
+    _classifier_class = "MultilevelCOICOPClassifier"
+    _classifier_module = ".classifiers.multilevel_classifier"

@@ -195,9 +195,22 @@ def load_predictor(model_path: str | Path) -> _UniformPredictor:
         predictor = HierarchicalCOICOPPredictor(model_dir)
         return _UniformPredictor(predictor, is_pyfunc=False)
 
+    if (model_dir / "multihead_metadata.pkl").exists():
+        from ..predict import MultiHeadCOICOPPredictor
+
+        predictor = MultiHeadCOICOPPredictor(model_dir)
+        return _UniformPredictor(predictor, is_pyfunc=False)
+
+    if (model_dir / "multilevel_metadata.pkl").exists():
+        from ..predict import MultilevelCOICOPPredictor
+
+        predictor = MultilevelCOICOPPredictor(model_dir)
+        return _UniformPredictor(predictor, is_pyfunc=False)
+
     raise FileNotFoundError(
-        f"No recognized model found at {model_dir}. "
-        "Expected basic_metadata.pkl or hierarchical_metadata.pkl."
+        f"No recognized model found at {model_dir}. Expected one of: "
+        "basic_metadata.pkl, hierarchical_metadata.pkl, "
+        "multihead_metadata.pkl, multilevel_metadata.pkl."
     )
 
 

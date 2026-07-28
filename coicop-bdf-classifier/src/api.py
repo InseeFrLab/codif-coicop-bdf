@@ -17,7 +17,11 @@ from pydantic import BaseModel, Field
 
 _STATIC_DIR = Path(__file__).parent / "static"
 
-from .predict import HierarchicalCOICOPPredictor, MultiHeadCOICOPPredictor
+from .predict import (
+    HierarchicalCOICOPPredictor,
+    MultiHeadCOICOPPredictor,
+    MultilevelCOICOPPredictor,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -97,7 +101,10 @@ async def lifespan(app: FastAPI):
 
     # Detect model type
     model_dir = Path(model_path)
-    if (model_dir / "multihead_metadata.pkl").exists():
+    if (model_dir / "multilevel_metadata.pkl").exists():
+        logger.info("Detected multi-level model")
+        predictor = MultilevelCOICOPPredictor(model_path)
+    elif (model_dir / "multihead_metadata.pkl").exists():
         logger.info("Detected multi-head model")
         predictor = MultiHeadCOICOPPredictor(model_path)
     else:
@@ -213,7 +220,7 @@ async def model_info(request: Request):
     predictor = _get_predictor(request)
     classifier = predictor.classifier
 
-    if isinstance(predictor, MultiHeadCOICOPPredictor):
+    if isinstance(predictor, (MultiHeadCOICOPPredictor, MultilevelCOICOPPredictor)):
         trained_levels = list(classifier.level_names)
     else:
         trained_levels = list(classifier.level_classifiers.keys())

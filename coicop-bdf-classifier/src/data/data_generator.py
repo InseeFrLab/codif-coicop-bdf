@@ -1,15 +1,28 @@
-"""Synthetic data generation for COICOP classification using LangChain."""
+"""Synthetic data generation for COICOP classification using LLM.
+
+Refactored according to Code2Text report (Matéo Morin, SSP Lab, 2026):
+- Multi-call generation (5 calls × N products = ~50 products/category)
+- Few-shot from real BDF annotations (tickets, carnets, ajouts manuels)
+- Explicit style constraints (uppercase, BDF units, no punctuation)
+- Post-processing style enforcement (_style_enforce)
+- S3 support for reading annotations and writing output
+"""
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+import re
+import unicodedata
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import numpy as np
+import duckdb
 import pandas as pd
-from langchain_core.prompts import FewShotPromptTemplate, PromptTemplate
-from langchain_experimental.synthetic_data import create_data_generation_chain
+import unidecode
+from langchain_core.prompts import PromptTemplate
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 
@@ -17,6 +30,12 @@ if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
 
 logger = logging.getLogger(__name__)
+
+STOPWORDS_PATH = "data/text/stopwords.json"
+DEFAULT_OUTPUT_PREFIX = (
+    "s3://travail/projet-ml-classification-bdf/"
+    "confidentiel/personnel_sensible/synthetic-data"
+)
 
 
 class COICOPExample(BaseModel):
@@ -27,6 +46,69 @@ class COICOPExample(BaseModel):
     )
     code: str = Field(description="COICOP code (e.g., '01.1.1.1.1')")
     libelle: str = Field(description="COICOP category label in French")
+
+
+# ── S3 helpers (same pattern as extract_ddc.py / predict.py) ──────────────────
+
+
+def _configure_s3(con: duckdb.DuckDBPyConnection) -> None:
+    """Configure DuckDB S3 secret from environment variables."""
+    con.execute(f"""
+        CREATE SECRET secret_s3 (
+            TYPE S3,
+            KEY_ID '{os.environ["AWS_ACCESS_KEY_ID"]}',
+            SECRET '{os.environ["AWS_SECRET_ACCESS_KEY"]}',
+            ENDPOINT '{os.environ["AWS_S3_ENDPOINT"]}',
+            SESSION_TOKEN '{os.environ["AWS_SESSION_TOKEN"]}',
+            REGION 'us-east-1',
+            URL_STYLE 'path',
+            SCOPE 's3://'
+        );
+    """)
+
+
+def _is_s3_path(path: str) -> bool:
+    """Check if a path is an S3 URI."""
+    return path.strip().startswith("s3://")
+
+
+def _read_csv_from_path(file_path: str) -> pd.DataFrame:
+    """Read CSV from local path or S3 URL, auto-detecting separator."""
+    if _is_s3_path(file_path):
+        con = duckdb.connect()
+        _configure_s3(con)
+        # READ_CSV_AUTO with auto-detect of separator
+        result = con.execute(
+            f"SELECT * FROM READ_CSV_AUTO('{file_path}')"
+        ).df()
+        result.columns = [c.strip() for c in result.columns]
+        return result
+
+    # Auto-detect separator: try ';' first (majority of BDF files), fallback to ','
+    with open(file_path, "r", encoding="utf-8") as f:
+        first_line = f.readline()
+
+    sep = ";" if first_line.count(";") > first_line.count(",") else ","
+
+    try:
+        return pd.read_csv(file_path, sep=sep, encoding="utf-8")
+    except Exception:
+        # Fallback: auto-detect with pandas
+        return pd.read_csv(file_path, sep=None, engine="python")
+
+
+def _write_parquet_to_path(df: pd.DataFrame, output_path: str) -> None:
+    """Write DataFrame to parquet, local or S3."""
+    if _is_s3_path(output_path):
+        con = duckdb.connect()
+        _configure_s3(con)
+        con.register("__output_df", df)
+        con.execute(f"COPY __output_df TO '{output_path}' (FORMAT PARQUET)")
+    else:
+        df.to_parquet(output_path, index=False)
+
+
+# ── LLM setup ────────────────────────────────────────────────────────────────
 
 
 def get_llm_from_env(model_name: str | None = None) -> ChatOpenAI:
@@ -49,10 +131,9 @@ def get_llm_from_env(model_name: str | None = None) -> ChatOpenAI:
         raise ValueError(msg)
 
     base_url = os.environ.get("LLMLAB_URL")
-    model_name = os.environ.get("OPENAI_MODEL", "gpt-oss:20b")
+    model_name = model_name or os.environ.get("OPENAI_MODEL", "gpt-oss:20b")
 
-    logger.info(f"Configuring llm: {base_url} with model : {model_name}")
-
+    logger.info("Configuring LLM: base_url=%s model=%s", base_url, model_name)
 
     return ChatOpenAI(
         api_key=api_key,
@@ -62,11 +143,16 @@ def get_llm_from_env(model_name: str | None = None) -> ChatOpenAI:
     )
 
 
+# ── Style enforcement ────────────────────────────────────────────────────────
+
+
 class COICOPSyntheticGenerator:
     """Generator for synthetic COICOP classification training data.
 
-    Uses LangChain's synthetic data generation capabilities to create
-    realistic product descriptions for each COICOP category.
+    Refactored per Code2Text report to reduce covariate shift:
+    - 5 calls per category with few-shot real examples
+    - Explicit style constraints in prompts
+    - Post-processing style enforcement (uppercase, BDF units, etc.)
     """
 
     def __init__(
@@ -74,7 +160,11 @@ class COICOPSyntheticGenerator:
         llm: BaseChatModel | None = None,
         coicop_path: str | Path = "data/coicop_et_codes_techniques.csv",
         rmes_path: str | Path | None = "data/coicop-2018_envoi_rmes_20251022.csv",
-        examples_per_category: int = 10,
+        annotations_s3_paths: dict[str, str] | None = None,
+        examples_per_call: int = 10,
+        calls_per_category: int = 5,
+        fewshot_per_category: int = 6,
+        style_enforce: bool = True,
     ) -> None:
         """Initialize the synthetic data generator.
 
@@ -82,13 +172,26 @@ class COICOPSyntheticGenerator:
             llm: LangChain chat model (defaults to OpenAI from env vars)
             coicop_path: Path to COICOP definitions CSV (with 98/99 codes)
             rmes_path: Path to RMES COICOP file for enriched descriptions (optional)
-            examples_per_category: Number of examples to generate per category
+            annotations_s3_paths: Mapping {source_name: path} for real annotations.
+                Keys: 'tickets', 'carnets', 'ajouts'.
+                Paths can be local or S3 URIs (s3://...).
+            examples_per_call: Number of examples LLM generates per API call.
+            calls_per_category: LLM calls per category (5 = ~50 products/cat).
+            fewshot_per_category: Real examples injected per category in prompt.
+            style_enforce: Apply BDF style post-processing (True by default).
         """
         self.llm = llm if llm is not None else get_llm_from_env()
         self.coicop_path = Path(coicop_path)
         self.rmes_path = Path(rmes_path) if rmes_path else None
-        self.examples_per_category = examples_per_category
+        self.annotations_s3_paths = annotations_s3_paths or {}
+        self.examples_per_call = examples_per_call
+        self.calls_per_category = calls_per_category
+        self.fewshot_per_category = fewshot_per_category
+        self.style_enforce = style_enforce
         self._coicop_df: pd.DataFrame | None = None
+        self._annotations: dict[str, list[str]] | None = None
+
+    # ── CoICOP hierarchy ─────────────────────────────────────────────────
 
     @property
     def coicop_df(self) -> pd.DataFrame:
@@ -98,21 +201,11 @@ class COICOPSyntheticGenerator:
         return self._coicop_df
 
     def _load_coicop(self) -> pd.DataFrame:
-        """Load COICOP hierarchy from CSV, optionally enriched with RMES descriptions.
-
-        Supports multiple formats:
-        - Old format: columns (libelle, code) or (Libelle, Code)
-        - Enriched format: columns (libelle, code, url, description, comprend, ne_comprend_pas)
-        - RMES format: columns (tri, type, parent, code, label_en, label_fr, note_generale_*,
-          contenu_central_*, contenu_additionnel_*, note_exclusion_*)
-
-        If rmes_path is set, descriptions from the RMES file are merged in.
-        """
+        """Load COICOP hierarchy from CSV, optionally enriched with RMES."""
         df = pd.read_csv(self.coicop_path, sep=";", encoding="utf-8")
 
-        # Detect and normalize different formats
+        # Detect and normalize formats
         if "label_fr" in df.columns:
-            # RMES format (coicop-2018_envoi_rmes_*.csv)
             df = df.rename(columns={
                 "label_fr": "libelle",
                 "contenu_central_fr": "comprend",
@@ -120,7 +213,6 @@ class COICOPSyntheticGenerator:
                 "note_generale_fr": "description",
             })
         elif "comprend" not in df.columns:
-            # Old simple format (libelle, code only)
             if "Libelle" in df.columns:
                 df = df.rename(columns={"Libelle": "libelle", "Code": "code"})
             else:
@@ -129,7 +221,6 @@ class COICOPSyntheticGenerator:
             df["ne_comprend_pas"] = None
             df["description"] = None
 
-        # Enrich with RMES descriptions if available
         if self.rmes_path and self.rmes_path.exists():
             rmes_df = pd.read_csv(self.rmes_path, sep=";", encoding="utf-8")
             if "label_fr" in rmes_df.columns:
@@ -149,36 +240,27 @@ class COICOPSyntheticGenerator:
 
         return df
 
-    def _get_leaf_categories(self) -> pd.DataFrame:
-        """Get only leaf-level COICOP categories (most specific).
+    def _extract_level4(self, code: str | None) -> str | None:
+        """Extract level-4 prefix from COICOP code."""
+        if not code or not isinstance(code, str):
+            return None
+        parts = code.strip().split(".")
+        return ".".join(parts[:4]) if len(parts) >= 4 else ".".join(parts) + "." + "0"
 
-        Leaf categories have 5-level codes (e.g., '01.1.1.1.1').
-        """
+    def _get_leaf_categories(self) -> pd.DataFrame:
+        """Get only leaf-level COICOP categories."""
         df = self.coicop_df.copy()
-        # Filter for codes with 5 parts (leaf level)
         mask = df["code"].str.count(r"\.") == 4
         return df[mask].copy()
 
     def _get_categories_by_level(self, level: int) -> pd.DataFrame:
-        """Get COICOP categories at a specific hierarchy level.
-
-        Args:
-            level: Hierarchy level (1-5). Level 1 = '01', Level 5 = '01.1.1.1.1'
-
-        Returns:
-            DataFrame with categories at the specified level
-        """
+        """Get COICOP categories at a specific hierarchy level."""
         df = self.coicop_df.copy()
-        # Level 1 has 0 dots, level 5 has 4 dots
         mask = df["code"].str.count(r"\.") == (level - 1)
         return df[mask].copy()
 
     def _get_technical_leaf_nodes(self) -> pd.DataFrame:
-        """Get leaf nodes among technical codes (98.x, 99.x).
-
-        Technical codes have irregular hierarchy depths, so leaf detection
-        is based on whether any other code starts with this code + '.'.
-        """
+        """Get leaf nodes among technical codes (98.x, 99.x)."""
         df = self.coicop_df.copy()
         technical = df[df["code"].str.startswith(("98", "99"))]
         tech_codes = set(technical["code"].values)
@@ -189,121 +271,248 @@ class COICOPSyntheticGenerator:
 
     @staticmethod
     def _get_code_type(code: str) -> str:
-        """Determine the type of COICOP code for prompt selection.
-
-        Returns:
-            'technical_98', 'technical_99', or 'standard'
-        """
+        """Determine the type of COICOP code for prompt selection."""
         if code.startswith("99"):
             return "technical_99"
         if code.startswith("98"):
             return "technical_98"
         return "standard"
 
+    # ── Annotations loading ──────────────────────────────────────────────
+
+    def _load_annotations(self) -> dict[str, list[str]]:
+        """Charge les 3 sources annotées et retourne {level4_code: [libelles]}.
+
+        Sources :
+          - tickets_application.csv : product → Code coicop
+          - depenses_manuelles_carnets.csv : Nature de la dépense → coicop
+          - ajouts_manuels_application.csv : product → code1
+        """
+        if self._annotations is not None:
+            return self._annotations
+
+        annotations_by_code: dict[str, list[str]] = {}
+
+        # Default local paths if not specified
+        annotations_map = {
+            "tickets": "data/annotated/tickets_application.csv",
+            "carnets": "data/annotated/depenses_manuelles_carnets.csv",
+            "ajouts": "data/annotated/ajouts_manuels_application.csv",
+        }
+
+        # Override with S3 paths if provided
+        if self.annotations_s3_paths:
+            for key in annotations_map:
+                if key in self.annotations_s3_paths:
+                    annotations_map[key] = self.annotations_s3_paths[key]
+
+        for source_name, file_path in annotations_map.items():
+            try:
+                logger.info("Loading annotations from %s...", file_path)
+                df = _read_csv_from_path(file_path)
+            except Exception as e:
+                logger.warning("Could not load %s annotations (%s): %s",
+                               source_name, file_path, e)
+                continue
+
+            if source_name == "tickets":
+                text_col = "product"
+                code_col = "Code coicop"
+            elif source_name == "carnets":
+                text_col = "Nature de la dépense"
+                code_col = "coicop"
+            elif source_name == "ajouts":
+                text_col = "product"
+                code_col = "code1"
+            else:
+                continue
+
+            if text_col not in df.columns or code_col not in df.columns:
+                logger.warning(
+                    "Missing columns in %s: have %s, need %s/%s",
+                    source_name, df.columns.tolist(), text_col, code_col,
+                )
+                continue
+
+            for _, row in df.dropna(subset=[text_col, code_col]).iterrows():
+                text = str(row[text_col]).strip()
+                code = str(row[code_col]).strip()
+
+                if not text or len(text) < 2:
+                    continue
+
+                l4 = self._extract_level4(code)
+                if l4:
+                    if l4 not in annotations_by_code:
+                        annotations_by_code[l4] = []
+                    if text not in annotations_by_code[l4]:
+                        annotations_by_code[l4].append(text)
+
+        self._annotations = annotations_by_code
+        logger.info("Loaded annotations: %d categories, %d total examples",
+                     len(annotations_by_code),
+                     sum(len(v) for v in annotations_by_code.values()))
+        return self._annotations
+
+    # ── Style enforcement ────────────────────────────────────────────────
+
+    def _style_enforce(self, raw_products: list[str]) -> list[str]:
+        """Apply BDF ticket-style rules to LLM-generated products.
+
+        Rules:
+        1. unidecode + to UPPERCASE
+        2. Units: 5g->GRS, 5kg->KG, 75cl->CL
+        3. Remove non-alphanumeric punctuation
+        4. Remove words < 2 characters
+        5. Truncate to 40 characters max
+        6. Remove stopwords (data/text/stopwords.json)
+        7. Re-strip
+        """
+        # Load stopwords
+        try:
+            with open(STOPWORDS_PATH, "r", encoding="utf-8") as f:
+                stopwords = set(json.load(f))
+        except FileNotFoundError:
+            stopwords = set()
+
+        enforced = []
+        for raw in raw_products:
+            # 1. unidecode + uppercase
+            text = unidecode.unidecode(raw).upper()
+
+            # 2. Unit conversions: 5kg->5KG, 500g->500GRS, 75cl->75CL
+            text = re.sub(r'\b(\d+)\s*(g|gr)\b', r'\1GRS', text)
+            text = re.sub(r'\b(\d+)\s*(kg|KGS?)\b', r'\1KG', text)
+            text = re.sub(r'\b(\d+)\s*(cl|CL)\b', r'\1CL', text)
+
+            # 3. Remove non-alphanumeric characters (keep spaces and digits)
+            text = re.sub(r'[^A-Z0-9\s]', ' ', text)
+
+            # 4. Remove single-character words (except X which indicates quantity)
+            tokens = text.split()
+            tokens = [t for t in tokens if len(t) > 1 or t == 'X']
+            text = ' '.join(tokens)
+
+            # 6. Remove stopwords
+            tokens = text.split()
+            tokens = [t for t in tokens if t not in stopwords]
+            text = ' '.join(tokens)
+
+            # 5. Truncate to 40 characters
+            text = text[:40]
+
+            # 7. Clean up extra whitespace
+            text = re.sub(r'\s+', ' ', text).strip()
+
+            if len(text) >= 3:  # Keep only meaningful products
+                enforced.append(text)
+
+        return enforced
+
+    # ── Prompt building ──────────────────────────────────────────────────
+
     def _build_generation_prompt(self, code_type: str = "standard") -> PromptTemplate:
         """Build the prompt template for synthetic data generation.
 
-        Args:
-            code_type: One of 'standard', 'technical_98', 'technical_99'
-
-        The prompt includes optional sections for "comprend" (what the category includes)
-        and "ne_comprend_pas" (what it excludes) from INSEE COICOP descriptions.
+        Each template now includes:
+        - Style constraints (uppercase, BDF units, no punctuation)
+        - Few-shot section (injected dynamically from real annotations)
         """
         templates = {
             "standard": """Tu es un expert en classification des produits et services selon la nomenclature COICOP.
 
-Génère {num_examples} exemples réalistes de produits ou services pour la catégorie COICOP suivante:
+Genere {num_examples} exemples reels de produits ou services pour la categorie COICOP suivante:
 
 Code COICOP: {code}
-Libellé: {libelle}
+Libelle: {libelle}
 {comprend_section}
 {ne_comprend_section}
 
-INSTRUCTIONS:
-- Génère des noms de produits comme on les trouve sur un ticket de caisse ou relevé bancaire
-- UTILISE DES MARQUES RÉELLES connues en France (exemples: Nestlé, Nutella, Danone, Carrefour, Président, Lu, Panzani, Evian, Coca-Cola, etc.)
-- Varie les formulations: nom de marque seul, marque + produit, produit générique
-- Courts (1 à 5 mots généralement)
-- En français
+=== CONTRAINTES DE STYLE (OBLIGATOIRES) ===
+- TOUT EN MAJUSCULES (comme sur un ticket de caisse)
+- PAS de ponctuation (ni points, virgules, tirets)
+- Poids/quantite abbrevies : GRS, KG, CL (ex: 500GRS, 2KG, 75CL)
+- Format quantite produit : X12, X6, X1 (ex: OEUFS FRAIS X12)
+- Longueur : 10 a 40 caracteres maximum
+- Varier : parfois avec marque, parfois sans
 
-Exemples de produits (un par ligne):""",
-            "technical_98": """Tu es un expert en classification des dépenses des ménages pour l'enquête Budget de Famille de l'INSEE.
+=== EXEMPLES REELS DU MEME CODE (FEW-SHOT) ===
+{fewshot_examples}
 
-Génère {num_examples} exemples réalistes de descriptions de dépenses pour la catégorie technique suivante:
+Genere maintenant des produits un par ligne :""",
+
+            "technical_98": """Tu es un expert en classification des depenses des menages pour l'enquete Budget de Famille de l'INSEE.
+
+Genere {num_examples} exemples reels de descriptifs de depenses pour la categorie technique suivante:
 
 Code: {code}
-Libellé: {libelle}
+Libelle: {libelle}
 {comprend_section}
 {ne_comprend_section}
 
-INSTRUCTIONS:
-- Génère des descriptions comme on les trouve sur un relevé bancaire, un ticket de caisse, ou un carnet de dépenses de ménage
-- Formulations courtes et informelles (1 à 6 mots)
-- En français
-- Varie les formulations: abréviations bancaires, noms d'enseignes, descriptions informelles
-- Exemples de style: "CB CARREFOUR", "COURSES LIDL", "PAIEMENT CB 15/03", "courses du samedi", "supermarché"
+=== CONTRAINTES DE STYLE (OBLIGATOIRES) ===
+- TOUT EN MAJUSCULES
+- PAS de ponctuation
+- Formulations types releves bancaires : CARTE, VIR, PRELEVEMENT, RETRAIT
+- Format quantite : X12, X6, X1
+- Longueur : 10 a 40 caracteres maximum
 
-Exemples de descriptions (une par ligne):""",
-            "technical_99": """Tu es un expert en classification des dépenses des ménages pour l'enquête Budget de Famille de l'INSEE.
+=== EXEMPLES REELS DU MEME CODE (FEW-SHOT) ===
+{fewshot_examples}
 
-Génère {num_examples} exemples réalistes de descriptions de transactions pour la catégorie hors champ COICOP suivante:
+Genere maintenant des descriptifs un par ligne :""",
+
+            "technical_99": """Tu es un expert en classification des depenses des menages pour l'enquete Budget de Famille de l'INSEE.
+
+Genere {num_examples} exemples reels de descriptions de transactions pour la categorie hors champ COICOP suivante:
 
 Code: {code}
-Libellé: {libelle}
+Libelle: {libelle}
 {comprend_section}
 {ne_comprend_section}
 
-INSTRUCTIONS:
-- Génère des descriptions comme on les trouve sur un relevé bancaire, un avis d'imposition, ou un carnet de dépenses de ménage
-- Formulations typiques des opérations bancaires et administratives (1 à 8 mots)
-- En français
-- Varie les formulations: libellés bancaires officiels, descriptions informelles du ménage
-- Exemples de style: "VIR SEPA EMIS", "PRELEVEMENT IMPOTS", "RETRAIT DAB", "DON CROIX ROUGE", "cadeau anniversaire", "taxe foncière"
+=== CONTRAINTES DE STYLE (OBLIGATOIRES) ===
+- TOUT EN MAJUSCULES
+- PAS de ponctuation
+- Formulations types operations bancaires/administratives
+- Format quantite : X12, X6, X1
+- Longueur : 10 a 40 caracteres maximum
 
-Exemples de descriptions (une par ligne):""",
+=== EXEMPLES REELS DU MEME CODE (FEW-SHOT) ===
+{fewshot_examples}
+
+Genere maintenant des descriptions un par ligne :""",
         }
 
         template = templates.get(code_type, templates["standard"])
         return PromptTemplate(
-            input_variables=["num_examples", "code", "libelle", "comprend_section", "ne_comprend_section"],
+            input_variables=[
+                "num_examples", "code", "libelle",
+                "comprend_section", "ne_comprend_section",
+                "fewshot_examples",
+            ],
             template=template,
         )
 
-    def _create_few_shot_prompt(
-        self,
-        examples: list[dict[str, str]],
-    ) -> FewShotPromptTemplate:
-        """Create a few-shot prompt with examples.
+    # ── Core generation ──────────────────────────────────────────────────
 
-        Args:
-            examples: List of example dictionaries with 'product', 'code', 'libelle'
+    def _get_fewshot_examples(self, code_l4: str) -> str:
+        """Get few-shot examples for a given level-4 code.
 
-        Returns:
-            Configured FewShotPromptTemplate
+        Returns formatted string of real product labels for the prompt.
         """
-        example_template = PromptTemplate(
-            input_variables=["product", "code", "libelle"],
-            template="Produit: {product}\nCode: {code}\nCatégorie: {libelle}",
-        )
-
-        prefix = """Tu es un expert en classification COICOP. Voici quelques exemples de produits avec leurs codes COICOP:
-
-"""
-        suffix = """
-Maintenant, génère {num_examples} nouveaux exemples de produits pour la catégorie suivante:
-Code: {code}
-Libellé: {libelle}
-
-Produits (un par ligne):"""
-
-        return FewShotPromptTemplate(
-            examples=examples,
-            example_prompt=example_template,
-            prefix=prefix,
-            suffix=suffix,
-            input_variables=["num_examples", "code", "libelle"],
-            example_separator="\n\n",
-        )
+        annotations = self._load_annotations()
+        if code_l4 in annotations:
+            candidates = annotations[code_l4]
+            if len(candidates) > self.fewshot_per_category:
+                import random
+                import numpy as np
+                rng = np.random.RandomState(42)
+                sample = rng.choice(candidates, self.fewshot_per_category, replace=False)
+            else:
+                sample = candidates
+            return "\n".join(f"- {ex}" for ex in sample)
+        return "(pas d'exemples reels disponibles pour ce code)"
 
     def generate_for_category(
         self,
@@ -311,114 +520,201 @@ Produits (un par ligne):"""
         libelle: str,
         comprend: str | None = None,
         ne_comprend_pas: str | None = None,
-        num_examples: int | None = None,
     ) -> list[dict[str, str]]:
         """Generate synthetic examples for a single COICOP category.
 
+        Makes multiple LLM calls (self.calls_per_category) with varied prompts
+        and accumulates/de-duplicates results.
+
         Args:
-            code: COICOP code
-            libelle: COICOP category label
-            comprend: INSEE description of what the category includes (optional)
-            ne_comprend_pas: INSEE description of what the category excludes (optional)
-            num_examples: Number of examples (defaults to examples_per_category)
+            code: COICOP code.
+            libelle: COICOP category label.
+            comprend: INSEE description of what the category includes (optional).
+            ne_comprend_pas: INSEE description of what the category excludes (optional).
 
         Returns:
-            List of dictionaries with 'product', 'code', 'libelle' keys
+            List of dicts with 'product', 'code', 'libelle' keys.
         """
-        if num_examples is None:
-            num_examples = self.examples_per_category
-
         code_type = self._get_code_type(code)
         prompt = self._build_generation_prompt(code_type)
+        code_l4 = self._extract_level4(code)
 
-        # Build optional context sections from INSEE descriptions
-        comprend_section = f"Cette catégorie comprend: {comprend}" if comprend else ""
-        ne_comprend_section = f"Cette catégorie NE comprend PAS: {ne_comprend_pas}" if ne_comprend_pas else ""
+        # Get few-shot real examples
+        fewshot = self._get_fewshot_examples(code_l4)
+        if not fewshot or "(pas d'exemples" in fewshot:
+            fewshot = "(pas d'exemples reels disponibles pour ce code)"
 
-        # Format the prompt
-        formatted_prompt = prompt.format(
-            num_examples=num_examples,
-            code=code,
-            libelle=libelle,
-            comprend_section=comprend_section,
-            ne_comprend_section=ne_comprend_section,
-        )
+        # Build optional context sections
+        comprend_section = f"Cette categorie comprend: {comprend}" if comprend else ""
+        ne_comprend_section = f"Cette categorie NE comprend PAS: {ne_comprend_pas}" if ne_comprend_pas else ""
 
-        # Generate using LLM
-        response = self.llm.invoke(formatted_prompt)
-        response_text = (
-            response.content if hasattr(response, "content") else str(response)
-        )
+        # Multiple calls with variations
+        all_products: list[str] = []
+        import random
+        import numpy as np
+        rng = np.random.RandomState(42)
 
-        # Parse the response into individual products
-        products = self._parse_response(response_text)
+        for call_idx in range(self.calls_per_category):
+            # Vary the prompt slightly each call: shuffle includes/excludes order, sample few-shot
+            if call_idx % 2 == 0:
+                includes_section = comprend_section
+                excludes_section = ne_comprend_section
+            else:
+                includes_section = ne_comprend_section
+                excludes_section = comprend_section
+
+            # Sample different few-shot examples for variety
+            annotations = self._load_annotations()
+            if code_l4 in annotations:
+                candidates = annotations[code_l4]
+                n_samples = min(self.fewshot_per_category, len(candidates))
+                if n_samples > 0:
+                    sample = list(rng.choice(candidates, n_samples, replace=False))
+                    fewshot_current = "\n".join(f"- {ex}" for ex in sample)
+                else:
+                    fewshot_current = "(pas d'exemples reels pour ce code)"
+            else:
+                fewshot_current = "(pas d'exemples reels pour ce code)"
+
+            formatted_prompt = prompt.format(
+                num_examples=self.examples_per_call,
+                code=code,
+                libelle=libelle,
+                comprend_section=includes_section,
+                ne_comprend_section=excludes_section,
+                fewshot_examples=fewshot_current,
+            )
+
+            try:
+                response = self.llm.invoke(formatted_prompt)
+                response_text = (
+                    response.content if hasattr(response, "content") else str(response)
+                )
+                products = self._parse_response(response_text)
+                all_products.extend(products)
+                logger.info("  Call %d/%d: %d raw products extracted",
+                            call_idx + 1, self.calls_per_category, len(products))
+            except Exception as e:
+                logger.warning("  Call %d/%d failed for %s: %s",
+                               call_idx + 1, self.calls_per_category, code, e)
+
+        # De-duplicate
+        all_products = list(dict.fromkeys(all_products))  # preserve order
+
+        # Apply style enforcement
+        if self.style_enforce:
+            all_products = self._style_enforce(all_products)
+
+        # Final de-dup after style
+        all_products = list(dict.fromkeys(all_products))
 
         return [
             {"product": product, "code": code, "libelle": libelle}
-            for product in products[:num_examples]
+            for product in all_products
         ]
 
     def _parse_response(self, response: str) -> list[str]:
-        """Parse LLM response into list of product names.
-
-        Args:
-            response: Raw LLM response text
-
-        Returns:
-            List of product name strings
-        """
+        """Parse LLM response into list of product names."""
         lines = response.strip().split("\n")
         products = []
 
-        # Patterns that indicate introductory/explanatory lines to skip
         skip_patterns = [
-            "voici",
-            "voilà",
-            "exemples",
-            "catégorie",
-            "coicop",
-            "produits pour",
-            "produits de",
-            "ci-dessous",
-            "suivants",
+            "voici", "voila", "exemples", "categorie",
+            "coicop", "produits pour", "produits de",
+            "ci-dessous", "suivants", "voici liste",
         ]
 
         for line in lines:
-            # Clean up the line
             line = line.strip()
             if not line:
                 continue
 
-            # Skip introductory lines (check before removing prefixes)
             line_lower = line.lower()
-            if any(pattern in line_lower for pattern in skip_patterns):
+            if any(pat in line_lower for pat in skip_patterns):
                 continue
 
-            # Skip lines that are too long (likely explanatory text, not product names)
             if len(line) > 80:
                 continue
 
-            # Remove common prefixes like "1.", "- ", "• ", etc.
-            for prefix in ["- ", "• ", "* ", "– "]:
+            # Remove list markers
+            for prefix in ["- ", "• ", "* ", "– ", "\u2022 "]:
                 if line.startswith(prefix):
-                    line = line[len(prefix) :]
+                    line = line[len(prefix):]
                     break
 
-            # Remove numbered prefixes like "1. ", "2. "
+            # Remove numbered prefixes
             if len(line) > 2 and line[0].isdigit() and line[1] in [".", ")", ":"]:
                 line = line[2:].strip()
-            elif (
-                len(line) > 3
-                and line[0].isdigit()
-                and line[1].isdigit()
-                and line[2] in [".", ")", ":"]
-            ):
+            elif (len(line) > 3 and line[0].isdigit()
+                  and line[1].isdigit()
+                  and line[2] in [".", ")", ":"]):
                 line = line[3:].strip()
 
             if line:
                 products.append(line)
 
         return products
+
+    # ── Style evaluation ─────────────────────────────────────────────────
+
+    def _evaluate_style(self, products: list[str]) -> None:
+        """Console report comparing generated style vs BDF tickets.
+
+        Metrics: uppercase rate, length distribution, token diversity.
+        """
+        # Real BDF tickets baseline
+        try:
+            tickets = pd.read_csv("data/annotated/tickets_application.csv", sep=";")
+            real_products = tickets["product"].dropna().tolist()
+        except Exception:
+            real_products = []
+
+        print("\n" + "=" * 60)
+        print("  BAZAR")
+        print("  Style evaluation report")
+        print("=" * 60)
+
+        # Uppercase rate
+        synth_upper = sum(1 for p in products if p.isupper()) / len(products) if products else 0
+        if real_products:
+            real_upper = sum(1 for p in real_products if p.isupper()) / len(real_products)
+        else:
+            real_upper = 0
+
+        print(f"\n{'Metr.':<35} {'Reel':>10} {'Synth':>10} {'Ecarts':>10}")
+        print("-" * 60)
+        print(f"{'100% MAJUSCULES':.<35} {real_upper:>9.1%} {synth_upper:>9.1%} {abs(real_upper - synth_upper):>9.1%}")
+
+        # Length distribution
+        synth_lengths = [len(p) for p in products]
+        real_lengths = [len(p) for p in real_products]
+
+        if synth_lengths:
+            synth_mean, synth_std = np.mean(synth_lengths), np.std(synth_lengths)
+            print(f"{'Long. (moy ± std)':.<35} {len(real_lengths) if real_lengths else 0:>8} {synth_mean:>6.1f} ± {synth_std:>5.1f}")
+            print(f"{'Long. (min/max)':.<35} {min(real_lengths) if real_lengths else 0:>8} {min(synth_lengths)} / {max(synth_lengths)}")
+
+        if real_lengths:
+            print(f"{'Long. reel (moy ± std)':.<35} {np.mean(real_lengths):>6.1f} ± {np.std(real_lengths):>5.1f} {min(real_lengths)} / {max(real_lengths)}")
+
+        # Token diversity
+        synth_tokens = set()
+        for p in products:
+            synth_tokens.update(p.split())
+        real_tokens = set()
+        for p in (real_products or []):
+            real_tokens.update(p.split())
+
+        synth_unique = len(synth_tokens)
+        real_unique = len(real_tokens)
+
+        print(f"{'Tokens uniques synth':.<35} {synth_unique:>8}")
+        if real_products:
+            print(f"{'Tokens uniques reel':.<35} {real_unique:>8}")
+
+        print("=" * 60)
+
+    # ── Dataset generation ───────────────────────────────────────────────
 
     def generate_dataset(
         self,
@@ -427,24 +723,22 @@ Produits (un par ligne):"""
         exclude_technical: bool = False,
         output_path: str | Path | None = None,
     ) -> pd.DataFrame:
-        """Generate a complete synthetic dataset.
+        """Generate a synthetic dataset with multi-call and style enforcement.
 
         Args:
-            level: COICOP hierarchy level to generate for (1-5)
-            max_categories: Maximum number of categories to process (for testing)
-            exclude_technical: Whether to exclude 98.x and 99.x technical codes
-            output_path: If provided, save incrementally after each category (CSV only)
+            level: COICOP hierarchy level to generate for (1-5).
+            max_categories: Maximum categories to process (for testing).
+            exclude_technical: Whether to exclude 98.x and 99.x technical codes.
+            output_path: If provided, save incrementally (CSV only).
 
         Returns:
-            DataFrame with 'product', 'code', 'libelle' columns
+            DataFrame with 'product', 'code', 'libelle' columns.
         """
-        # Get standard COICOP codes at the requested level
+        # Get standard COICOP codes at requested level
         categories = self._get_categories_by_level(level)
-        # Exclude technical codes from the level-based selection (they are added separately)
         categories = categories[~categories["code"].str.startswith(("98", "99"))]
 
         if not exclude_technical:
-            # Add 98/99 leaf nodes (irregular depths, not filtered by level)
             tech_leaves = self._get_technical_leaf_nodes()
             categories = pd.concat([categories, tech_leaves], ignore_index=True)
 
@@ -454,9 +748,10 @@ Produits (un par ligne):"""
         total = len(categories)
         all_examples: list[dict[str, str]] = []
 
-        # Write CSV header if incremental saving is enabled
-        if output_path is not None:
-            output_path = Path(output_path)
+        incremental_path = output_path if output_path and str(output_path).endswith(".csv") else None
+
+        if incremental_path:
+            output_path = Path(incremental_path)
             output_path.parent.mkdir(parents=True, exist_ok=True)
             with open(output_path, "w", encoding="utf-8") as f:
                 f.write("product;code;libelle\n")
@@ -464,132 +759,112 @@ Produits (un par ligne):"""
         for i, (_, row) in enumerate(categories.iterrows(), 1):
             code = row["code"]
             libelle = row["libelle"]
-            # Extract enriched INSEE descriptions if available
             comprend = row.get("comprend") if pd.notna(row.get("comprend")) else None
             ne_comprend_pas = row.get("ne_comprend_pas") if pd.notna(row.get("ne_comprend_pas")) else None
 
-            logger.info(f"[{i}/{total}] Generating examples for {code}: {libelle}")
+            logger.info("[%d/%d] Generating examples for %s: %s",
+                        i, total, code, libelle[:40])
 
             try:
                 examples = self.generate_for_category(
-                    code, libelle, comprend=comprend, ne_comprend_pas=ne_comprend_pas
+                    code, libelle,
+                    comprend=comprend, ne_comprend_pas=ne_comprend_pas,
                 )
                 all_examples.extend(examples)
-                logger.info(f"  Generated {len(examples)} examples")
+                logger.info("  → %d examples for %s", len(examples), code)
 
                 # Append to file incrementally
-                if output_path is not None:
+                if incremental_path is not None:
                     batch_df = pd.DataFrame(examples)
                     batch_df.to_csv(
-                        output_path, mode="a", header=False,
-                        index=False, sep=";", encoding="utf-8",
+                        incremental_path, mode="a", header=False,
+                        index=False, sep=";", encoding="utf-8 ",
                     )
-                    logger.info(f"  Saved to {output_path} (total: {len(all_examples)} examples)")
             except Exception as e:
-                logger.warning(f"  Failed to generate for {code}: {e}")
+                logger.warning("  Failed to generate for %s: %s", code, e)
 
         return pd.DataFrame(all_examples)
 
-    def generate_with_dataset_generator(
-        self,
-        level: int = 4,
-        max_categories: int | None = None,
-        exclude_technical: bool = False,
-    ) -> pd.DataFrame:
-        """Generate dataset using LangChain's DatasetGenerator.
 
-        This is an alternative method using the experimental DatasetGenerator
-        for more structured output.
+# ── CLI helpers ──────────────────────────────────────────────────────────────
 
-        Args:
-            level: COICOP hierarchy level to generate for (1-5)
-            max_categories: Maximum number of categories to process
-            exclude_technical: Whether to exclude 98.x and 99.x technical codes
-
-        Returns:
-            DataFrame with synthetic examples
-        """
-        categories = self._get_categories_by_level(level)
-        categories = categories[~categories["code"].str.startswith(("98", "99"))]
-
-        if not exclude_technical:
-            tech_leaves = self._get_technical_leaf_nodes()
-            categories = pd.concat([categories, tech_leaves], ignore_index=True)
-
-        if max_categories is not None:
-            categories = categories.head(max_categories)
-
-        # Create the data generation chain
-        chain = create_data_generation_chain(self.llm, COICOPExample)
-
-        all_examples: list[dict[str, str]] = []
-
-        for _, row in categories.iterrows():
-            code = row["code"]
-            libelle = row["libelle"]
-
-            logger.info(f"Generating structured examples for {code}: {libelle}")
-
-            # Build subject description for the generator
-            subject = f"produit ou service de la catégorie COICOP '{libelle}' (code {code})"
-
-            try:
-                for _ in range(self.examples_per_category):
-                    result = chain.invoke({"subject": subject})
-                    if isinstance(result, dict) and "text" in result:
-                        # Extract the generated text
-                        all_examples.append(
-                            {
-                                "product": result.get("text", ""),
-                                "code": code,
-                                "libelle": libelle,
-                            }
-                        )
-            except Exception as e:
-                logger.warning(f"  Failed to generate for {code}: {e}")
-
-        return pd.DataFrame(all_examples)
+def _parse_s3_paths(paths: list[str] | None) -> dict[str, str]:
+    """Parse --annotations comma-separated paths into {source: path} mapping."""
+    if not paths:
+        return {}
+    mapping = {}
+    if len(paths) >= 1:
+        mapping["tickets"] = paths[0]
+    if len(paths) >= 2:
+        mapping["carnets"] = paths[1]
+    if len(paths) >= 3:
+        mapping["ajouts"] = paths[2]
+    return mapping
 
 
 def generate_and_save(
     output_path: str | Path,
     coicop_path: str | Path = "data/coicop_et_codes_techniques.csv",
     rmes_path: str | Path | None = "data/coicop-2018_envoi_rmes_20251022.csv",
+    annotations_paths: list[str] | None = None,
     examples_per_category: int = 10,
     level: int = 4,
     max_categories: int | None = None,
     exclude_technical: bool = False,
+    calls_per_category: int = 5,
+    fewshot_per_category: int = 6,
+    style_enforce: bool = True,
+    evaluate_style: bool = False,
 ) -> pd.DataFrame:
     """Generate synthetic data and save to file.
 
-    Uses environment variables for LLM configuration:
+    Environment variables:
         LLMLAB_API_KEY: API key (required)
         LLMLAB_URL: Base URL for API (optional)
         OPENAI_MODEL: Model name (optional, defaults to gpt-oss:20b)
 
     Args:
-        output_path: Path to save the generated data (parquet or csv)
-        coicop_path: Path to COICOP definitions (with 98/99 codes)
-        rmes_path: Path to RMES file for enriched descriptions (optional)
-        examples_per_category: Number of examples per category
-        level: COICOP hierarchy level
-        max_categories: Maximum categories to process (for testing)
-        exclude_technical: Whether to exclude 98.x and 99.x technical codes
+        output_path: Path to save generated data (local or S3, parquet or csv).
+        coicop_path: Path to COICOP definitions (with 98/99 codes).
+        rmes_path: Path to RMES file for enriched descriptions (optional).
+        annotations_paths: List of CSV paths (tickets, carnets, ajouts) — local or S3.
+        examples_per_category: Number of examples per LLM call.
+        level: COICOP hierarchy level.
+        max_categories: Maximum categories to process (for testing).
+        exclude_technical: Whether to exclude 98.x and 99.x technical codes.
+        calls_per_category: LLM calls per category (5 = ~50 products/cat).
+        fewshot_per_category: Real examples injected per category in prompt.
+        style_enforce: Apply BDF ticket style post-processing.
+        evaluate_style: Compare generated style vs real BDF tickets.
 
     Returns:
-        Generated DataFrame
+        Generated DataFrame.
     """
+    annotations_map = _parse_s3_paths(annotations_paths)
+
     generator = COICOPSyntheticGenerator(
         coicop_path=coicop_path,
         rmes_path=rmes_path,
-        examples_per_category=examples_per_category,
+        annotations_s3_paths=annotations_map,
+        examples_per_call=examples_per_category,
+        calls_per_category=calls_per_category,
+        fewshot_per_category=fewshot_per_category,
+        style_enforce=style_enforce,
     )
 
-    output_path = Path(output_path)
+    output_path = Path(output_path) if not str(output_path).startswith("s3://") else str(output_path)
 
-    # For CSV, use incremental saving (writes after each category)
-    # For parquet, save at the end (parquet doesn't support appending)
-    incremental_path = output_path if output_path.suffix != ".parquet" else None
+    # For CSV, use incremental saving; for parquet, save at the end
+    incremental_path = output_path if str(output_path).endswith(".csv") else None
+
+    logger.info("Generating synthetic COICOP data:")
+    logger.info("  Output: %s", output_path)
+    logger.info("  Level: %d", level)
+    logger.info("  Calls/category: %d × %d examples = ~%d products",
+                calls_per_category, examples_per_category,
+                calls_per_category * examples_per_category)
+    logger.info("  Few-shot examples: %d per category", fewshot_per_category)
+    logger.info("  Style enforce: %s", style_enforce)
 
     df = generator.generate_dataset(
         level=level,
@@ -598,14 +873,23 @@ def generate_and_save(
         output_path=incremental_path,
     )
 
-    if output_path.suffix == ".parquet":
+    if isinstance(output_path, str) and output_path.startswith("s3://"):
+        _write_parquet_to_path(df, output_path)
+        logger.info("Saved %d examples to %s", len(df), output_path)
+    elif isinstance(output_path, Path) and output_path.suffix == ".parquet":
         df.to_parquet(output_path, index=False)
-        logger.info(f"Saved {len(df)} examples to {output_path}")
+        logger.info("Saved %d examples to %s", len(df), output_path)
     else:
-        logger.info(f"Done. {len(df)} examples saved to {output_path}")
+        logger.info("Done. %d examples total.", len(df))
+
+    # Style evaluation
+    if evaluate_style and "product" in df.columns:
+        generator._evaluate_style(df["product"].tolist())
 
     return df
 
+
+# ── Main CLI ─────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     import argparse
@@ -613,14 +897,13 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
 
     parser = argparse.ArgumentParser(
-        description="Generate synthetic COICOP training data"
+        description="Generate synthetic COICOP training data (refactored per Code2Text report)"
     )
     parser.add_argument(
-        "--output",
-        "-o",
+        "--output", "-o",
         type=str,
-        default="data/synthetic_coicop.parquet",
-        help="Output file path",
+        default="data/synthetic_coicop_v2.parquet",
+        help="Output path (local or s3://...). Detected format from extension.",
     )
     parser.add_argument(
         "--coicop",
@@ -631,26 +914,42 @@ if __name__ == "__main__":
     parser.add_argument(
         "--rmes",
         type=str,
-        default="data/coicop-2018_envoi_rmes_20251022.csv",
-        help="Path to RMES file for enriched descriptions (set to empty to skip)",
+        default=None,
+        help="Path to RMES file for enriched descriptions (set empty to skip)",
     )
     parser.add_argument(
-        "--examples",
-        "-n",
+        "--annotations",
+        nargs=3,
+        default=None,
+        metavar="TICKETS",
+        help="3 CSV paths (tickets, carnets, ajouts) — local or s3:// URIs",
+    )
+    parser.add_argument(
+        "--examples", "-n",
         type=int,
         default=10,
-        help="Number of examples per category",
+        help="Number of examples per LLM call per category",
     )
     parser.add_argument(
-        "--level",
-        "-l",
+        "--calls", "-c",
+        type=int,
+        default=5,
+        help="LLM calls per category (default: 5, → ~50 products/cat)",
+    )
+    parser.add_argument(
+        "--fewshot", "-f",
+        type=int,
+        default=6,
+        help="Real examples injected per category in prompt (default: 6)",
+    )
+    parser.add_argument(
+        "--level", "-l",
         type=int,
         default=4,
-        help="COICOP hierarchy level (1-5)",
+        help="COICOP hierarchy level (1-5, default: 4)",
     )
     parser.add_argument(
-        "--max-categories",
-        "-m",
+        "--max-categories", "-m",
         type=int,
         default=None,
         help="Maximum categories to process (for testing)",
@@ -661,15 +960,35 @@ if __name__ == "__main__":
         default=False,
         help="Exclude 98.x and 99.x technical codes",
     )
+    parser.add_argument(
+        "--no-style",
+        action="store_true",
+        default=False,
+        help="Disable style post-processing (default: enabled)",
+    )
+    parser.add_argument(
+        "--evaluate-style",
+        action="store_true",
+        default=False,
+        help="Compare generated style vs real BDF tickets (console report)",
+    )
 
     args = parser.parse_args()
 
-    generate_and_save(
+    # Convert rmes to None if empty string
+    rmes = args.rmes or None
+
+    df = generate_and_save(
         output_path=args.output,
         coicop_path=args.coicop,
-        rmes_path=args.rmes or None,
+        rmes_path=rmes,
+        annotations_paths=args.annotations,
         examples_per_category=args.examples,
         level=args.level,
         max_categories=args.max_categories,
         exclude_technical=args.exclude_technical,
+        calls_per_category=args.calls,
+        fewshot_per_category=args.fewshot,
+        style_enforce=not args.no_style,
+        evaluate_style=args.evaluate_style,
     )

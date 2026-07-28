@@ -12,6 +12,7 @@ from .classifiers.basic_classifier import BasicCOICOPClassifier, BasicConfig
 from .preprocessing.data_preparation import load_annotations
 from .classifiers.hierarchical_classifier import HierarchicalCOICOPClassifier, HierarchicalConfig
 from .classifiers.multihead_classifier import MultiHeadCOICOPClassifier, MultiHeadConfig
+from .classifiers.multilevel_classifier import MultilevelCOICOPClassifier, MultilevelConfig
 
 logging.basicConfig(
     level=logging.INFO,
@@ -100,6 +101,15 @@ def _evaluate_on_annotations(
         from .predict import MultiHeadCOICOPPredictor
 
         predictor = MultiHeadCOICOPPredictor(model_path)
+        result_df = predictor.predict_dataframe(
+            eval_df,
+            text_column=eval_text_column,
+            top_k=eval_top_k,
+        )
+    elif classifier_type == "multilevel":
+        from .predict import MultilevelCOICOPPredictor
+
+        predictor = MultilevelCOICOPPredictor(model_path)
         result_df = predictor.predict_dataframe(
             eval_df,
             text_column=eval_text_column,
@@ -882,6 +892,194 @@ def train_multihead_classifier(
             model_path,
             "multihead",
             "src/mlflow_model_multihead.py",
+            eval_data_path,
+            eval_text_column,
+            eval_top_k,
+            eval_filter_columns,
+            eval_code_column,
+        )
+
+    return classifier
+
+
+def train_multilevel_classifier(
+    annotations_path: str,
+    output_dir: str,
+    head_type: str = "mean",
+    tokenizer_type: str = "ngram",
+    wordpiece_vocab_size: int = 5_000,
+    ngram_min_n: int = 3,
+    ngram_max_n: int = 6,
+    ngram_num_tokens: int = 100_000,
+    embedding_dim: int = 128,
+    max_seq_length: int = 64,
+    n_attention_layers: int = 0,
+    n_attention_heads: int = 4,
+    n_kv_heads: int = 4,
+    n_label_attention_heads: int = 4,
+    batch_size: int = 32,
+    lr: float = 1e-3,
+    num_epochs: int = 20,
+    patience: int = 5,
+    min_samples: int = 50,
+    max_level: int = 5,
+    loss_weights: list[float] | None = None,
+    mlflow_experiment: str | None = None,
+    eval_data_path: str | None = None,
+    eval_top_k: int = 5,
+    eval_text_column: str = "text",
+    eval_filter_columns: list[str] | None = None,
+    eval_code_column: str = "code",
+    preprocess: bool = True,
+    code_column: str = "code",
+    encryption_key: str | None = None,
+    num_workers: int = 0,
+    pin_memory: bool = True,
+    tokenizer_name: str | None = None,
+) -> MultilevelCOICOPClassifier:
+    """Train the interpretable multi-level COICOP classifier.
+
+    Independent per-level heads over a shared encoder, following
+    https://julber95.github.io/interpretable-text-classification/pages/naf_multilevel.html
+
+    Args:
+        annotations_path: Path to training data (parquet or csv).
+        output_dir: Directory to save the trained model.
+        head_type: ``"mean"`` (FastText-style) or ``"label-attention"``.
+        tokenizer_type: ``"ngram"`` or ``"wordpiece"``.
+        wordpiece_vocab_size: Vocabulary size when training a WordPiece tokenizer.
+        ngram_min_n: Minimum n-gram size for the n-gram tokenizer.
+        ngram_max_n: Maximum n-gram size for the n-gram tokenizer.
+        ngram_num_tokens: Vocabulary size for the n-gram tokenizer.
+        embedding_dim: Token embedding dimension.
+        max_seq_length: Maximum sequence length.
+        n_attention_layers: Transformer blocks in the shared encoder (0 = FastText).
+        n_attention_heads: Heads per self-attention layer.
+        n_kv_heads: KV heads (GQA if < n_attention_heads).
+        n_label_attention_heads: Heads per label-attention head.
+        batch_size: Training batch size.
+        lr: Learning rate.
+        num_epochs: Maximum epochs.
+        patience: Early stopping patience.
+        min_samples: Minimum samples per level.
+        max_level: Number of COICOP levels to train (1-5).
+        loss_weights: Per-level loss weights (defaults to equal).
+        mlflow_experiment: MLflow experiment name (optional).
+        eval_data_path: Path to evaluation data for post-training metrics.
+        eval_top_k: Maximum K for top-k accuracy evaluation.
+        eval_text_column: Text column name in evaluation data.
+        eval_filter_columns: Boolean columns to compute separate metrics for.
+        eval_code_column: True code column in evaluation data.
+        preprocess: Apply text preprocessing to training data.
+        code_column: COICOP code column in training data.
+        encryption_key: Parquet encryption key.
+        num_workers: DataLoader workers.
+        pin_memory: Pin memory for faster CPU->GPU transfer.
+        tokenizer_name: HuggingFace pretrained tokenizer name (overrides type).
+
+    Returns:
+        Trained MultilevelCOICOPClassifier.
+    """
+    _all_args = dict(locals())
+
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    logger.info(f"Loading annotations from {annotations_path}...")
+    df = load_annotations(
+        annotations_path,
+        exclude_technical=True,
+        encryption_key=encryption_key,
+        preprocess=preprocess,
+        code_column=code_column,
+    )
+    logger.info(f"Loaded {len(df)} samples (excluding 98.x and 99.x codes)")
+
+    unique_codes = df[code_column].nunique()
+    unique_level1 = df["level1"].nunique()
+    logger.info(f"Unique codes: {unique_codes}")
+    logger.info(f"Level 1 categories: {unique_level1}")
+
+    mlflow_run_info = None
+    if mlflow_experiment:
+        mlflow.set_experiment(mlflow_experiment)
+        mlflow.start_run()
+        _log_all_params(_all_args)
+        mlflow.log_params(
+            {
+                "classifier_type": "multilevel",
+                "num_samples": len(df),
+                "unique_codes": unique_codes,
+                "unique_level1": unique_level1,
+            }
+        )
+
+        mlflow_run_info = {
+            "experiment_name": mlflow_experiment,
+            "run_id": mlflow.active_run().info.run_id,
+            "tracking_uri": mlflow.get_tracking_uri(),
+        }
+
+    config = MultilevelConfig(
+        head_type=head_type,
+        tokenizer_type=tokenizer_type,
+        wordpiece_vocab_size=wordpiece_vocab_size,
+        ngram_min_n=ngram_min_n,
+        ngram_max_n=ngram_max_n,
+        ngram_num_tokens=ngram_num_tokens,
+        embedding_dim=embedding_dim,
+        max_seq_length=max_seq_length,
+        n_attention_layers=n_attention_layers,
+        n_attention_heads=n_attention_heads,
+        n_kv_heads=n_kv_heads,
+        n_label_attention_heads=n_label_attention_heads,
+        batch_size=batch_size,
+        lr=lr,
+        num_epochs=num_epochs,
+        patience=patience,
+        max_level=max_level,
+        loss_weights=loss_weights,
+        min_samples_per_level=min_samples,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+        tokenizer_name=tokenizer_name,
+    )
+
+    classifier = MultilevelCOICOPClassifier(config=config)
+
+    logger.info("Starting multi-level classifier training...")
+    model_path = output_path / "multilevel_model"
+    metrics = classifier.train(
+        df=df,
+        text_column="text",
+        code_column=code_column,
+        save_dir=str(output_path / "checkpoints"),
+        mlflow_run_info=mlflow_run_info,
+    )
+
+    if mlflow_experiment:
+        for level_name, level_metrics in metrics["levels"].items():
+            mlflow.log_metrics(
+                {
+                    f"{level_name}_num_classes": level_metrics["num_classes"],
+                    f"{level_name}_train_samples": level_metrics["train_samples"],
+                    f"{level_name}_val_samples": level_metrics["val_samples"],
+                }
+            )
+
+    mlflow_run_id = mlflow.active_run().info.run_id if mlflow_experiment else None
+    classifier.save(model_path, mlflow_run_id=mlflow_run_id)
+    logger.info(f"Model saved to {model_path}")
+
+    if mlflow_experiment:
+        _finalize_mlflow_run(
+            classifier,
+            model_path,
+            "multilevel",
+            # The sibling classifiers pass "src/mlflow_model_*.py", which does
+            # not exist (the modules live under src/tracking/), so their pyfunc
+            # logging fails silently inside _finalize_mlflow_run's try/except.
+            "src/tracking/mlflow_model_multilevel.py",
             eval_data_path,
             eval_text_column,
             eval_top_k,

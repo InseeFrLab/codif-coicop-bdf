@@ -297,6 +297,103 @@ def cmd_predict_multihead(args: argparse.Namespace) -> None:
                             )
 
 
+def cmd_train_multilevel(args: argparse.Namespace) -> None:
+    """Train the interpretable multi-level classifier with independent heads."""
+    from src.train import train_multilevel_classifier
+
+    loss_weights = None
+    if args.loss_weights:
+        loss_weights = [float(w) for w in args.loss_weights.split(",")]
+
+    train_multilevel_classifier(
+        annotations_path=args.data,
+        output_dir=args.output,
+        head_type=args.head_type,
+        tokenizer_type=args.tokenizer_type,
+        wordpiece_vocab_size=args.wordpiece_vocab_size,
+        ngram_min_n=args.ngram_min,
+        ngram_max_n=args.ngram_max,
+        ngram_num_tokens=args.ngram_vocab_size,
+        embedding_dim=args.embedding_dim,
+        max_seq_length=args.max_seq_length,
+        n_attention_layers=args.n_attention_layers,
+        n_attention_heads=args.n_attention_heads,
+        n_kv_heads=args.n_kv_heads,
+        n_label_attention_heads=args.n_label_attention_heads,
+        batch_size=args.batch_size,
+        lr=args.lr,
+        num_epochs=args.num_epochs,
+        patience=args.patience,
+        min_samples=args.min_samples,
+        max_level=args.max_level,
+        loss_weights=loss_weights,
+        mlflow_experiment=args.mlflow_experiment,
+        eval_data_path=args.eval_data,
+        eval_top_k=args.eval_top_k,
+        eval_text_column=args.eval_text_column,
+        eval_filter_columns=args.eval_filter_columns,
+        eval_code_column=args.eval_code_column,
+        preprocess=args.preprocess,
+        code_column=args.code_column,
+        encryption_key=args.encryption_key,
+        num_workers=args.num_workers,
+        pin_memory=args.pin_memory,
+        tokenizer_name=args.tokenizer,
+    )
+
+
+def cmd_predict_multilevel(args: argparse.Namespace) -> None:
+    """Predict COICOP codes using the multi-level classifier."""
+    from src.predict import MultilevelCOICOPPredictor
+
+    predictor = MultilevelCOICOPPredictor(args.model)
+
+    if args.file:
+        predictor.predict_file(
+            input_path=args.file,
+            output_path=args.output,
+            text_column=args.text_column,
+            batch_size=args.batch_size,
+            top_k=args.top_k,
+            confidence_threshold=args.confidence_threshold,
+            explain=args.explain,
+            explain_top_words=args.explain_top_words,
+        )
+        return
+
+    texts = [args.input] if args.input else args.texts
+
+    predictions = predictor.predict(
+        texts, top_k=args.top_k, confidence_threshold=args.confidence_threshold
+    )
+    explanations = (
+        predictor.explain(texts, top_words=args.explain_top_words)
+        if args.explain
+        else None
+    )
+
+    for i, pred in enumerate(predictions):
+        print(f"\nText: {pred['text']}")
+        print(f"Final code: {pred['code']} (confidence: {pred['confidence']:.2f})")
+        print(f"Combined confidence: {pred['combined_confidence']:.4f}")
+        if not pred.get("levels_consistent", True):
+            print("Levels disagree: heads are independent, no hierarchy enforced")
+        if "levels" in pred:
+            print("Level breakdown:")
+            for level_name, level_data in pred["levels"].items():
+                print(
+                    f"  {level_name}: {level_data['code']} "
+                    f"(conf: {level_data['confidence']:.2f})"
+                )
+                for k, alt in enumerate(level_data.get("alternatives", []), start=2):
+                    print(f"    top {k}: {alt['code']} (conf: {alt['confidence']:.2f})")
+        if explanations:
+            print("Top contributing words:")
+            for level_name, words in explanations[i].items():
+                formatted = ", ".join(f"{w} ({s:+.3f})" for w, s in words)
+                print(f"  {level_name}: {formatted}")
+
+
 def cmd_classify_llm(args: argparse.Namespace) -> None:
     """Classify a file into COICOP codes using an LLM."""
     import asyncio
@@ -1519,6 +1616,295 @@ def main() -> int:
         help="Text(s) to classify (if not using --file or --input)",
     )
     predict_mh_parser.set_defaults(func=cmd_predict_multihead)
+
+    # Train-multilevel command
+    train_ml_parser = subparsers.add_parser(
+        "train-multilevel",
+        help="Train the interpretable multi-level classifier (independent heads)",
+    )
+    train_ml_parser.add_argument(
+        "--data",
+        type=str,
+        default="data/data-train.parquet",
+        help="Path to training data (parquet or csv)",
+    )
+    train_ml_parser.add_argument(
+        "--output",
+        type=str,
+        default="checkpoints/multilevel",
+        help="Output directory for trained models",
+    )
+    train_ml_parser.add_argument(
+        "--head-type",
+        type=str,
+        default="mean",
+        choices=["mean", "label-attention"],
+        help="Per-level head: 'mean' = FastText-style mean pooling (default), "
+        "'label-attention' = per-class cross-attention",
+    )
+    train_ml_parser.add_argument(
+        "--tokenizer-type",
+        type=str,
+        default="ngram",
+        choices=["ngram", "wordpiece"],
+        help="Tokenizer to train (default: ngram)",
+    )
+    train_ml_parser.add_argument(
+        "--wordpiece-vocab-size",
+        type=int,
+        default=5000,
+        help="Vocabulary size when --tokenizer-type=wordpiece",
+    )
+    train_ml_parser.add_argument(
+        "--ngram-min",
+        type=int,
+        default=3,
+        help="Minimum n-gram size for tokenizer",
+    )
+    train_ml_parser.add_argument(
+        "--ngram-max",
+        type=int,
+        default=6,
+        help="Maximum n-gram size for tokenizer",
+    )
+    train_ml_parser.add_argument(
+        "--ngram-vocab-size",
+        type=int,
+        default=100000,
+        help="Vocabulary size for n-gram tokenizer",
+    )
+    train_ml_parser.add_argument(
+        "--embedding-dim",
+        type=int,
+        default=128,
+        help="Text embedding dimension",
+    )
+    train_ml_parser.add_argument(
+        "--max-seq-length",
+        type=int,
+        default=64,
+        help="Maximum sequence length",
+    )
+    train_ml_parser.add_argument(
+        "--n-attention-layers",
+        type=int,
+        default=0,
+        help="Transformer blocks in the shared encoder (0 = FastText-style, default)",
+    )
+    train_ml_parser.add_argument(
+        "--n-attention-heads",
+        type=int,
+        default=4,
+        help="Attention heads per self-attention layer (only if --n-attention-layers > 0)",
+    )
+    train_ml_parser.add_argument(
+        "--n-kv-heads",
+        type=int,
+        default=4,
+        help="KV heads (GQA if < n-attention-heads)",
+    )
+    train_ml_parser.add_argument(
+        "--n-label-attention-heads",
+        type=int,
+        default=4,
+        help="Attention heads per label-attention head (only if --head-type=label-attention)",
+    )
+    train_ml_parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=32,
+        help="Training batch size",
+    )
+    train_ml_parser.add_argument(
+        "--lr",
+        type=float,
+        default=1e-3,
+        help="Learning rate",
+    )
+    train_ml_parser.add_argument(
+        "--num-epochs",
+        type=int,
+        default=20,
+        help="Maximum number of epochs",
+    )
+    train_ml_parser.add_argument(
+        "--patience",
+        type=int,
+        default=5,
+        help="Early stopping patience",
+    )
+    train_ml_parser.add_argument(
+        "--min-samples",
+        type=int,
+        default=50,
+        help="Minimum samples per level",
+    )
+    train_ml_parser.add_argument(
+        "--max-level",
+        type=int,
+        default=5,
+        choices=range(1, 6),
+        metavar="{1,2,3,4,5}",
+        help="Maximum COICOP hierarchy depth to train (1-5, default: 5)",
+    )
+    train_ml_parser.add_argument(
+        "--loss-weights",
+        type=str,
+        default=None,
+        help="Comma-separated per-level loss weights (e.g. 1.0,1.0,1.0,1.0)",
+    )
+    train_ml_parser.add_argument(
+        "--mlflow-experiment",
+        type=str,
+        default=None,
+        help="MLflow experiment name (optional)",
+    )
+    train_ml_parser.add_argument(
+        "--eval-data",
+        type=str,
+        default=None,
+        help="Path to evaluation parquet for post-training top-k accuracy",
+    )
+    train_ml_parser.add_argument(
+        "--eval-top-k",
+        type=int,
+        default=5,
+        help="Maximum K for top-k accuracy evaluation (default: 5)",
+    )
+    train_ml_parser.add_argument(
+        "--eval-text-column",
+        type=str,
+        default="text",
+        help="Text column name in evaluation data (default: text)",
+    )
+    train_ml_parser.add_argument(
+        "--eval-filter-columns",
+        type=str,
+        nargs="+",
+        metavar="COL",
+        default=None,
+        help="Boolean columns in eval data to compute separate metrics for (True/False subsets)",
+    )
+    train_ml_parser.add_argument(
+        "--eval-code-column",
+        type=str,
+        default="code",
+        help="Name of the true code column in eval data (default: code)",
+    )
+    train_ml_parser.add_argument(
+        "--code-column",
+        type=str,
+        default="code",
+        help="Name of the COICOP code column in training data (default: code)",
+    )
+    train_ml_parser.add_argument(
+        "--preprocess",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Apply text preprocessing to training data (default: True)",
+    )
+    train_ml_parser.add_argument(
+        "--tokenizer",
+        type=str,
+        default=None,
+        help="HuggingFace pretrained tokenizer name (overrides --tokenizer-type)",
+    )
+    train_ml_parser.add_argument(
+        "--encryption-key",
+        type=str,
+        default=None,
+        help="Parquet encryption key (hex, 32 chars) for reading encrypted files",
+    )
+    train_ml_parser.add_argument(
+        "--num-workers",
+        type=int,
+        default=0,
+        help="DataLoader workers (0 = main process only)",
+    )
+    train_ml_parser.add_argument(
+        "--pin-memory",
+        action="store_true",
+        default=True,
+        help="Pin memory for faster CPU->GPU transfer (default: True)",
+    )
+    train_ml_parser.add_argument(
+        "--no-pin-memory",
+        action="store_false",
+        dest="pin_memory",
+        help="Disable pinned memory",
+    )
+    train_ml_parser.set_defaults(func=cmd_train_multilevel)
+
+    # Predict-multilevel command
+    predict_ml_parser = subparsers.add_parser(
+        "predict-multilevel",
+        help="Predict COICOP codes using the multi-level classifier",
+    )
+    predict_ml_parser.add_argument(
+        "--model",
+        type=str,
+        default="checkpoints/multilevel/multilevel_model",
+        help="Path to saved multi-level model or MLflow URI",
+    )
+    predict_ml_parser.add_argument(
+        "--input",
+        type=str,
+        default=None,
+        help="Single text to classify",
+    )
+    predict_ml_parser.add_argument(
+        "--file",
+        type=str,
+        default=None,
+        help="Input file for batch prediction",
+    )
+    predict_ml_parser.add_argument(
+        "--output",
+        type=str,
+        default="predictions_multilevel.csv",
+        help="Output file for batch prediction",
+    )
+    predict_ml_parser.add_argument(
+        "--text-column",
+        type=str,
+        default="product",
+        help="Name of text column in input file",
+    )
+    predict_ml_parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=64,
+        help="Batch size for prediction",
+    )
+    predict_ml_parser.add_argument(
+        "--top-k",
+        type=int,
+        default=1,
+        help="Number of top predictions per level (default: 1)",
+    )
+    predict_ml_parser.add_argument(
+        "--confidence-threshold",
+        type=float,
+        default=None,
+        help="Minimum confidence per level; stop at deepest level meeting this threshold",
+    )
+    predict_ml_parser.add_argument(
+        "--explain",
+        action="store_true",
+        help="Report the words that drove each level's prediction",
+    )
+    predict_ml_parser.add_argument(
+        "--explain-top-words",
+        type=int,
+        default=10,
+        help="Number of words to report per level with --explain (default: 10)",
+    )
+    predict_ml_parser.add_argument(
+        "texts",
+        nargs="*",
+        help="Text(s) to classify (if not using --file or --input)",
+    )
+    predict_ml_parser.set_defaults(func=cmd_predict_multilevel)
 
     # Evaluate-report command
     eval_report_parser = subparsers.add_parser(

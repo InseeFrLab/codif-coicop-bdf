@@ -296,7 +296,110 @@ uv run python main.py train-hierarchical \
     --resume
 ```
 
+### Classifieur multi-niveaux interpretable (`train-multilevel`)
+
+Reprend l'approche de l'[etude INSEE sur la NAF](https://julber95.github.io/interpretable-text-classification/pages/naf_multilevel.html) : un encodeur de tokens partage alimente N tetes de classification **independantes**, entrainees conjointement sur la somme des entropies croisees `L = L_niveau1 + ... + L_niveauN`.
+
+```mermaid
+flowchart TD
+    TEXT[Texte] --> TOK[Tokenizer partage\nn-grammes ou WordPiece]
+    TOK --> ENC[Encodeur partage\nembedding + RMSNorm]
+
+    ENC --> H1[Tete niveau 1]
+    ENC --> H2[Tete niveau 2]
+    ENC --> H3[Tete niveau 3]
+    ENC --> H4[Tete niveau 4]
+
+    H1 --> P1[01]
+    H2 --> P2[01.1]
+    H3 --> P3[01.1.2]
+    H4 --> P4[01.1.2.3]
+```
+
+Differences avec le classifieur hierarchique :
+
+- **Tetes independantes** : aucun masquage parent→enfant. Les niveaux peuvent se contredire ; la colonne `levels_consistent` signale ces desaccords au lieu de les masquer. C'est le principe de l'approche de reference : *"The five heads never talk to each other."*
+- **Encodeur FastText par defaut** (`--n-attention-layers 0`) : embedding + RMSNorm, chaque tete fait un mean pooling masque. `--head-type label-attention` active une attention croisee par classe.
+- **Un seul passage** : les N niveaux sont predits simultanement, contrairement a la cascade hierarchique.
+- **Interpretabilite** : voir `--explain` ci-dessous.
+
+#### Commande CLI
+
+```bash
+uv run python main.py train-multilevel \
+    --data data/data-train.parquet \
+    --output checkpoints/multilevel \
+    --num-epochs 20
+```
+
+| Argument | Defaut | Description |
+|----------|--------|-------------|
+| `--data` | `data/data-train.parquet` | Donnees d'entrainement (parquet ou csv) |
+| `--output` | `checkpoints/multilevel` | Repertoire de sortie |
+| `--head-type` | `mean` | `mean` (FastText) ou `label-attention` |
+| `--tokenizer-type` | `ngram` | `ngram` ou `wordpiece` |
+| `--wordpiece-vocab-size` | `5000` | Taille du vocabulaire WordPiece |
+| `--ngram-min` / `--ngram-max` | `3` / `6` | Taille des n-grammes |
+| `--ngram-vocab-size` | `100000` | Taille du vocabulaire n-grammes |
+| `--embedding-dim` | `128` | Dimension de l'embedding |
+| `--max-seq-length` | `64` | Longueur maximale de sequence |
+| `--n-attention-layers` | `0` | Blocs transformer dans l'encodeur (0 = FastText) |
+| `--n-label-attention-heads` | `4` | Tetes d'attention par tete de label |
+| `--batch-size` | `32` | Taille de batch |
+| `--lr` | `1e-3` | Taux d'apprentissage |
+| `--num-epochs` | `20` | Nombre max d'epoques |
+| `--patience` | `5` | Patience pour l'arret precoce |
+| `--min-samples` | `50` | Nombre minimum d'exemples par niveau |
+| `--max-level` | `5` | Profondeur maximale de la hierarchie COICOP (1-5) |
+| `--loss-weights` | `None` | Poids par niveau, separes par des virgules |
+| `--mlflow-experiment` | `None` | Nom de l'experience MLflow |
+| `--eval-data` | `None` | Parquet d'evaluation post-entrainement |
+| `--encryption-key` | `None` | Cle de chiffrement parquet (hex, 32 chars) |
+
+Le tokenizer est entraine **uniquement sur le split d'entrainement**, pour eviter toute fuite du vocabulaire de validation.
+
 ## Prediction
+
+### Prediction multi-niveaux et explication (`--explain`)
+
+```bash
+uv run python main.py predict-multilevel \
+    --model checkpoints/multilevel/multilevel_model \
+    "pain complet bio" --explain
+```
+
+```
+Text: pain complet bio
+Final code: 01.1.1.3 (confidence: 0.03)
+Level breakdown:
+  level1: 01 (conf: 0.93)
+  level2: 01.1 (conf: 0.88)
+  ...
+Top contributing words:
+  level1: bio (+1.862), pain (+1.299), complet (+1.284)
+  level3: pain (+2.379), bio (+1.355), complet (+0.675)
+```
+
+Deux mecanismes, selon `--head-type` :
+
+- **`mean`** : l'attribution est **exacte**. Comme `logit_c = W_c · mean(tokens) + b_c`, la contribution du token *t* vaut `W_c · token_t / n` et la somme des scores redonne exactement `logit_c - b_c`. C'est la propriete de completude que les gradients integres n'approchent qu'avec 20+ passes avant/arriere — ici elle est disponible en forme close, car le mean pooling rend la tete additive sur les tokens. (La somme porte sur *tous* les tokens : les scores affiches peuvent differer de la contribution des tokens ne correspondant a aucun mot, comme le token de fin de sequence du tokenizer n-grammes.)
+- **`label-attention`** : les poids d'attention que le modele calcule deja, moyennes sur les tetes et lus sur la ligne de la classe predite. Ils indiquent quels tokens ont construit la representation de la classe — la couche lineaire en aval peut ensuite la ponderer differemment.
+
+Aucune dependance supplementaire n'est requise dans les deux cas.
+
+| Argument | Defaut | Description |
+|----------|--------|-------------|
+| `--model` | `checkpoints/multilevel/multilevel_model` | Chemin du modele |
+| `--file` | `None` | Fichier d'entree pour la prediction par lot |
+| `--output` | `predictions_multilevel.csv` | Fichier de sortie |
+| `--text-column` | `product` | Colonne contenant le texte |
+| `--batch-size` | `64` | Taille de batch |
+| `--top-k` | `1` | Nombre de predictions par niveau |
+| `--confidence-threshold` | `None` | Seuil de confiance minimal par niveau |
+| `--explain` | — | Affiche les mots ayant determine chaque niveau |
+| `--explain-top-words` | `10` | Nombre de mots par niveau |
+
+En mode fichier, `--explain` ajoute une colonne `explanation` (JSON). La colonne `levels_consistent` indique si les niveaux sont mutuellement coherents.
 
 ### Prediction hierarchique
 
