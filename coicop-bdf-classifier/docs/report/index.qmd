@@ -1,6 +1,6 @@
 ---
 title: "Classification COICOP : comparaison des approches"
-subtitle: "Classifieur plat, hiérarchique et multi-tête"
+subtitle: "Classifieur plat, hiérarchique, multi-tête et multi-niveaux"
 author: "Équipe classification BDF"
 date: today
 format:
@@ -26,11 +26,14 @@ La nomenclature COICOP est **hiérarchique** à 4 niveaux, encodée sous forme d
 | 3 | `01.1.2` | Viandes |
 | 4 | `01.1.2.1` | Viande de bœuf |
 
-L'objectif de ce document est de comparer trois approches de classification automatique :
+L'objectif de ce document est de comparer quatre approches de classification automatique :
 
 1. **Classifieur plat** (*flat*) : prédit directement le code COICOP de niveau 4 parmi 298 classes.
 2. **Classifieur hiérarchique** : exploite la structure arborescente en entraînant un classifieur par niveau, chaque niveau recevant la prédiction du niveau précédent comme variable catégorielle.
 3. **Classifieur multi-tête** : un backbone partagé (embedding + transformer) avec des têtes de classification par niveau, entraîné conjointement sur tous les niveaux.
+4. **Classifieur multi-niveaux interprétable** : un encodeur partagé alimentant des têtes **indépendantes**, sans aucune contrainte de cohérence entre niveaux, et capable d'expliquer chaque prédiction mot par mot.
+
+Les approches 3 et 4 partagent la même ossature (encodeur partagé, une tête par niveau) mais divergent sur un point structurant : la première **impose** la cohérence hiérarchique par masquage, la seconde la **mesure et la signale** sans jamais la forcer.
 
 
 ## Données
@@ -365,6 +368,187 @@ La table des enfants valides est construite à partir des données d'entraîneme
 | `loss_weights` | `[1.0] × L` | Pondération de la perte par niveau |
 
 
+## Approche 4 : Classifieur multi-niveaux interprétable
+
+### Architecture globale
+
+Cette approche transpose à la COICOP les travaux de l'INSEE sur la [classification interprétable de la NAF](https://julber95.github.io/interpretable-text-classification/pages/naf_multilevel.html). Elle reprend l'ossature du multi-tête — un encodeur de tokens partagé alimentant une tête par niveau — mais s'en écarte sur trois points : l'encodeur est **sans transformer** par défaut, les têtes sont **strictement indépendantes** (aucun masquage parent-enfant), et le modèle sait **expliquer** chacune de ses prédictions.
+
+```{mermaid}
+flowchart TB
+    TEXT["📄 Texte produit"]
+
+    subgraph "Encodeur partagé (FastText)"
+        TOK["Tokenizer<br/>(n-grammes ou WordPiece)"]
+        EMB["Embedding + RMSNorm<br/>(dim 128)"]
+    end
+
+    subgraph "Têtes indépendantes"
+        H1["🏷️ Tête Niveau 1<br/>(13 classes)"]
+        H2["🏷️ Tête Niveau 2<br/>(~52 classes)"]
+        H3["🏷️ Tête Niveau 3<br/>(~146 classes)"]
+        H4["🏷️ Tête Niveau 4<br/>(~298 classes)"]
+    end
+
+    TEXT --> TOK --> EMB
+    EMB --> H1
+    EMB --> H2
+    EMB --> H3
+    EMB --> H4
+
+    H1 --> P1["01"]
+    H2 --> P2["01.1"]
+    H3 --> P3["01.1.2"]
+    H4 --> P4["01.1.2.1"]
+
+    P1 -.->|"aucune contrainte"| P2
+    P2 -.->|"aucune contrainte"| P3
+    P3 -.->|"aucune contrainte"| P4
+
+    style TEXT fill:#e8f4f8,stroke:#2196F3
+    style EMB fill:#fff3e0,stroke:#FF9800
+    style H1 fill:#e8f5e9,stroke:#4CAF50
+    style H2 fill:#e8f5e9,stroke:#4CAF50
+    style H3 fill:#e8f5e9,stroke:#4CAF50
+    style H4 fill:#e8f5e9,stroke:#4CAF50
+```
+
+Les flèches en pointillés rappellent ce qui **n'existe pas** dans cette architecture : aucune information ne circule entre les niveaux, ni à l'entraînement, ni à l'inférence.
+
+### Encodeur partagé (FastText)
+
+Par défaut `n_attention_layers = 0` : l'encodeur se réduit à une table d'embedding suivie d'une normalisation RMSNorm, sans aucun bloc transformer. Chaque tête agrège ensuite les embeddings de tokens par un **mean pooling masqué** (moyenne sur les tokens non-padding). C'est l'architecture retenue par l'étude de référence, qui note : *« Architecture is fixed here (n_layers=0, i.e. FastText-style mean pooling) »*.
+
+Ce choix a deux conséquences pratiques :
+
+- **Coût réduit** : le modèle est nettement plus léger et rapide à entraîner qu'un backbone transformer, pour une tâche où les descriptions font 1 à 5 mots.
+- **Additivité** : le mean pooling rend la tête de classification additive sur les tokens, ce qui est précisément ce qui rend l'interprétation exacte (voir plus bas).
+
+Augmenter `n_attention_layers` réactive la pile de blocs transformer (RoPE, GQA) décrite pour l'approche 3 : le backbone du multi-tête est donc une **configuration particulière** de cette architecture, et non une architecture distincte.
+
+### Têtes indépendantes
+
+Deux variantes de tête sont disponibles, via `head_type` :
+
+| Variante | Agrégation | Tête de classification | Sortie |
+|---|---|---|---|
+| `mean` (défaut) | Mean pooling masqué → `(B, D)` | `Linear(D, K)` | `(B, K)` |
+| `label-attention` | Attention croisée par classe → `(B, K, D)` | `Linear(D, 1)` appliqué par classe | `(B, K)` |
+
+En `label-attention`, chaque classe dispose d'une **requête apprise** `ℓ_c ∈ ℝ^D` qui interroge les embeddings de tokens : la représentation de la phrase devient spécifique à la classe, au lieu d'être partagée par toutes comme avec le mean pooling.
+
+Les têtes ne communiquent jamais entre elles. Pour reprendre la formulation de l'étude de référence : *« The five heads never talk to each other... Nothing forces the section, division, group, class, and sub-class predictions for the same example to be mutually consistent. »*
+
+### Entraînement multi-tâches
+
+La perte est la **somme** des entropies croisées par niveau, rétropropagée à travers l'encodeur partagé :
+
+$$\mathcal{L} = \mathcal{L}_{\text{niveau}_1} + \mathcal{L}_{\text{niveau}_2} + \dots + \mathcal{L}_{\text{niveau}_N}$$
+
+Les niveaux absents pour un échantillon (code trop court, ou classe écartée par `min_samples_per_class`) sont encodés `-100` et ignorés via `ignore_index`. Deux détails d'implémentation méritent d'être signalés :
+
+- La perte est **implémentée localement** plutôt que reprise de `MultiLevelCrossEntropyLoss` de la bibliothèque : cette dernière corrompt les formes à *batch size* 1 et divise par le nombre total de niveaux sans tenir compte du masquage, ce qui produit un `NaN` dès qu'un niveau n'a aucune supervision dans le lot. L'implémentation locale fait contribuer un tel niveau à zéro.
+- Le tokenizer est entraîné **sur le seul split d'entraînement**, afin qu'aucun texte de validation ne fuite dans le vocabulaire.
+
+### Absence de contrainte hiérarchique
+
+C'est le contrepoint exact de la section *Cohérence hiérarchique à l'inférence* de l'approche 3. Ici, **aucun masquage parent-enfant n'est appliqué** : chaque tête produit un softmax sur l'intégralité de son espace de classes, et le `argmax` du niveau N+1 n'est pas contraint d'être un enfant du code prédit au niveau N.
+
+Les niveaux peuvent donc se contredire — par exemple prédire `level3 = 01.1.2` et `level4 = 02.1.1.3`. Plutôt que de masquer ce désaccord, la prédiction expose une colonne **`levels_consistent`** : vraie lorsque la prédiction de chaque niveau est bien un préfixe de celle du niveau suivant.
+
+Ce signal a une valeur diagnostique propre. Un taux de cohérence élevé indique que les têtes lisent le texte de la même façon ; un désaccord signale une description ambiguë, et constitue à ce titre une information exploitable en aval — notamment par `decide-coicop`, dont le rôle est précisément d'arbitrer entre classifieurs.
+
+À noter : la colonne `combined_confidence` (produit des confiances par niveau) reste calculée pour préserver le schéma de sortie commun, mais elle s'interprète ici comme un **indicateur d'accord entre têtes**, et non comme la probabilité d'un chemin dans l'arbre.
+
+### Interprétabilité
+
+C'est la raison d'être de cette approche. La commande `predict-multilevel --explain` restitue, pour chaque niveau, les mots qui ont déterminé la prédiction :
+
+```
+Text: pain complet bio
+Final code: 01.1.1.3 (confidence: 0.03)
+Level breakdown:
+  level1: 01 (conf: 0.93)
+  level2: 01.1 (conf: 0.88)
+  level3: 01.1.1 (conf: 0.26)
+  level4: 01.1.1.3 (conf: 0.03)
+Top contributing words:
+  level1: bio (+1.862), pain (+1.299), complet (+1.284)
+  level3: pain (+2.379), bio (+1.355), complet (+0.675)
+```
+
+Le mécanisme dépend de la variante de tête.
+
+**Variante `mean` — attribution exacte.** La contribution du token *t* à la classe *c* vaut :
+
+$$s_t = \frac{W_c \cdot \text{emb}(t)}{n_{\text{tokens}}}$$
+
+Comme $\text{logit}_c = W_c \cdot \text{moyenne}(\text{emb}) + b_c$, ces contributions **somment exactement** à $\text{logit}_c - b_c$. C'est la propriété de *complétude* que les gradients intégrés (*Integrated Gradients*) n'approchent qu'au prix de 20 à 300 passes avant/arrière : elle est ici disponible en forme close, parce que le mean pooling rend la tête additive sur les tokens.
+
+::: {.callout-note}
+La complétude porte sur **l'ensemble des tokens**. Les scores de mots affichés peuvent donc s'écarter de $\text{logit}_c - b_c$ de la contribution des tokens qui ne correspondent à aucun mot du texte : le tokenizer n-grammes émet un token de fin de séquence, WordPiece émet `[CLS]` et `[SEP]`. Ces tokens sont de vraies entrées du modèle, mais n'ont aucun span affichable.
+:::
+
+**Variante `label-attention` — poids d'attention.** Les poids que le modèle calcule déjà à l'inférence sont moyennés sur les têtes d'attention, puis lus sur la ligne de la classe prédite. Aucune passe supplémentaire n'est nécessaire. L'étude de référence assortit toutefois cette lecture d'une réserve : *« attention weights quantify how much each token was used to build the representation, but the downstream linear layer may assign different importance »*. Autrement dit, l'attention indique quels tokens ont **construit** la représentation, pas comment la couche linéaire l'a ensuite pondérée.
+
+Dans les deux cas, les scores par token sont agrégés au mot via les identifiants de mots du tokenizer, et **aucune dépendance supplémentaire n'est requise** : ni `captum`, ni passe de gradient.
+
+### Comparaison avec le multi-tête
+
+| Aspect | Multi-tête (approche 3) | Multi-niveaux (approche 4) |
+|--------|------------------------|---------------------------|
+| Encodeur | Embedding + transformer (×2) | Embedding + RMSNorm (`n_attention_layers=0`) |
+| Agrégation | Label Attention | Mean pooling (ou Label Attention) |
+| Hiérarchie | **Imposée** par masquage parent-enfant | **Aucune** — cohérence mesurée, pas forcée |
+| Cohérence des sorties | Garantie par construction | Signalée via `levels_consistent` |
+| Perte | Somme pondérée de cross-entropy | Somme de cross-entropy (`ignore_index=-100`) |
+| Tokenizer | n-grammes | n-grammes ou WordPiece entraîné |
+| Interprétabilité | Aucune | Attribution par mot, exacte en `mean` |
+| Inférence | 1 passe, N têtes en parallèle | 1 passe, N têtes en parallèle |
+
+Le choix entre les deux est un arbitrage : le multi-tête garantit une sortie hiérarchiquement valide, le multi-niveaux fournit une explication et un signal de désaccord au prix de cette garantie.
+
+### Configuration
+
+| Paramètre | Défaut | Description |
+|-----------|--------|-------------|
+| `head_type` | `mean` | Type de tête : `mean` ou `label-attention` |
+| `tokenizer_type` | `ngram` | Tokenizer entraîné : `ngram` ou `wordpiece` |
+| `wordpiece_vocab_size` | 5 000 | Taille du vocabulaire WordPiece |
+| `ngram_num_tokens` | 100 000 | Taille du vocabulaire n-grammes |
+| `embedding_dim` | 128 | Dimension des embeddings |
+| `max_seq_length` | 64 | Longueur maximale de séquence (tokens) |
+| `n_attention_layers` | 0 | Blocs transformer dans l'encodeur (0 = FastText) |
+| `n_label_attention_heads` | 4 | Têtes de la Label Attention par niveau |
+| `max_level` | 5 | Profondeur COICOP entraînée (1–5) |
+| `batch_size` | 32 | Taille de batch |
+| `lr` | 0,001 | Taux d'apprentissage initial (Adam) |
+| `num_epochs` | 20 | Nombre maximal d'époques |
+| `patience` | 5 | Patience early stopping |
+| `loss_weights` | `[1.0] × L` | Pondération de la perte par niveau |
+| `min_samples_per_level` | 50 | Nombre minimum d'exemples pour entraîner un niveau |
+
+Exemples d'utilisation :
+
+```bash
+# Variante par défaut (FastText, n-grammes)
+uv run python main.py train-multilevel \
+    --data data/data-train.parquet \
+    --output checkpoints/multilevel
+
+# Variante Label Attention avec vocabulaire WordPiece
+uv run python main.py train-multilevel \
+    --data data/data-train.parquet \
+    --output checkpoints/multilevel \
+    --head-type label-attention --tokenizer-type wordpiece
+
+# Prédiction avec explication
+uv run python main.py predict-multilevel \
+    --model checkpoints/multilevel/multilevel_model \
+    "pain complet bio" --explain
+```
+
+
 ## Résultats
 
 ### Accuracy par niveau
@@ -377,8 +561,17 @@ Les résultats ci-dessous sont issus du notebook de démonstration (`docs/coicop
 | Plat WordPiece | — | — | — | 13,35 % |
 | **Hiérarchique** | **81,08 %** | **71,17 %** | **55,72 %** | **45,69 %** |
 | Hiérarchique fine-tuné | — | — | — | 42,11 %* |
+| Multi-niveaux | — | — | — | — (à mesurer) |
 
 \* Accuracy mesurée sur le jeu de validation *original* après fine-tuning sur de nouvelles données (le fine-tuning améliore la performance sur les nouvelles données de 23,96 % → 26,92 %).
+
+::: {.callout-important}
+## Le multi-niveaux n'est pas encore évalué
+
+Le classifieur multi-niveaux est implémenté et couvert par des tests, mais il n'a pas encore été entraîné et évalué sur le protocole commun aux autres lignes de ce tableau (entraînement sur les données DDC, validation sur les annotations BDF 2025). Aucun chiffre n'est reporté ici tant que cette mesure n'a pas été faite : les valeurs ci-dessus proviennent de campagnes réelles et ne doivent pas être comparées à des résultats obtenus dans d'autres conditions.
+
+Le classifieur multi-tête n'apparaît pas non plus dans ce tableau, pour la même raison.
+:::
 
 **Résultat clé** : l'accuracy au niveau 4 du classifieur hiérarchique (**45,69 %**) est **presque le double** de celle du classifieur plat (**23,66 %**).
 
@@ -448,6 +641,17 @@ Les n-grammes de caractères surpassent nettement le tokenizer WordPiece sur cet
 Les n-grammes de caractères capturent ces motifs sous-lexicaux de manière robuste, tandis qu'un vocabulaire WordPiece appris sur un petit corpus tend à sur-segmenter ces termes inhabituels.
 
 
+### Interprétabilité et arbitrage entre classifieurs
+
+Les approches 2 et 3 garantissent une sortie hiérarchiquement valide, chacune à sa manière : par la cascade pour l'une, par le masquage à l'inférence pour l'autre. L'approche 4 renonce à cette garantie, et obtient en échange deux choses que les autres n'offrent pas :
+
+- une **explication par mot** de chaque décision, à chaque niveau ;
+- un **signal de désaccord** entre niveaux (`levels_consistent`).
+
+Cet arbitrage prend son sens dans le contexte du pipeline BDF, où la décision finale n'est pas prise par un classifieur isolé mais par l'étape `decide-coicop`, qui arbitre entre les sorties de `codif-lcs`, `run-rag`, `run-rag-annotations` et `run-ttc`. Un désaccord entre niveaux y constitue une information utile — il signale une description ambiguë — là où une sortie rendue cohérente par masquage masque justement cette ambiguïté.
+
+L'explication par mot répond par ailleurs à un besoin distinct de la performance brute : comprendre sur quoi le modèle s'appuie, et repérer les cas où il s'appuie sur un artefact (un code produit, un fragment de marque) plutôt que sur le libellé du produit.
+
 ## Pistes d'amélioration
 
 Plusieurs axes d'amélioration sont envisageables :
@@ -456,7 +660,11 @@ Plusieurs axes d'amélioration sont envisageables :
 
 - **Top-k au niveau parent** : au lieu de propager uniquement le top-1, propager les top-k prédictions du parent et effectuer un *beam search* pour explorer plusieurs chemins dans l'arbre.
 
-- **Seuil de confiance adaptatif** : s'arrêter au niveau le plus profond où la confiance dépasse un seuil. Cette fonctionnalité est déjà implémentée via le paramètre `confidence_threshold` dans `predict()`.
+- **Seuil de confiance adaptatif** : s'arrêter au niveau le plus profond où la confiance dépasse un seuil. Cette fonctionnalité est déjà implémentée via le paramètre `confidence_threshold` dans `predict()`, pour les approches 2, 3 et 4.
+
+- **Évaluation comparative des quatre approches** : entraîner et évaluer les quatre classifieurs sur un protocole unique (mêmes données d'entraînement, même jeu de validation, mêmes métriques top-k) afin de compléter le tableau des résultats. C'est le prérequis à tout choix documenté entre elles.
+
+- **Exploiter `levels_consistent` en aval** : passer le signal de désaccord entre niveaux du classifieur multi-niveaux à `decide-coicop`, comme indice supplémentaire d'ambiguïté d'une description.
 
 - **Embeddings pré-entraînés** : utiliser CamemBERT ou FlauBERT comme encodeur textuel au lieu du NGramTokenizer, pour bénéficier de représentations contextuelles pré-entraînées sur un large corpus français.
 
