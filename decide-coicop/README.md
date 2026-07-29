@@ -14,10 +14,15 @@ Il fusionne les prédictions des quatre classifiers puis tranche :
 
 ## Fonctionnement
 
-1. **Normalisation** — les codes LCS et TTC sont tronqués au niveau 4 et élagués
-   des hiérarchies linéaires (via `mapping_lvl4.parquet` produit par l'étape
-   `prune`), pour raisonner sur le même espace de codes que les RAG. La logique
-   est réutilisée du module [`prune`](../prune/) (aucune duplication).
+1. **Normalisation** — les codes LCS, TTC et RAG-annotations ainsi que la
+   vérité terrain `code` (en mode évaluation) sont tronqués au niveau 4 et
+   élagués des hiérarchies linéaires (via `mapping_lvl4.parquet` produit par
+   l'étape `prune`) : consensus, arbitrage et scoring aval raisonnent tous sur
+   le même espace de codes. Seul le RAG notices garantit structurellement des
+   codes prunés en amont. La logique est réutilisée du module
+   [`prune`](../prune/) (aucune duplication). Le prompt du juge ne contient
+   **pas** le code de référence annoté (pas de fuite de la vérité terrain en
+   mode évaluation).
 2. **Court-circuit consensus** — si LCS = RAG = RAG-annotations = TTC et que la
    confiance TTC ≥ 0,90, le code est retenu **sans appel LLM**.
 3. **Arbitrage LLM** — sinon, un LLM tranche à partir du contexte d'achat et des
@@ -50,5 +55,6 @@ uv run main.py decide-coicop \
 
 La sortie `decide-coicop/predictions.parquet` contient les codes prédits
 normalisés de chaque classifier et la décision (`llm_code`, `llm_model`,
-`llm_confiance`, `llm_explication`). Le code final garanti tronqué+élagué est
-produit à l'étape aval [`final-output`](../final-output/).
+`llm_confiance`, `llm_explication`). `llm_code` est lui aussi tronqué+élagué
+en fin de batch (quand `--mapping-file` est fourni) ; le garde-fou de l'étape
+aval [`final-output`](../final-output/) est donc une redondance idempotente.

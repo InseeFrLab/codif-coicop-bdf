@@ -258,10 +258,14 @@ def _prune_predicted_codes(
     df: pd.DataFrame, mapping_path: Path | str, code_cols: list[str]
 ) -> pd.DataFrame:
     """Applique la troncature niveau 4 + élagage des hiérarchies linéaires aux
-    colonnes de codes prédits indiquées, en réutilisant la logique centralisée du
-    module `prune` (aucune duplication). Les RAG produisent déjà des codes prunés ;
-    seuls LCS et TTC doivent être normalisés pour que le consensus et l'arbitrage
-    LLM raisonnent sur un espace de codes homogène.
+    colonnes de codes indiquées, en réutilisant la logique centralisée du module
+    `prune` (aucune duplication). Le RAG notices produit des codes prunés
+    structurellement (re-pruning explicite dans 2_run_rag.py), mais le RAG
+    annotations ne garantit le pruning que par son prompt : `ragann_code` doit
+    donc être normalisé ici, comme LCS et TTC — ainsi que la vérité terrain
+    `code`, pour que le consensus, l'arbitrage LLM et le scoring du report
+    raisonnent tous sur le même espace de codes. Idempotent sur un code déjà
+    pruné ; les NA restent NA.
     """
     mapping = _read_parquet(mapping_path)
     for col in code_cols:
@@ -287,10 +291,10 @@ def load_all_observations(
     ragann_codable).
 
     `mapping_path` (table de mapping `mapping_lvl4.parquet` produite par l'étape
-    `prune`) est optionnel : s'il est fourni, les codes LCS et TTC sont tronqués au
-    niveau 4 et élagués comme les codes RAG, afin que le court-circuit consensus et
-    l'arbitrage LLM comparent des codes homogènes (et ne laissent pas fuiter un code
-    non pruné).
+    `prune`) est optionnel : s'il est fourni, les codes LCS, TTC et RAG-annotations
+    ainsi que la vérité terrain `code` sont tronqués au niveau 4 et élagués, afin
+    que le court-circuit consensus, l'arbitrage LLM et le scoring aval comparent
+    des codes homogènes (et ne laissent pas fuiter un code non pruné).
     """
     lcs_raw = _read_parquet(lcs_path)
     rag_raw = _read_parquet(rag_path)
@@ -354,11 +358,23 @@ def load_all_observations(
         )
         merged = merged.merge(ragann, on="id", how="left")
 
-    # Normalisation troncature niveau 4 + élagage des codes LCS/TTC (les codes RAG
-    # sont déjà prunés en amont). Idempotent sur un code déjà pruné.
+    # Normalisation troncature niveau 4 + élagage : codes LCS/TTC, ragann_code
+    # (le RAG annotations ne garantit le pruning que via son prompt) et la
+    # vérité terrain `code` (annotée au niveau 5, non prunée en amont — sans
+    # cette normalisation le report comparerait pruné vs non-pruné). Le code
+    # annoté brut reste disponible dans preprocessing/raw_test.parquet.
     if mapping_path is not None:
         merged = _prune_predicted_codes(
-            merged, mapping_path, ["lcs_code", "ttc_code_1", "ttc_code_2", "ttc_code_3"]
+            merged,
+            mapping_path,
+            [
+                "lcs_code",
+                "ttc_code_1",
+                "ttc_code_2",
+                "ttc_code_3",
+                "ragann_code",
+                "code",
+            ],
         )
 
     return merged
@@ -449,7 +465,6 @@ Libellé normalisé  : {fmt(obs.get("l_pr_product"))}
 Enseigne           : {fmt(obs.get("shop"))}
 Type de magasin    : {fmt(obs.get("shop_type_name"))}
 Montant (€)        : {fmt(obs.get("budget"), ".2f")}
-Code de référence  : {fmt(obs.get("code"))}
 
 ═══════════════════════════════════════
 PRÉDICTIONS DES MODÈLES

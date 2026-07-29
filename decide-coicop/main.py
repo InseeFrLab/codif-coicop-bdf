@@ -116,6 +116,22 @@ def cmd_decide_coicop(args: argparse.Namespace) -> None:
         )
     )
 
+    # Normalisation du code arbitré : le LLM peut renvoyer un code de niveau 5
+    # ou une variante non canonique — on le tronque au niveau 4 et on l'élague
+    # comme les codes des classifieurs, pour que le report score pruné vs pruné
+    # (le garde-fou de final-output devient alors une simple redondance).
+    if args.mapping_file is not None:
+        from src.decide_coicop import (
+            _prune_predicted_codes,
+            _read_parquet,
+            _write_parquet,
+        )
+
+        result = _read_parquet(str(args.output_file))
+        result = _prune_predicted_codes(result, args.mapping_file, ["llm_code"])
+        _write_parquet(result, str(args.output_file))
+        logger.info("llm_code normalisé (troncature niveau 4 + élagage).")
+
     if args.extra_columns_file is not None:
         from src.decide_coicop import _read_parquet, _write_parquet
 
@@ -181,9 +197,10 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "Optional parquet mapping table (mapping_lvl4.parquet from the `prune` "
-            "step). When provided, LCS and TTC predicted codes are truncated to "
-            "level 4 and linearly pruned so the consensus and LLM arbitration "
-            "compare codes on the same pruned space."
+            "step). When provided, LCS, TTC and annotation-RAG predicted codes, the "
+            "ground-truth `code` and the arbitrated `llm_code` are truncated to "
+            "level 4 and linearly pruned so the consensus, the LLM arbitration and "
+            "downstream scoring compare codes on the same pruned space."
         ),
     )
     decide_coicop_parser.add_argument(
