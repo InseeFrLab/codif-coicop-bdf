@@ -4,9 +4,10 @@ coicop_linear_pruning.py
 Utilities to identify and prune strictly linear hierarchies
 in a COICOP-like nomenclature stored as a pandas DataFrame.
 
-A strictly linear hierarchy is defined as a chain where each code
-has at most one child, across all generations. In such cases,
-child codes are considered equivalent to their most aggregated parent.
+A parent with exactly one child is semantically equivalent to that child
+(all of the parent's content lies in the child), regardless of how many
+children the child itself has. Chains of such relations are collapsed
+onto their most aggregated code.
 """
 
 import logging
@@ -69,27 +70,30 @@ def compute_equivalence_groups(notices_raw: pd.DataFrame) -> pd.DataFrame:
     pd.DataFrame
         DataFrame with an added 'groupe_equivalent' column (nullable Int64).
     """
-    # Codes that have at most one child
-    linear_codes = set(
-        notices_raw.loc[notices_raw["nb_children"] <= 1, "code"]
+    # Parents that have exactly one child. Such a parent is equivalent to its
+    # single child whatever the number of children that child has: the chain
+    # simply stops at a child that is not itself a single-child parent.
+    single_child_parents = set(
+        notices_raw.loc[notices_raw["nb_children"] == 1, "code"]
     )
 
-    # Parent -> child mapping restricted to linear relations
+    # Parent -> child mapping restricted to single-child parents
     linear_relations = notices_raw[
-        notices_raw["parent"].isin(linear_codes)
-        & notices_raw["code"].isin(linear_codes)
+        notices_raw["parent"].isin(single_child_parents)
     ]
 
     next_code = dict(
         zip(linear_relations["parent"], linear_relations["code"])
     )
 
-    # Roots of linear chains
+    # Roots of linear chains: single-child parents whose own parent is not
+    # itself a single-child parent (each chain has length >= 2: the root and
+    # at least its single child)
     roots = notices_raw.loc[
-        notices_raw["code"].isin(linear_codes)
+        notices_raw["code"].isin(single_child_parents)
         & (
             notices_raw["parent"].isna()
-            | ~notices_raw["parent"].isin(linear_codes)
+            | ~notices_raw["parent"].isin(single_child_parents)
         ),
         "code"
     ]
@@ -180,14 +184,33 @@ def prune_equivalent_children(
         ignore_index=True,
     )
 
+    # A collapsed intermediate code (e.g. 11.2.0 -> 11.2) may still be the
+    # 'parent' of surviving codes (11.2.0.x) : remap 'parent' onto the
+    # retained code so the pruned nomenclature stays internally consistent.
+    parent_remap = dict(
+        zip(mapping_table["code"], mapping_table["code_parent_equivalent"])
+    )
+    notices_filtered["parent"] = (
+        notices_filtered["parent"]
+        .map(parent_remap)
+        .fillna(notices_filtered["parent"])
+    )
+
     removed_count = initial_count - len(notices_filtered)
 
+    collapsed = mapping_table[
+        mapping_table["code"] != mapping_table["code_parent_equivalent"]
+    ]
     logger.info(
         "COICOP linear pruning completed: %d codes removed (%d -> %d).",
         removed_count,
         initial_count,
         len(notices_filtered),
     )
+    for _, row in collapsed.iterrows():
+        logger.info(
+            "  collapsed: %s -> %s", row["code"], row["code_parent_equivalent"]
+        )
 
     return notices_filtered, mapping_table
 
