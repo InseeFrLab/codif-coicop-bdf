@@ -1,5 +1,5 @@
 ---
-title: "6. Decide — arbitrage LLM-as-judge"
+title: "8. Decide — arbitrage LLM-as-judge"
 ---
 
 ## Rôle de l'étape
@@ -10,8 +10,9 @@ les prédictions candidates — [LCS](03-codif-lcs.qmd), [RAG](04-coicop-rag.qmd
 choisit le code COICOP final, soit automatiquement (consensus), soit en interrogeant un LLM
 qui pèse les indices.
 
-- Code : [`coicop-bdf-classifier/src/decide_coicop.py`](../coicop-bdf-classifier/src/decide_coicop.py)
-- Commande : sous-commande `decide-coicop` de `main.py`
+- Code : [`decide-coicop/src/decide_coicop.py`](https://github.com/InseeFrLab/codif-coicop-bdf/blob/main/decide-coicop/src/decide_coicop.py)
+  (module autonome `decide-coicop/`)
+- Commande : sous-commande `decide-coicop` de `decide-coicop/main.py`
 
 ## Entrées
 
@@ -20,8 +21,13 @@ qui pèse les indices.
 | LCS | `…/{run}/codif-lcs/raw_test_LCS.parquet` | `--lcs-file` |
 | RAG | `…/{run}/run-rag/predictions.parquet` | `--rag-file` |
 | TTC | `…/{run}/run-ttc/predictions.parquet` | `--ttc-file` |
-| RAG-Annotations *(optionnel)* | `…/{run}/run-rag-annotations/predictions.parquet` | `--rag-annotations-file` |
-| Nomenclature | fichier CSV des codes COICOP valides (`Code`, `Libelle`) | `--nomenclature` |
+| RAG-Annotations *(optionnel)* | `…/{run}/rag-annotation/predictions.parquet` | `--rag-annotations-file` |
+| Table de mapping [prune](pruning.qmd) *(optionnel)* | `…/{run}/prune/mapping_lvl4.parquet` | `--mapping-file` |
+| Nomenclature | CSV des codes COICOP + codes techniques (`Libelle;Code`) — défaut : `decide-coicop/data/coicop_et_codes_techniques.csv`, fichier **statique** du dépôt (~700 codes, tous niveaux) | `--nomenclature` |
+| Colonnes utilisateur | `…/{run}/preprocessing/observations.parquet` (prod) ou `raw_test.parquet` (éval) | `--extra-columns-file` |
+
+Le pipeline Argo passe systématiquement `--mapping-file` et `--rag-annotations-file` (la
+step dépend de `prune` et de `run-rag-annotations`).
 
 Les prédictions sont fusionnées sur la colonne `id` (`load_all_observations()`). Le bloc
 RAG-Annotations (colonnes `ragann_code`, `ragann_confidence`, `ragann_codable`) n'est joint que
@@ -33,6 +39,23 @@ les 4 classifieurs sont donc la norme en production, l'optionalité servant surt
 manuels ou au débogage.
 
 ## Traitement
+
+### 0. Normalisation des codes (troncature + élagage)
+
+Avant toute décision, quand `--mapping-file` est fourni, les codes entrants sont ramenés dans
+l'**espace de codes pruné** défini par l'étape [`prune`](pruning.qmd) (troncature niveau 4 +
+repli des hiérarchies linéaires, via `trunc_and_prune_lvl4`) :
+
+- `lcs_code` (le suggester LCS contient des codes de niveau 5) ;
+- `ttc_code_1..3` (le TTC est entraîné sur des codes tronqués mais non élagués) ;
+- `ragann_code` (le RAG annotations ne garantit le pruning que par son prompt — seule la
+  branche RAG notices re-prune structurellement ses prédictions) ;
+- la **vérité terrain `code`** en mode évaluation (annotée au niveau 5), pour que le
+  [report](08-report.qmd) compare pruné vs pruné ;
+- et, en fin de batch, la décision **`llm_code`** elle-même.
+
+Consensus, arbitrage et scoring raisonnent ainsi sur des codes homogènes : `11.2` et
+`11.2.0` ne sont plus comptés comme un désaccord.
 
 ### 1. Court-circuit consensus (sans LLM)
 
@@ -77,7 +100,6 @@ Sinon, le LLM est sollicité :
   Enseigne           : Action
   Type de magasin    : …
   Montant (€)        : 3.99
-  Code de référence  : …
   ═══ PRÉDICTIONS DES MODÈLES ═══
   [LCS] Code prédit : … (sous-chaîne …, proportion …, distance …)
   [RAG] Code prédit : … (confiance …, codable …)
@@ -175,7 +197,6 @@ Libellé normalisé  : max garden flowers balle surprise
 Enseigne           : action
 Type de magasin    : magasin discount
 Montant (€)        : 3.99
-Code de référence  : N/A
 
 ═══════════════════════════════════════
 PRÉDICTIONS DES MODÈLES
@@ -233,7 +254,10 @@ Réponse du LLM (validée par le schéma Pydantic `DecisionCoicop`) :
 
 On peut reproduire ce prompt pour n'importe quelle ligne avec le mode mono-observation :
 `uv run main.py decide-coicop --id <uuid> --output json …`
-(voir [Lancer une étape](09-lancer-une-etape.qmd#decide-coicop-depuis-coicop-bdf-classifier)).
+(voir [Lancer une étape](09-lancer-une-etape.qmd#decide-coicop)).
+
+En mode évaluation, le code annoté (`code`) n'est **pas** injecté dans le prompt : le juge
+décide à l'aveugle, comme en production (pas de fuite de la vérité terrain dans les métriques).
 :::
 
 ### Reprise et coût
@@ -261,7 +285,10 @@ possibles :
 
 - **Cas nominal** — un code repris de la nomenclature, à un niveau quelconque (de `01` à
   `01.1.1.1` ; l'instruction demande « le niveau le plus précis justifié »), avec un score
-  `llm_confiance` de 1 (très faible) à 5 (très élevé).
+  `llm_confiance` de 1 (très faible) à 5 (très élevé). Ce code est ensuite **tronqué au
+  niveau 4 et élagué** (normalisation `--mapping-file`), même si le LLM a répondu au niveau 5
+  (le fichier `--nomenclature` qui lui est soumis contient des codes de niveau 5, voir
+  [Limites et points de vigilance](limites-vigilance.qmd)).
 - **Décision par consensus** — `llm_code = ttc_code_1`, `llm_model = "consensus"`,
   `llm_confiance = 5`, `llm_error = None` (aucun appel LLM).
 - **Aucun code** (`llm_code` à `NA`) — quand l'appel LLM **échoue**. La raison est alors
@@ -284,13 +311,14 @@ La réponse du LLM est validée **uniquement sur sa forme** par le schéma Pydan
 nomenclature. Les garde-fous sont uniquement *incitatifs* : le prompt impose de choisir parmi
 la liste de candidats filtrée (`filter_nomenclature`) et de recopier le code exactement, et la
 sortie est en JSON structuré. Un code **inexistant (hallucination)** reste donc possible en
-principe — c'est rare, mais à garder en tête lors des contrôles qualité.
+principe — la normalisation finale le tronque et l'élague, mais ne vérifie pas son
+appartenance à la nomenclature. C'est rare, mais à garder en tête lors des contrôles qualité.
 :::
 
 ## Sorties
 
 | Fichier | Colonnes clés |
 |---|---|
-| `…/{run}/decide-coicop/predictions.parquet` | `id`, `llm_code`, `llm_libelle`, `llm_explication`, `llm_confiance`, `llm_model` (`"consensus"` si court-circuit), `llm_error` (raison si `llm_code` est `NA`) |
+| `…/{run}/decide-coicop/predictions.parquet` | `id`, les codes normalisés des 4 classifieurs (`lcs_code`, `rag_code`, `ragann_code`, `ttc_code_1..3` + confiances), `code` (vérité terrain normalisée, éval), `llm_code` (normalisé), `llm_libelle`, `llm_explication`, `llm_confiance`, `llm_model` (`"consensus"` si court-circuit), `llm_error` (raison si `llm_code` est `NA`) |
 
-➡️ Étape suivante : [7. Final output](07-final-output.qmd)
+➡️ Étape suivante : [9. Final output](07-final-output.qmd)

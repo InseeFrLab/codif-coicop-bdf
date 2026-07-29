@@ -1,5 +1,5 @@
 ---
-title: "7. Final output"
+title: "9. Final output"
 ---
 
 ## Rôle de l'étape
@@ -12,18 +12,19 @@ C'est ici que les deux sources de codification se rejoignent :
 
 - les codes attribués par [`codif-regex`](02-codif-regex.qmd) (`predict_code`) ;
 - les décisions de [`decide-coicop`](06-decide-coicop.qmd) (`llm_code`), qui synthétisent
-  déjà LCS + RAG + TTC.
+  déjà LCS + RAG notices + RAG annotations + TTC.
 
-- Code : [`final-output/main.py`](../final-output/main.py)
-- Commande : `python main.py --run-id=<id> --run-date=YYYY-MM-DD --text-column=NAT_DEP --shop-column=MAG_DEP --budget-column=MONT_DEP`
+- Code : [`final-output/main.py`](https://github.com/InseeFrLab/codif-coicop-bdf/blob/main/final-output/main.py)
+- Commande : `uv run main.py --run-id=<id> --run-date=YYYY-MM-DD --input-file=<csv d'origine> --text-column=NAT_DEP --shop-column=MAG_DEP --budget-column=MONT_DEP`
 
 ## Entrées
 
 | Source | Chemin S3 | Apport |
 |---|---|---|
-| Colonnes utilisateur | `…/{run}/preprocessing/raw_test.parquet` | colonnes d'origine + `id` + `_source_input_file` |
+| Colonnes utilisateur | `…/{run}/preprocessing/observations.parquet` (prod, si `--input-file`) ou `raw_test.parquet` (éval) | colonnes d'origine + `id` + `_source_input_file` |
 | Codes regex | `…/{run}/codif-regex/REGEX_pred.parquet` | `predict_code` |
 | Décisions LLM | `…/{run}/decide-coicop/predictions.parquet` | `llm_code`, `llm_explication`, `llm_confiance`, `llm_model` |
+| Table de mapping [prune](pruning.qmd) | `…/{run}/prune/mapping_lvl4.parquet` | garde-fou troncature + élagage |
 
 ## Traitement
 
@@ -54,6 +55,16 @@ result["llm_comment"] = result["llm_explication"]
 | `prediction_source` | origine : `regex`, `consensus`, `llm`, ou *(vide)* si non codé |
 | `llm_comment` | justification du LLM (vide pour `regex` et `consensus` sans appel) |
 
+### Garde-fou final : troncature + élagage
+
+Quelle que soit la source de la décision (regex, consensus ou LLM), `predicted_code` passe
+une dernière fois par `trunc_and_prune_lvl4` (logique du module [`prune`](pruning.qmd),
+consommé comme dépendance locale) : troncature au niveau 4 puis repli sur le code canonique
+via `mapping_lvl4.parquet`. L'opération est **idempotente** — les codes déjà normalisés par
+`decide-coicop` ressortent inchangés, les NA restent NA, et les codes hors nomenclature
+(`98.x`, `99.x`, `Reprise manuelle`) passent tels quels. Le fichier livré ne contient donc
+que des codes de l'espace pruné (niveau ≤ 4, hiérarchies linéaires repliées).
+
 ### Restauration des noms et du format
 
 Les colonnes renommées au [preprocessing](01-preprocessing.qmd) reprennent leur nom d'origine
@@ -80,7 +91,7 @@ des valeurs possibles dans le fichier livré :
 
 | Cas | `predicted_code` | `prediction_source` | Remarque |
 |---|---|---|---|
-| Code COICOP produit | ex. `01.1.1` (niveau 1 à 4) | `consensus` / `llm` / `regex` | cas nominal ; la profondeur varie selon la précision jugée justifiée |
+| Code COICOP produit | ex. `01.1.1` (niveau 1 à 4, **jamais** 5 : troncature forcée + repli canonique) | `consensus` / `llm` / `regex` | cas nominal ; la profondeur varie selon la précision jugée justifiée — et **~24 % des Postes ont un code canonique de niveau < 4** ([voir prune](pruning.qmd)) : un code court peut être la réponse exacte |
 | Code technique | `98.x`, `99.x` | `regex` ou `llm` | lignes non-produit : carte bancaire (`98.3`), prélèvement (`98.4`), remises (`98.5`)… |
 | Reprise manuelle | `Reprise manuelle` | `regex` | valeur littérale (pas un code) issue de certaines règles `rules.yaml` → **à recoder à la main** |
 | **Aucun code** | *(vide / `NA`)* | *(vide)* | l'appel LLM a échoué **et** aucune règle regex n'a matché |
@@ -92,12 +103,13 @@ Points d'attention :
   regex, ni codé par le LLM (échec de l'appel). Le fichier `final-output` ne contient ni
   `llm_error` ni `llm_confiance` ; pour comprendre *pourquoi* un code manque, ouvrir
   `…/{run}/decide-coicop/predictions.parquet` et lire la colonne **`llm_error`**.
-- **Le code n'est pas garanti valide.** Aucune étape ne vérifie l'appartenance de
-  `predicted_code` à la nomenclature (cf. l'encadré de l'[étape 6](06-decide-coicop.qmd)). Un
-  contrôle qualité côté aval reste recommandé.
-- **`prediction_source` indique la fiabilité attendue** : `consensus` (les trois modèles
-  d'accord, le plus sûr) > `regex` (règle déterministe) > `llm` (arbitrage) > *(vide)* (non
-  codé). Pour les lignes `llm`, croiser avec `llm_confiance` (1–5) et `llm_comment`.
+- **Le code n'est pas garanti valide.** Le garde-fou tronque et élague, mais aucune étape ne
+  vérifie l'appartenance de `predicted_code` à la nomenclature (cf. l'encadré de
+  l'[étape decide](06-decide-coicop.qmd)). Un contrôle qualité côté aval reste recommandé.
+- **`prediction_source` indique la fiabilité attendue** : `consensus` (les quatre
+  classifieurs d'accord et confiance TTC ≥ 0,90, le plus sûr) > `regex` (règle déterministe)
+  > `llm` (arbitrage) > *(vide)* (non codé). Pour les lignes `llm`, croiser avec
+  `llm_confiance` (1–5) et `llm_comment`.
 
 ## Sorties
 
@@ -105,4 +117,4 @@ Points d'attention :
 |---|---|
 | `…/{run}/final-output/{nom_fichier_entrée}` | fichier d'entrée enrichi de `predicted_code`, `prediction_source`, `llm_comment` |
 
-➡️ Étape suivante : [8. Report](08-report.qmd)
+➡️ Étape suivante : [10. Report](08-report.qmd)

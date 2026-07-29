@@ -1,6 +1,11 @@
 project:
   type: website
   output-dir: _site
+  render:
+    - "*.qmd"
+    - "cards/*.qmd"
+    - "slides/*/index.qmd"
+    - "!archive/"
 
 website:
   title: "Codification COICOP — BDF"
@@ -19,6 +24,8 @@ website:
             text: Le preprocessing
           - href: 02-codif-regex.qmd
             text: La codification par regex
+          - href: pruning.qmd
+            text: Troncature & élagage (prune)
           - href: 03-codif-lcs.qmd
             text: LCS
           - href: 05-run-ttc.qmd
@@ -26,17 +33,19 @@ website:
           - href: 04-coicop-rag.qmd
             text: RAG sur COICOP
           - href: 09-rag-annotation.qmd
-            text: RAG sur annotation
+            text: RAG sur annotations
           - href: 06-decide-coicop.qmd
-            text: Étape de réconciliation finale
+            text: Arbitrage LLM-as-judge (decide)
           - href: 07-final-output.qmd
             text: Final output
           - href: 08-report.qmd
-            text: 8. Report
+            text: Report
       - text: Guides
         menu:
           - href: 09-lancer-une-etape.qmd
             text: Lancer une étape individuellement
+          - href: limites-vigilance.qmd
+            text: Limites et points de vigilance
           - href: 10-glossaire.qmd
             text: Glossaire
       - href: presentations.qmd
@@ -48,20 +57,27 @@ website:
     search: true
     contents:
       - index.qmd
+      - donnees.qmd
+      - 00-generalites.qmd
       - section: "Étapes du pipeline"
         contents:
           - 01-preprocessing.qmd
           - 02-codif-regex.qmd
+          - pruning.qmd
           - 03-codif-lcs.qmd
-          - 04-coicop-rag.qmd
           - 05-run-ttc.qmd
+          - 04-coicop-rag.qmd
+          - 09-rag-annotation.qmd
           - 06-decide-coicop.qmd
           - 07-final-output.qmd
           - 08-report.qmd
       - section: "Guides"
         contents:
           - 09-lancer-une-etape.qmd
+          - limites-vigilance.qmd
           - 10-glossaire.qmd
+      - presentations.qmd
+      - ressources.qmd
 
 format:
   html:

@@ -3,7 +3,7 @@
 > `data/workflow_runs/{run_date}/{run_id}/{step}/`, désormais la convention du projet.
 > Le plan reflète l'ancien monde (`argo/pipeline.yaml`, étapes `prune-coicop`/`prune-annotations`
 > séparées, `sample_size`…) et peut différer de l'état courant. Pour l'état à jour,
-> voir `CLAUDE.md`, `README.md` et `docs/inputs-outputs.md`.
+> voir `CLAUDE.md`, `README.md` et le site Quarto (`docs/`).
 
 # Harmonize pipeline I/O under a per-run folder
 

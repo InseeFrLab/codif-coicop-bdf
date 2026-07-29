@@ -1,5 +1,5 @@
 ---
-title: "8. Report"
+title: "10. Report"
 ---
 
 ## Rôle de l'étape
@@ -8,9 +8,10 @@ title: "8. Report"
 existe en **deux variantes**, choisies automatiquement selon la présence ou non d'une vérité
 terrain.
 
-- Code : [`report/`](../report/) — entrée `report/main.py`
+- Code : [`report/`](https://github.com/InseeFrLab/codif-coicop-bdf/tree/main/report) — entrée `report/main.py`
 - Sortie : `…/{run}/report/report.html`
-- Activé par `skip-report=false` (défaut sur la branche `codif-pipeline`).
+- Activé par défaut (`skip-report` vaut `"false"` dans `argo/codif-pipeline.yaml`) ;
+  désactivable avec `-p skip-report=true`.
 
 ## Détection du mode
 
@@ -44,8 +45,13 @@ Sections réelles du gabarit `prediction_report.qmd`, et la question à laquelle
 | Métadonnées du run | quel run, quel fichier d'entrée, quels modèles, quelles durées d'étapes ? |
 | Distribution des prédictions par niveau COICOP | quels postes ressortent, à chaque profondeur de code ? |
 | Source des prédictions | combien de lignes codées par regex / consensus / LLM, et avec quelle confiance ? |
-| Meilleur prédicateur par code COICOP | sur les lignes arbitrées, quel modèle amont le LLM suit-il le plus souvent, code par code ? |
-| Observations à désaccord total entre les trois prédicateurs | quelles lignes étaient les plus ambiguës (LCS ≠ RAG ≠ TTC) ? |
+| Accord entre les classifieurs | sur combien de lignes les classifieurs amont s'accordaient-ils (et le consensus a-t-il joué) ? |
+| Accord de chaque classifieur avec le juge LLM (+ détail par groupe COICOP L2 sur les cas arbitrés) | quel modèle amont le juge suit-il le plus souvent ? |
+| Décisions du juge hors des prédictions des classifieurs | sur quelles lignes le LLM a-t-il choisi un code qu'aucun modèle n'avait proposé ? |
+
+Les classifieurs amont sont **détectés dynamiquement** (jusqu'à 4 : LCS, RAG notices, RAG
+annotations, TTC) — le bloc RAG-annotations n'est inclus que s'il est présent dans les
+données.
 
 Le rapport décrit la campagne de codification réalisée, sans calcul d'exactitude :
 
@@ -60,13 +66,13 @@ Le rapport décrit la campagne de codification réalisée, sans calcul d'exactit
   enrichi du libellé (`llm_libelle`).
 - **Calibration** : répartition des décisions LLM par score de `llm_confiance` (1 à 5).
 - **Consensus vs désaccord** : pour les cas arbitrés par le LLM, comparaison de `llm_code`
-  avec `lcs_code` / `rag_code` / `ttc_code_1` — mesure l'apport de l'arbitrage par rapport à
-  chaque modèle amont.
+  avec `lcs_code` / `rag_code` / `ragann_code` / `ttc_code_1` — mesure l'apport de
+  l'arbitrage par rapport à chaque modèle amont.
 
 Les **lignes sans code** (`prediction_source` vide) et les **erreurs LLM** (`llm_error`)
 ressortent ici : leur nombre signale la part de produits non codés automatiquement. Voir
 l'éventail des valeurs possibles de `predicted_code` sur la page
-[7. Final output](07-final-output.qmd#quelles-valeurs-pour-predicted_code).
+[9. Final output](07-final-output.qmd#quelles-valeurs-pour-predicted_code).
 
 ## Mode évaluation (jeu annoté)
 
@@ -74,16 +80,29 @@ Quand une vérité terrain est disponible (jeu de test annoté, hors CSV BDF), `
 calcule l'**exactitude**. Ses sections :
 
 - **Métadonnées du run** ;
-- **Accuracy globale par niveau** COICOP (1 à 5) pour LCS, RAG, TTC et LLM (tableau + graphique) ;
+- **Accuracy globale par niveau** COICOP (1 à 5) pour LCS, RAG notices, RAG annotations, TTC
+  et LLM (tableau + graphique) ;
 - **Accuracy par groupe** : niveau COICOP 1 et 2, `shop`, `shop_type_name`, **décile de `budget`** ;
 - **Analyse d'erreurs** : matrice de confusion (top 20 paires `code` vs `llm_code` au
-  niveau 4), **calibration** (accuracy par tranche de `llm_confiance`), accord entre les
-  sources amont (combien de modèles trouvent la vérité, et apport de l'arbitrage) ;
+  niveau 4), **calibration** (accuracy par tranche de `llm_confiance`) ;
+- **Accord entre les classifieurs et valeur ajoutée de l'arbitrage** (combien de modèles
+  trouvent la vérité, et ce que le juge apporte) ;
+- **Accord de chaque classifieur avec le juge LLM** ;
+- **Décisions du juge hors des prédictions des classifieurs** ;
 - **Récapitulatif**.
 
 Méthodologie de l'accuracy par niveau : on tronque `code` et la prédiction aux `k` premiers
 segments ; les observations dont la vérité a moins de `k` niveaux sont exclues du dénominateur
-à ce niveau.
+à ce niveau, et une prédiction plus courte que `k` compte comme une erreur.
+
+::: {.callout-note}
+Depuis juillet 2026, la vérité terrain `code` est **normalisée** (troncature niveau 4 +
+élagage) par `decide-coicop` avant scoring, comme les prédictions : la comparaison se fait
+pruné vs pruné. Sans cela, une prédiction canonique exacte (ex. `01.3` face à une annotation
+`01.3.0.0.x`) était comptée fausse aux niveaux 3 et 4 — un biais qui touchait ~24 % des
+Postes de la nomenclature (voir [prune](pruning.qmd)). L'accuracy « niveau 5 » reste
+mécaniquement nulle dans l'espace pruné.
+:::
 
 ## Rendre le rapport à la main
 

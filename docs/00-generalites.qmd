@@ -3,8 +3,6 @@ title: "Le processus — Généralités"
 subtitle: "Vue d'ensemble du pipeline de codification COICOP"
 ---
 
-> 🚧 **Page en construction (squelette).** Compléter les sections ci-dessous.
-
 ## Principe
 
 Le pipeline `codif-coicop-bdf` rattache chaque libellé de produit à un poste de la
@@ -14,54 +12,116 @@ arbitrant via un LLM (*LLM-as-judge*). Il est orchestré par **Argo Workflows**
 
 ## Le DAG du pipeline
 
-Schéma Excalidraw du [pipeline](https://link.excalidraw.com/l/9vLymO4fSxN/3JjfZov3UgX). 
+Schéma Excalidraw du [pipeline](https://link.excalidraw.com/l/9vLymO4fSxN/3JjfZov3UgX).
 
 ```text
-                                      ┌──→ create-vector-db ──────────────┐  (skippable)
-   preprocessing ──┐   ┌──→ prune ────┤                                   ├──→ run-rag(-annotations) ─┐
-                   └──→┤              └──→ create-vector-db-annotations ───┘                           │
-                       └──→ codif-regex ─┬──→ codif-lcs ──────────────────────────────────────────────┼──→ decide-coicop ──→ final-output ──→ report
-                         (→ prune)       └──→ run-ttc  ───────────────────────────────────────────────┘
+                                             ┌──→ create-vector-db ─────────→ run-rag ──────────┐
+   preprocessing ──→ codif-regex ──→ prune ──┤                                                  │
+                          │                  └──→ create-vector-db-annotations ─→ run-rag-ann ──┤
+                          │                                                                    ├──→ decide-coicop ──→ final-output ──→ report
+                          ├──→ codif-lcs ────────────────────────────────────────────────────── ┤
+                          └──→ run-ttc ─────────────────────────────────────────────────────────┘
 ```
+
+Points à retenir sur cette topologie :
+
+- **`prune` dépend de `codif-regex`** (et non de `preprocessing`) : il a besoin du jeu à coder
+  déjà débarrassé des lignes captées par les regex. Cette étape n'est **jamais** sautée.
+- Seules les deux étapes `create-vector-db*` sont **skippables** (`-p skip-vector-db=true`) :
+  les collections Qdrant survivent d'un run à l'autre.
+- `decide-coicop` attend les quatre classifieurs ; `report` dépend de toutes les étapes
+  précédentes (il en loggue les durées).
+
+Chaque étape lit et écrit sur S3 dans un dossier propre au run :
+`s3://projet-budget-famille/data/workflow_runs/{run_date}/{run_id}/<étape>/`.
 
 ## Les classifieurs
 
-Quatre classifieurs tournent en parallèle, puis sont conciliés par `decide-coicop` :
+Cinq briques de codification tournent en parallèle, puis sont conciliées par `decide-coicop` :
 
-| Classifieur | Approche | Page |
+| Brique | Approche | Page |
 |---|---|---|
-| Regex | Règles | [La codification par regex](02-codif-regex.qmd) |
-| LCS | Similarité de chaînes | [LCS](03-codif-lcs.qmd) |
-| TTC | Classifieur neuronal | [TTC](05-run-ttc.qmd) |
-| RAG COICOP | RAG sur notices | [RAG sur COICOP](04-coicop-rag.qmd) |
-| RAG annotations | RAG sur exemples codifiés | [RAG sur annotation](09-rag-annotation.qmd) |
+| Regex | Règles déterministes ancrées | [La codification par regex](02-codif-regex.qmd) |
+| LCS | Similarité de chaînes (plus longue sous-chaîne commune) | [LCS](03-codif-lcs.qmd) |
+| TTC | Classifieur neuronal (n-grammes de caractères) | [TTC](05-run-ttc.qmd) |
+| RAG COICOP | RAG sur les notices de la nomenclature | [RAG sur COICOP](04-coicop-rag.qmd) |
+| RAG annotations | RAG sur exemples déjà codifiés (few-shot) | [RAG sur annotation](09-rag-annotation.qmd) |
+
+Le **regex** est à part : il tranche en amont et retire ses lignes du flux. Les **quatre
+autres** produisent chacun une prédiction candidate sur les mêmes observations, que
+[`decide-coicop`](06-decide-coicop.qmd) arbitre.
 
 ## Modes prod / éval
 
+Un **seul** workflow (`argo/codif-pipeline.yaml`) couvre les deux usages. Le commutateur est le
+paramètre **`input_file`** :
 
-<!-- ::: {.callout-important}
-## Mode prédiction
-Ce fichier contient des produits **à coder**, sans vérité terrain. Le pipeline tourne donc en
-**mode prédiction** : il n'y a pas de colonne `code` de référence. Les observations préparées
-sont écrites dans `observations.parquet` (l'étape `preprocessing` produit par ailleurs toujours
-les annotations train/test). Cela change la dernière
-étape (`report`), qui bascule sur `prediction_report.qmd` (suivi des prédictions) au lieu du
-rapport d'évaluation d'exactitude. Le livrable final est le fichier produit par
-[`final-output`](07-final-output.qmd).
-::: -->
+| | Mode **production** | Mode **évaluation** |
+|---|---|---|
+| `input_file` | non vide (CSV/parquet à codifier) | vide (`""`) |
+| Ce qui est codifié | les observations du fichier fourni | le split **test** des annotations manuelles |
+| Vérité terrain | absente (`code` à `NA`) | présente (code annoté) |
+| Livrable | fichier d'entrée enrichi (`final-output`) | rapport d'exactitude |
 
-*TODO* — `input_file` non vide = **production** (code un fichier externe) ; vide =
-**évaluation** (code le split test des annotations). Décrire le pilotage de bout en bout.
+Le mode se propage étape par étape :
+
+| Étape | En production | En évaluation |
+|---|---|---|
+| `preprocessing` | reçoit `--input-file` + le mappage de colonnes, produit **`observations.parquet`** en plus des annotations | produit seulement les annotations (`annotations_full`, `raw_train`, `raw_test`) |
+| `codif-regex` | lit `test_set_prod` = `observations.parquet` et `train_set_prod` = `annotations_full.parquet` | lit `test_set` = `raw_test.parquet` et `train_set` = `raw_train.parquet` |
+| `run-rag-annotations` | `--skip-eval true` (prédictions seules) | `--skip-eval false` (calcule les métriques) |
+| `decide-coicop` | `--extra-columns-file` = `observations.parquet` | `--extra-columns-file` = `raw_test.parquet` |
+| `final-output` | repart de `observations.parquet` et restaure le nom du fichier d'entrée | repart de `raw_test.parquet` |
+| `report` | détecte l'absence de vérité terrain → `prediction_report.qmd` | → `report.qmd` (accuracy par niveau) |
+
+::: {.callout-note}
+La détection du mode par `report` est **automatique** : il teste `bool_and(code IS NULL)` sur
+la sortie de `decide-coicop`. Un seul code non nul dans un fichier de production suffit donc à
+faire basculer le rapport en mode évaluation.
+:::
+
+Le mappage de colonnes (mode production) se fait par paramètres Argo, le pipeline n'imposant
+aucun nom de colonne en entrée :
+
+| Paramètre Argo | Valeur par défaut | Colonne pipeline produite |
+|---|---|---|
+| `text_column` | `NAT_DEP` | `raw_product` (libellé à coder) |
+| `shop_column` | `MAG_DEP` | `shop` (enseigne) |
+| `budget_column` | `MONT_DEP` | `budget` (montant €) |
+| `annee_column` | *(vide)* | `annee` |
+| `source_column` | *(vide)* | `source` |
 
 ## Échantillonnage
 
-*TODO* — sampling centralisé à `codif-regex` (`sample-observations` en prod,
-`sample-annotations` en éval) hérité par tous les classifieurs.
+Pour tester le pipeline sans le payer en entier, l'échantillonnage est **centralisé en un
+point unique : `codif-regex`**. Le jeu à coder y est échantillonné une seule fois
+(`random_state=42`), et tous les classifieurs aval héritent des mêmes lignes via
+`raw_test_without_regex.parquet` — les prédictions restent donc comparables entre elles.
 
+| Paramètre | Mode | Effet |
+|---|---|---|
+| `sample-observations` | production | limite le nombre d'observations à codifier |
+| `sample-annotations` | évaluation | limite le jeu à codifier **et** la taille de la KB d'annotations indexée par `create-vector-db-annotations` |
 
-<!-- ## Le fichier d'entrée et son mappage
+::: {.callout-important}
+En évaluation, `sample-annotations` fait aussi basculer `run-rag-annotations` sur une
+collection Qdrant **suffixée `_test`**, pour ne pas écraser la collection de production avec
+une base vectorielle partielle.
+:::
 
-L'exemple utilisé dans toute cette documentation est
+```bash
+# évaluation sur 100 libellés
+argo submit argo/codif-pipeline.yaml -p sample-annotations=100
+
+# production sur 100 libellés d'un fichier réel
+argo submit argo/codif-pipeline.yaml \
+  -p input_file=s3://projet-budget-famille/data/workflow_inputs/mon_fichier.csv \
+  -p sample-observations=100
+```
+
+## Le fichier d'entrée et son mappage
+
+L'exemple utilisé comme [fil rouge](index.qmd#fil-rouge) dans cette documentation est
 `BDF_data_tickets_appli_20260320_a_codif.csv` (séparateur `;`, valeurs entre guillemets) :
 
 | `ID_TICK` | `NAT_DEP` (produit) | `MONT_DEP` | `MAG_DEP` (enseigne) | `COM_DEP` |
@@ -72,14 +132,12 @@ L'exemple utilisé dans toute cette documentation est
 | `10521_91_03` | Moyen frite Sce Pomme Frite | 4.10 | Mc Donald's | Civrieux-d'Azergues |
 | `11165_91_01` | Illisible | 0.00 | — | — |
 
-Le pipeline n'impose pas de noms de colonnes : l'étape `preprocessing` reçoit un
-**mappage configurable** (paramètres Argo). Valeurs par défaut pour ce fichier :
+Les colonnes non mappées sont conservées telles quelles et restituées dans le fichier livré.
 
-| Paramètre Argo | Valeur | Colonne pipeline produite |
-|---|---|---|
-| `input_file` | `s3://…/workflow_inputs/BDF_data_tickets_appli_20260320_a_codif.csv` | — |
-| `text_column` | `NAT_DEP` | `raw_product` (libellé à coder) |
-| `shop_column` | `MAG_DEP` | `shop` (enseigne) |
-| `budget_column` | `MONT_DEP` | `budget` (montant €) |
-| `annee_column` | *(vide)* | `annee` |
-| `source_column` | *(vide)* | `source` | -->
+## Où aller ensuite
+
+- le détail étape par étape : [Preprocessing](01-preprocessing.qmd) puis la suite de la barre
+  latérale ;
+- l'espace de codes commun à tout le pipeline : [Prune — troncature & élagage](pruning.qmd) ;
+- les fragilités connues : [Limites et points de vigilance](limites-vigilance.qmd) ;
+- pour relancer une brique isolée : [Lancer une étape](09-lancer-une-etape.qmd).

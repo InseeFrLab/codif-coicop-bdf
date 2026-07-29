@@ -1,5 +1,5 @@
 ---
-title: "4. Codification RAG"
+title: "6. Codification RAG"
 ---
 
 ## Rôle de l'étape
@@ -9,47 +9,22 @@ sémantique : on encode la nomenclature COICOP dans une base vectorielle, on ré
 chaque produit les codes les plus proches, et on demande à un LLM de choisir parmi cette
 courte liste de candidats.
 
-Elle se décompose en trois sous-étapes (le pruning est désormais centralisé dans une étape
-`prune` commune à tout le pipeline) :
+Elle se compose de deux sous-étapes :
 
 | Sous-étape | Code | Rôle |
 |---|---|---|
-| `prune` | `prune/scripts/main.py` (module dédié) | **étape unifiée** : produit tous les artefacts prunés |
 | `create-vector-db` | `coicop-rag/scripts/0_create_vector_db.py` | encode la nomenclature prunée dans Qdrant |
 | `run-rag` | `coicop-rag/scripts/2_run_rag.py` | recherche vectorielle + génération LLM |
 
-- Code : [`coicop-rag/`](../coicop-rag/) · config : [`coicop-rag/config/config.yaml`](../coicop-rag/config/config.yaml)
+- Code : [`coicop-rag/`](https://github.com/InseeFrLab/codif-coicop-bdf/tree/main/coicop-rag) · config : `coicop-rag/config/config.yaml`
 
 ::: {.callout-note}
 `create-vector-db` reste **skippable** via `skip-vector-db=true` (la collection Qdrant est
-réutilisée d'un run à l'autre). En revanche l'étape `prune` n'est **pas** skippable : elle
-produit aussi le jeu à coder pruné dont `run-rag` a besoin à chaque run.
+réutilisée d'un run à l'autre). Les artefacts prunés qu'elle consomme (nomenclature, jeu à
+coder, mapping) sont produits par l'étape [`prune`](pruning.qmd), qui n'est **pas** skippable
+et qui applique la troncature niveau 4 + l'élagage des hiérarchies linéaires pour tout le
+pipeline. Voir [3. Prune — troncature & élagage](pruning.qmd).
 :::
-
-## prune — pruning unifié
-
-Une seule étape (module dédié [`prune/`](../prune/), `prune/scripts/main.py`, exécutée après `codif-regex`) applique le même
-algorithme (troncature niveau 4 + fusion des hiérarchies linéaires → code canonique) et produit
-**tous** les artefacts prunés du pipeline. L'algorithme :
-
-1. **supprime le niveau 5** (Poste) de la nomenclature, trop granulaire ;
-2. **fusionne les hiérarchies linéaires** : quand un code n'a qu'un seul enfant à chaque niveau,
-   la chaîne est repliée sur son code canonique (on évite de proposer deux codes qui désignent
-   en pratique la même chose).
-
-Sorties (par run, sous `…/{run}/prune/`) :
-
-| Fichier | Contenu | Consommé par |
-|---|---|---|
-| `nomenclature_pruned.parquet` | nomenclature prunée (niveaux 1 à 4) | `create-vector-db` |
-| `mapping_lvl4.parquet` | table `code → code canonique` | scoring `run-rag` |
-| `annotations_train_pruned.parquet` | KB d'annotations prunées | `create-vector-db-annotations` |
-| `annotations_test_pruned.parquet` | jeu **à coder** pruné | `run-rag` et `run-rag-annotations` |
-| `suggester_pruned.parquet` | suggester pruné | `create-vector-db-annotations` |
-
-Cette étape remplace les anciennes `prune-coicop` et `prune-annotations`, et le pruning qui
-était fait à la volée dans les deux `create-vector-db*` — un seul algorithme, un seul point de
-vérité.
 
 ## create-vector-db — encoder dans Qdrant
 
@@ -57,8 +32,8 @@ Chaque notice COICOP **prunée** (lue directement depuis `prune/nomenclature_pru
 sans re-traitement) est mise en forme en texte (code, libellé FR, notes générales, contenu
 central, exclusions, lignage des parents) puis encodée en vecteur :
 
-- Modèle d'embedding : **`qwen3-embedding-8b`** (dimension **4096**), via l'API vLLM
-  (`VLLM_EMBEDDING_URL`).
+- Modèle d'embedding : **`qwen3-embedding-8b`** (dimension **4096**), via l'API
+  OpenAI-compatible de llm.lab (`LLMLAB_URL` / `LLMLAB_API_KEY`).
 - Base vectorielle : **Qdrant**, collection **`coicop_lineage`** (distance cosinus),
   recréée à chaque exécution.
 
@@ -84,10 +59,12 @@ Pour chaque libellé à coder (`coicop-rag/scripts/2_run_rag.py`) :
    ```
 
 4. **Génération** par le LLM (`gemma4-26b-moe`, `temperature 0.1`, `max_tokens 2048`), via
-   l'API vLLM (`VLLM_GENERATION_URL`), avec **32 appels parallèles** (`llm.concurrency`
-   dans `config.yaml`).
+   la même API llm.lab (`LLMLAB_URL` / `LLMLAB_API_KEY`), avec **32 appels parallèles**
+   (`llm.concurrency` dans `config.yaml`).
 5. **Parsing** de la réponse JSON (`extract_json_from_response`) → `code_predict`, `codable`,
-   `confidence`.
+   `confidence`, puis **re-pruning** du code prédit (troncature niveau 4 + mapping
+   `mapping_lvl4.parquet`) : même si le LLM répond au niveau 5 ou sur un code replié, la
+   prédiction retombe dans l'espace de codes [pruné](pruning.qmd).
 6. **Traçage** : métriques dans MLflow (expérience `test`), traces dans Langfuse.
 
 ## Exemple sur le fil rouge
@@ -114,4 +91,4 @@ nomenclature indexée — pas du LLM. C'est le premier fichier à inspecter quan
 semble aberrant.
 :::
 
-➡️ Étape suivante : [5. TTC](05-run-ttc.qmd)
+➡️ Étape suivante : [7. RAG sur annotations](09-rag-annotation.qmd)
