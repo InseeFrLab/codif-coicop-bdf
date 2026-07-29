@@ -7,9 +7,14 @@
 # DO NOT set run_id / run_date: they are computed automatically by Argo and
 # guarantee consistent S3 paths across steps.
 
+# --- Code source ----------------------------------------------------------
+# Branche du dépôt clonée par tous les steps (défaut YAML: main).
+# La mettre sur une feature branch permet de tester sans merger dans main.
+git-branch: main
+
 # --- Input ----------------------------------------------------------------
-input_file: s3://projet-budget-famille/data/workflow_inputs/BDF_data_saisie_vague1_a_codif.csv
-#input_file: "" # mode evaluation
+# input_file: s3://projet-budget-famille/data/workflow_inputs/BDF_data_saisie_vague1_a_codif.csv
+input_file: "" # mode evaluation
 
 text_column: NAT_DEP        # label column to classify
 shop_column: MAG_DEP        # shop column

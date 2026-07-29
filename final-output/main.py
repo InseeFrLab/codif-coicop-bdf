@@ -12,6 +12,7 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 import s3fs
+from prune.pruning import trunc_and_prune_lvl4
 
 
 PIPELINE_COLS = {
@@ -147,6 +148,18 @@ def main() -> int:
         axis=1,
     )
     result["llm_comment"] = result["llm_explication"]
+
+    # Garde-fou final : quelle que soit la source de la décision (regex, consensus
+    # ou LLM), le code final est tronqué au niveau 4 et élagué des hiérarchies
+    # linéaires, en réutilisant la logique centralisée du module `prune`. Garantit
+    # que la sortie ne contient que des codes prunés (idempotent sur un code déjà
+    # pruné ; les codes NA restent NA).
+    mapping_path = f"{run_root}/prune/mapping_lvl4.parquet"
+    print(f"[final-output] pruning final codes with: {mapping_path}", flush=True)
+    mapping = con.sql(f"SELECT * FROM read_parquet('{mapping_path}')").df()
+    result = trunc_and_prune_lvl4(result, mapping, code_name="predicted_code")
+    result["predicted_code"] = result["predicted_code_tpruned"]
+    result = result.drop(columns=["predicted_code_tpruned"])
 
     result = result.drop(
         columns=["predict_code", "llm_code", "llm_explication", "llm_confiance", "llm_model"]

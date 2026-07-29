@@ -1,14 +1,15 @@
 [project]
-name = "coicop-final-output"
+name = "decide-coicop"
 version = "0.1.0"
-description = "Final output step for the COICOP BDF pipeline"
+description = "Arbitrage LLM (LLM-as-judge) du code COICOP final pour le pipeline BdF"
+readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "boto3>=1.35",
     "duckdb>=1.4.4",
+    "openai>=2.16.0",
     "pandas>=2.2",
     "pyarrow>=16",
-    "s3fs>=2024",
+    "pydantic>=2.9",
     "prune",
 ]
 

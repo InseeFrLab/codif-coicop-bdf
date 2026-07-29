@@ -323,8 +323,8 @@ def prune_annotation_lvl4(
 def trunc_and_prune_lvl4(
     df: pd.DataFrame,
     mapping_table_lvl4: pd.DataFrame,
-    notices_raw: pd.DataFrame,
-    code_name: str,
+    notices_raw: pd.DataFrame | None = None,
+    code_name: str = "code",
     coicop_name=None,
 ) -> pd.DataFrame:
     """
@@ -349,10 +349,12 @@ def trunc_and_prune_lvl4(
         - 'code'
         - 'code_parent_equivalent'
 
-    notices_raw : pd.DataFrame
+    notices_raw : pd.DataFrame, optional
         Raw COICOP nomenclature, containing at least:
         - 'code'
         - 'label_fr'
+        Only required when `coicop_name` is provided (used to resynchronize
+        labels). Can be omitted for code-only pruning.
 
     Returns
     -------
@@ -380,11 +382,6 @@ def trunc_and_prune_lvl4(
         .set_index("code")["code_parent_equivalent"]
     )
 
-    label_mapping = (
-        notices_raw  # all levels, no matter
-        .set_index("code")["label_fr"]
-    )
-
     # ------------------------------------------------------------------
     # 2. Replace codes using the equivalence mapping
     # ------------------------------------------------------------------
@@ -396,9 +393,19 @@ def trunc_and_prune_lvl4(
     )
 
     # ------------------------------------------------------------------
-    # 3. Replace labels using the mapped codes
+    # 3. Replace labels using the mapped codes (only when a label column is
+    #    requested ; `notices_raw` is required in that case).
     # ------------------------------------------------------------------
     if coicop_name:
+        if notices_raw is None:
+            raise ValueError(
+                "notices_raw is required when coicop_name is provided "
+                "(needed to resynchronize COICOP labels)."
+            )
+        label_mapping = (
+            notices_raw  # all levels, no matter
+            .set_index("code")["label_fr"]
+        )
         df["coicop_mapped"] = (
             df["code_mapped"]
             .map(label_mapping)
