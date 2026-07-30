@@ -76,7 +76,8 @@ l'enfant avait lui-même au plus un enfant — le second cas de figure ci-dessus
   canoniques retenus ;
 - conséquence méthodologique importante : **107 des 440 Postes (24 %) ont un code canonique
   moins profond que le niveau 4** (95 au niveau 3, 12 au niveau 2). Un code final de niveau 2
-  ou 3 peut donc être *la* réponse exacte, pas une sous-codification.
+  ou 3 peut donc être *la* réponse exacte, pas une sous-codification — c'est précisément ce
+  que mesure la convention d'accuracy inclusive du [rapport](08-report.qmd#les-deux-conventions-daccuracy).
 
 ## Application aux annotations et au suggester
 
@@ -111,7 +112,7 @@ canonique produit par un modèle (un LLM peut halluciner un code de niveau 5) :
 | Où | Sur quoi | Code |
 |---|---|---|
 | `run-rag` | `code_predict` et les codes retrouvés | `coicop-rag/scripts/2_run_rag.py` (étape 5) |
-| `decide-coicop` | `lcs_code`, `ttc_code_1..3`, `ragann_code`, la vérité terrain `code` et la décision `llm_code` | `decide-coicop/src/decide_coicop.py` (`--mapping-file`) |
+| `decide-coicop` | `lcs_code`, `ttc_code_1..3`, `ragann_code` et la décision `llm_code` (sur place) ; la vérité terrain dans une colonne dédiée `code_lvl4` (`code` reste brut) | `decide-coicop/src/decide_coicop.py` (`--mapping-file`) |
 | `final-output` | `predicted_code` (garde-fou final, idempotent) | `final-output/main.py` |
 
 Le module `prune` est consommé comme **dépendance Python locale** par `decide-coicop` et

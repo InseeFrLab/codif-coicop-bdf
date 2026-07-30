@@ -38,10 +38,12 @@ Trois oublis dans la normalisation (troncature niveau 4 + élagage) :
   que par une consigne de prompt (contrairement au RAG notices, qui re-prune sa sortie dans le
   code). Un code non pruné pouvait donc entrer dans le vote de consensus, comparé par **égalité
   de chaînes**.
-- **La vérité terrain `code`** n'était jamais prunée : le rapport comparait donc des
-  prédictions prunées à une vérité au niveau 5. Une prédiction canonique parfaite (`01.3` face
-  à `01.3.0.0.x`) était comptée **fausse** aux niveaux 3 et 4 — un biais touchant **~24 % des
-  Postes** de la nomenclature, et non uniformément réparti entre divisions.
+- **La vérité terrain** n'était jamais prunée : le rapport comparait donc des prédictions
+  prunées à une vérité au niveau 5. Une prédiction canonique parfaite (`01.3` face à
+  `01.3.0.0.x`) était comptée **fausse** aux niveaux 3 et 4 — un biais touchant **~24 % des
+  Postes** de la nomenclature, et non uniformément réparti entre divisions. La table
+  intermédiaire porte désormais les deux colonnes (`code` brut et `code_lvl4` canonique) et le
+  rapport score sur la seconde.
 - **`llm_code`** n'était normalisé que dans `final-output`, pas dans la sortie de
   `decide-coicop` — or c'est cette sortie que le rapport score.
 
@@ -166,18 +168,24 @@ dans le code), l'ensemble L2 est vide et le juge ne voit **que des en-têtes de 
 ne peut alors répondre qu'à un niveau agrégé. De même, si le bon code est dans un autre groupe
 de la même division, il n'est pas dans la liste.
 
-### Deux conventions d'évaluation cohabitent
+### Les métriques MLflow des branches RAG ne sont pas celles du rapport
 
-Les métriques MLflow des branches RAG (expériences `test` et `rag-annotation`) et celles du
-`report` (expérience `codif-coicop-eval`) **ne sont pas comparables** :
+Le `report` publie désormais explicitement **deux conventions** d'accuracy, documentées et
+loguées séparément (`accuracy_*` stricte et `accuracy_all_*` inclusive) — voir
+[la page report](08-report.qmd#les-deux-conventions-daccuracy). Il reste en revanche une
+troisième série, non alignée : les métriques que **chaque branche RAG** loggue pour son propre
+compte (expériences MLflow `test` et `rag-annotation`).
 
-- les RAG évaluent avec une convention *indulgente* : `truncate_code` renvoie le code inchangé
-  s'il est déjà plus court que le niveau visé ;
-- le `report` compte une **prédiction plus courte que le niveau `k` comme une erreur** à ce
-  niveau.
+Ces branches évaluent sur leur propre périmètre (leur jeu d'entrée pruné, leurs propres
+niveaux, `eval.levels: 4`) et avec leur propre convention. Pour un même modèle et un même jeu,
+leurs chiffres diffèrent donc de ceux du rapport. Ne jamais mettre les trois séries côte à côte
+sans préciser laquelle est laquelle ; la référence pour juger le pipeline est le `report`.
 
-Pour un même modèle et un même jeu, les deux chiffres diffèrent donc structurellement. Ne
-jamais les mettre côte à côte sans le préciser.
+Subsiste aussi une ambiguïté propre à la convention inclusive : une vérité terrain peu profonde
+peut être un code canonique terminal (mesure exacte) ou une annotation incomplète (une
+prédiction plus fine est alors comptée fausse sans pouvoir être vérifiée). L'accuracy inclusive
+est donc une borne inférieure. Distinguer les deux cas demanderait de marquer les feuilles de
+la nomenclature prunée — voir le point suivant.
 
 ### Suggester : des codes agrégés indexés comme candidats
 
@@ -199,6 +207,12 @@ tous indexés dans Qdrant comme candidats. Aucun drapeau `is_leaf`, aucun niveau
 8 codes sont des feuilles dès le **niveau 2** (`01.3`, `02.2`, `02.4`, `08.2`, `09.8`, `10.2`,
 `10.3`, `10.4`) : un code de niveau 2 en sortie est donc **parfois la réponse exacte, parfois
 une sous-codification**, et rien ne permet de distinguer les deux automatiquement.
+
+**Piste** : ajouter une colonne `is_leaf` à `nomenclature_pruned.parquet` (un code sans enfant
+dans la nomenclature prunée). Elle permettrait de lever l'ambiguïté de la convention d'accuracy
+inclusive — une vérité terrain peu profonde *et* terminale est une mesure exacte, une vérité
+peu profonde *non* terminale est une annotation incomplète — et de signaler une
+sous-codification dans le fichier livré.
 
 ## Ouvert — détails d'exploitation
 

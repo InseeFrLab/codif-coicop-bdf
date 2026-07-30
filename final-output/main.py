@@ -19,6 +19,7 @@ PIPELINE_COLS = {
     "l_pr_product",
     "s_pr_product",
     "code",
+    "code_lvl4",
     "coicop",
     "source",
     "n_obs",

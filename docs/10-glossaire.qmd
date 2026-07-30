@@ -48,7 +48,7 @@ Les termes et colonnes qui reviennent dans toute la documentation, regroupés pa
 | `s_pr_product` | Normalisation **forte** (bruit, stopwords retirés) — utilisée par les regex et LCS. |
 | `shop`, `budget`, `annee`, `source` | Enseigne, montant (€), année, source — renommées depuis le mappage de colonnes. |
 | `shop_type_code` / `shop_type_name` | Type de magasin déduit de l'enseigne (supermarché, restauration rapide…). |
-| `code` | Vérité terrain COICOP (NA en mode prédiction). |
+| `code` | Vérité terrain COICOP **brute**, telle qu'annotée (NA en mode prédiction). |
 | `_source_input_file` | Chemin du fichier d'entrée d'origine (réutilisé par `final-output`). |
 
 ### Prédictions des quatre classifieurs
@@ -70,8 +70,9 @@ Les noms ci-dessous sont ceux **après renommage par `decide-coicop`** (les modu
 | `ttc_code_1 … ttc_code_3` | `run-ttc` | Top 3 des codes prédits par le classifieur neuronal (il en produit 10, `decide-coicop` n'en lit que 3). |
 | `ttc_conf_1 … ttc_conf_3` | `run-ttc` | Confiances associées, décroissantes ; `ttc_conf_1 ≥ 0,90` conditionne le consensus. |
 
-Tous ces codes — ainsi que la vérité terrain `code` — sont **tronqués au niveau 4 et élagués**
-par `decide-coicop` quand `--mapping-file` est fourni ([Prune](pruning.qmd)).
+Tous ces codes sont **tronqués au niveau 4 et élagués** par `decide-coicop` quand
+`--mapping-file` est fourni ([Prune](pruning.qmd)). La vérité terrain, elle, est dupliquée :
+`code` reste brut, `code_lvl4` porte sa forme canonique.
 
 ### Décision et livrable
 
@@ -86,6 +87,7 @@ par `decide-coicop` quand `--mapping-file` est fourni ([Prune](pruning.qmd)).
 | `predicted_code` | `final-output` | Code livré : `llm_code` s'il existe, sinon `predict_code` (regex), sinon vide. |
 | `prediction_source` | `final-output` | Origine du code : `consensus` > `regex` > `llm` > *(vide)* — un indicateur de fiabilité. |
 | `code_parent_equivalent` | `prune` | Code canonique d'un code replié, dans `mapping_lvl4.parquet`. |
+| `code_lvl4` | `decide-coicop` | Vérité terrain **canonique** : `code` tronqué au niveau 4 puis élagué. C'est la colonne que le [rapport](08-report.qmd) score. |
 | `llm_comment` | `final-output` | Copie de `llm_explication` dans le fichier livré. |
 
 ## Infrastructure

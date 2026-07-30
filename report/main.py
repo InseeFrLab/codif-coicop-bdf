@@ -14,11 +14,15 @@ import boto3
 import duckdb
 
 from coicop_metrics import (
+    CANONICAL_LEVELS,
     LEVELS,
     METHODS,
+    TRUTH_COL_CANONICAL,
     accuracy,
     parse_step_timings,
     prediction_depth_distribution,
+    truth_column,
+    truth_depth_distribution,
 )
 
 
@@ -176,21 +180,48 @@ def log_to_mlflow(args, run_root, output_s3, decide_path, prediction) -> None:
             mlflow.log_dict(dist, "prediction_distribution.json")
 
         # ---- accuracy metrics (evaluation mode only) ----
+        # Scored against the canonical truth (`code_lvl4`) so predictions and
+        # ground truth live in the same pruned code space.
+        truth_col = truth_column(df)
         scorable = df
-        if "code" in df.columns:
-            scorable = df[df["code"].notna() & (df["code"].astype(str).str.len() > 0)].copy()
+        if truth_col in df.columns:
+            scorable = df[
+                df[truth_col].notna() & (df[truth_col].astype(str).str.len() > 0)
+            ].copy()
         if not prediction and len(scorable) > 0:
             mlflow.log_metric("n_scorable", len(scorable))
+            mlflow.log_param("truth_column", truth_col)
+            truth = scorable[truth_col]
+            depth = truth_depth_distribution(truth)
+            for k in CANONICAL_LEVELS:
+                mlflow.log_metric(
+                    f"truth_shallower_than_niv{k}_count", depth["shallower_than"][k]["count"]
+                )
+            mlflow.log_dict(depth, "truth_depth_distribution.json")
+            # Avec une vérité canonique, le niveau 5 est structurellement vide.
+            strict_levels = (
+                CANONICAL_LEVELS if truth_col == TRUTH_COL_CANONICAL else LEVELS
+            )
             for name, col in METHODS:
                 if col not in scorable.columns:
                     continue
-                for k in LEVELS:
-                    n_ok, n_app, acc = accuracy(scorable["code"], scorable[col], k)
+                for k in strict_levels:
+                    n_ok, n_app, acc = accuracy(truth, scorable[col], k)
                     if name == "LLM":
                         # headline: final accuracy after decide-coicop
                         mlflow.log_metric(f"n_applicable_niv{k}", n_app)
                     if n_app:
                         mlflow.log_metric(f"accuracy_{name.lower()}_niv{k}", acc)
+                # Inclusive convention: every row counts at every level (a truth
+                # shallower than k must be predicted exactly).
+                for k in CANONICAL_LEVELS:
+                    _, n_all, acc_all = accuracy(
+                        truth, scorable[col], k, inclusive=True
+                    )
+                    if n_all:
+                        mlflow.log_metric(
+                            f"accuracy_all_{name.lower()}_niv{k}", acc_all
+                        )
             if "llm_error" in scorable.columns:
                 mlflow.log_metric("llm_error_count", int(scorable["llm_error"].notna().sum()))
             if "llm_code" in scorable.columns:

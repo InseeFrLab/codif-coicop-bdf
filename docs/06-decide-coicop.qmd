@@ -50,12 +50,25 @@ repli des hiérarchies linéaires, via `trunc_and_prune_lvl4`) :
 - `ttc_code_1..3` (le TTC est entraîné sur des codes tronqués mais non élagués) ;
 - `ragann_code` (le RAG annotations ne garantit le pruning que par son prompt — seule la
   branche RAG notices re-prune structurellement ses prédictions) ;
-- la **vérité terrain `code`** en mode évaluation (annotée au niveau 5), pour que le
-  [report](08-report.qmd) compare pruné vs pruné ;
 - et, en fin de batch, la décision **`llm_code`** elle-même.
 
 Consensus, arbitrage et scoring raisonnent ainsi sur des codes homogènes : `11.2` et
 `11.2.0` ne sont plus comptés comme un désaccord.
+
+La **vérité terrain** suit un traitement différent : elle n'est pas écrasée. La sortie porte
+les **deux** versions, et c'est la version canonique que le [report](08-report.qmd) score.
+
+| Colonne | Contenu | Usage |
+|---|---|---|
+| `code` | code annoté **brut**, tel que saisi (souvent niveau 5) | traçabilité, inspection d'un cas, détection du mode par `report` |
+| `code_lvl4` | sa forme **canonique** : tronquée niveau 4 puis élaguée | cible du scoring |
+
+::: {.callout-note}
+Conserver `code` brut évite un effet de bord : la détection automatique du mode par
+[`report`](08-report.qmd) repose sur le test « tous les `code` sont nuls », qui reste donc
+valable. Et un contrôle méthodologique peut comparer les deux colonnes pour mesurer combien
+d'annotations ont effectivement été ramenées à un code plus agrégé.
+:::
 
 ### 1. Court-circuit consensus (sans LLM)
 
@@ -319,6 +332,6 @@ appartenance à la nomenclature. C'est rare, mais à garder en tête lors des co
 
 | Fichier | Colonnes clés |
 |---|---|
-| `…/{run}/decide-coicop/predictions.parquet` | `id`, les codes normalisés des 4 classifieurs (`lcs_code`, `rag_code`, `ragann_code`, `ttc_code_1..3` + confiances), `code` (vérité terrain normalisée, éval), `llm_code` (normalisé), `llm_libelle`, `llm_explication`, `llm_confiance`, `llm_model` (`"consensus"` si court-circuit), `llm_error` (raison si `llm_code` est `NA`) |
+| `…/{run}/decide-coicop/predictions.parquet` | `id`, les codes normalisés des 4 classifieurs (`lcs_code`, `rag_code`, `ragann_code`, `ttc_code_1..3` + confiances), `code` (vérité terrain **brute**) et `code_lvl4` (vérité **canonique**, éval), `llm_code` (normalisé), `llm_libelle`, `llm_explication`, `llm_confiance`, `llm_model` (`"consensus"` si court-circuit), `llm_error` (raison si `llm_code` est `NA`) |
 
 ➡️ Étape suivante : [9. Final output](07-final-output.qmd)

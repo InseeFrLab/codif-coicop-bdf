@@ -6,6 +6,23 @@ MLflow never diverge) and ``main.py`` (which logs to MLflow).
 COICOP codes are stored as dot-separated strings (e.g. ``"01.1.2.3.4"``).
 Level-k accuracy compares the first ``k`` segments of the prediction with the
 ground truth.
+
+Two conventions coexist, and both are reported (see ``accuracy_table``):
+
+``inclusive=False`` (strict, historical)
+    Rows whose ground truth is shallower than ``k`` are **excluded** from the
+    denominator: that depth cannot be evaluated for them. A prediction shorter
+    than ``k`` counts as an error. Answers "among the observations codeable at
+    depth k, what share did we get right?".
+
+``inclusive=True``
+    **Every** row with a ground truth counts, whatever its depth. The truth and
+    the prediction are compared on ``parts[:k]``, so a truth shallower than
+    ``k`` demands a prediction equal to it. This is only meaningful on
+    *canonical* codes (``code_lvl4``): once linear hierarchies are pruned, a
+    truth of ``01.3`` means ``01.3`` **is** the level-4 answer, not a truncation
+    of it. Answers "over the whole population, what share did we place
+    correctly in the level-k grid?".
 """
 
 from __future__ import annotations
@@ -29,11 +46,36 @@ METHODS = [
 ]
 LEVELS = [1, 2, 3, 4, 5]
 
+# Canonical codes never exceed 4 segments (level 5 is truncated away by the
+# `prune` step), so the inclusive convention saturates at level 4: comparing
+# parts[:4] already compares the codes in full.
+CANONICAL_LEVELS = [1, 2, 3, 4]
+
+# Ground-truth columns produced by decide-coicop: the raw annotation, and its
+# canonical form (truncated to level 4 + linear hierarchies pruned).
+TRUTH_COL_RAW = "code"
+TRUTH_COL_CANONICAL = "code_lvl4"
+
 
 def available_methods(data: pd.DataFrame) -> list[tuple[str, str]]:
     """METHODS whose prediction column is present in ``data`` (backward compatible
     with runs produced before a given method existed)."""
     return [(name, col) for name, col in METHODS if col in data.columns]
+
+
+def truth_column(data: pd.DataFrame) -> str:
+    """Ground-truth column to score against.
+
+    Predictions live in the canonical (pruned) code space, so the truth must
+    too — otherwise a correct canonical prediction such as ``01.3`` is scored
+    against a raw annotation ``01.3.0.0.1`` and counted wrong. Falls back to the
+    raw ``code`` for runs produced before ``code_lvl4`` existed.
+    """
+    return (
+        TRUTH_COL_CANONICAL
+        if TRUTH_COL_CANONICAL in data.columns
+        else TRUTH_COL_RAW
+    )
 
 
 def code_parts(s) -> list[str]:
@@ -45,44 +87,96 @@ def code_parts(s) -> list[str]:
     return s.split(".")
 
 
-def level_result(truth: str, pred: str, k: int):
-    """Return True/False/None.
+def level_result(truth: str, pred: str, k: int, *, inclusive: bool = False):
+    """Return True/False/None for one observation at level ``k``.
 
-    None means the observation is not applicable at level k
-    (truth is shallower than k, so we can't evaluate that depth).
+    None means the observation is not counted at all (see the module docstring
+    for the two conventions): with ``inclusive=False`` when the truth is
+    shallower than ``k``, with ``inclusive=True`` only when there is no truth.
     """
     tp = code_parts(truth)
+    pp = code_parts(pred)
+    if inclusive:
+        if not tp:
+            return None
+        if not pp:
+            return False
+        return tp[:k] == pp[:k]
     if len(tp) < k:
         return None
-    pp = code_parts(pred)
     if len(pp) < k:
         return False
     return tp[:k] == pp[:k]
 
 
-def accuracy_series(truth: pd.Series, pred: pd.Series, k: int) -> pd.Series:
+def accuracy_series(
+    truth: pd.Series, pred: pd.Series, k: int, *, inclusive: bool = False
+) -> pd.Series:
     """Series of True/False/NA indexed like truth."""
-    out = [level_result(t, p, k) for t, p in zip(truth, pred)]
+    out = [level_result(t, p, k, inclusive=inclusive) for t, p in zip(truth, pred)]
     return pd.Series(out, index=truth.index, dtype="object")
 
 
-def accuracy(truth: pd.Series, pred: pd.Series, k: int) -> tuple[int, int, float]:
-    s = accuracy_series(truth, pred, k)
+def accuracy(
+    truth: pd.Series, pred: pd.Series, k: int, *, inclusive: bool = False
+) -> tuple[int, int, float]:
+    s = accuracy_series(truth, pred, k, inclusive=inclusive)
     applicable = s.notna()
     n_app = int(applicable.sum())
     n_ok = int((s == True).sum())  # noqa: E712
     return n_ok, n_app, (n_ok / n_app if n_app else float("nan"))
 
 
-def accuracy_table(data: pd.DataFrame) -> pd.DataFrame:
+def accuracy_table(
+    data: pd.DataFrame, *, inclusive: bool = False, levels: list[int] | None = None
+) -> pd.DataFrame:
+    """Accuracy per method and per level, scored against ``truth_column(data)``.
+
+    With ``inclusive=True`` the denominator is the same at every level (all rows
+    carrying a ground truth), so it is reported once in the table caption rather
+    than per column.
+    """
+    truth = data[truth_column(data)]
+    levels = levels or (CANONICAL_LEVELS if inclusive else LEVELS)
     rows = []
     for name, col in available_methods(data):
         row = {"méthode": name}
-        for k in LEVELS:
-            _, n_app, acc = accuracy(data["code"], data[col], k)
-            row[f"niv{k} (n={n_app})"] = acc
+        for k in levels:
+            _, n_app, acc = accuracy(truth, data[col], k, inclusive=inclusive)
+            row[f"niv{k}" if inclusive else f"niv{k} (n={n_app})"] = acc
         rows.append(row)
     return pd.DataFrame(rows).set_index("méthode")
+
+
+def truth_depth_distribution(truth: pd.Series) -> dict:
+    """How deep the ground truth actually goes.
+
+    Needed to read the inclusive accuracy: at level ``k``, the rows whose truth
+    is shallower than ``k`` are the ones the strict convention drops and the
+    inclusive one requires to be predicted *exactly*.
+    """
+    depths = [len(code_parts(t)) for t in truth]
+    depths = [d for d in depths if d]
+    total = len(depths)
+    per_depth = {
+        d: {
+            "count": sum(1 for x in depths if x == d),
+            "pct": (sum(1 for x in depths if x == d) / total * 100)
+            if total
+            else float("nan"),
+        }
+        for d in sorted(set(depths))
+    }
+    shallower = {
+        k: {
+            "count": sum(1 for x in depths if x < k),
+            "pct": (sum(1 for x in depths if x < k) / total * 100)
+            if total
+            else float("nan"),
+        }
+        for k in CANONICAL_LEVELS
+    }
+    return {"total": total, "per_depth": per_depth, "shallower_than": shallower}
 
 
 def prediction_depth_distribution(pred: pd.Series) -> dict:

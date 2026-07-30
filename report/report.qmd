@@ -31,13 +31,17 @@ import seaborn as sns
 from IPython.display import Markdown
 
 from coicop_metrics import (
+    CANONICAL_LEVELS,
     LEVELS,
     METHODS,
+    TRUTH_COL_CANONICAL,
     accuracy,
     accuracy_series,
     accuracy_table,
     available_methods,
     code_parts,
+    truth_column,
+    truth_depth_distribution,
 )
 
 sns.set_theme(style="whitegrid")
@@ -71,8 +75,15 @@ con.sql(
 
 df = con.sql(f"SELECT * FROM read_parquet('{INPUT}')").df()
 
-# Keep a "scorable" view: rows with ground truth `code`
-scorable = df[df["code"].notna() & (df["code"].astype(str).str.len() > 0)].copy()
+# Colonne de vérité terrain à scorer : la version canonique `code_lvl4`
+# (tronquée niveau 4 + élaguée) quand decide-coicop l'a produite, sinon le code
+# brut `code` — les prédictions vivant dans l'espace pruné, la vérité doit y
+# vivre aussi. TRUTH est utilisée partout dans ce rapport.
+TRUTH = truth_column(df)
+HAS_CANONICAL_TRUTH = TRUTH == TRUTH_COL_CANONICAL
+
+# Keep a "scorable" view: rows carrying a ground truth
+scorable = df[df[TRUTH].notna() & (df[TRUTH].astype(str).str.len() > 0)].copy()
 ```
 
 ## Métadonnées du run
@@ -83,7 +94,8 @@ scorable = df[df["code"].notna() & (df["code"].astype(str).str.len() > 0)].copy(
 | Date   | `{python} RUN_DATE` |
 | Fichier source | `{python} INPUT` |
 | Observations totales | `{python} f"{len(df):,}".replace(",", " ")` |
-| Observations avec code de référence (`code` non nul) | `{python} f"{len(scorable):,}".replace(",", " ")` |
+| Observations avec code de référence | `{python} f"{len(scorable):,}".replace(",", " ")` |
+| Colonne de vérité terrain scorée | `{python} TRUTH` `{python} "(canonique : tronquée niveau 4 + élaguée)" if HAS_CANONICAL_TRUTH else "(code brut — run antérieur à code_lvl4)"` |
 | Erreurs LLM (`llm_error` non nul) | `{python} int(df["llm_error"].notna().sum()) if "llm_error" in df.columns else 0` |
 
 ```{python}
@@ -101,11 +113,23 @@ def style_acc(tbl: pd.DataFrame):
 
 ## Accuracy globale par niveau
 
-Pour chaque niveau `k ∈ {1..5}`, on tronque `code` (vérité terrain) et la prédiction aux `k` premiers niveaux et on compare. Les observations dont la vérité terrain a moins de `k` niveaux sont exclues du dénominateur à ce niveau (non évaluable). Les prédictions plus profondes que la vérité sont considérées correctes si le préfixe correspond. Les prédictions plus courtes que `k` comptent comme erreur à ce niveau.
+Deux conventions sont rapportées, et elles répondent à deux questions différentes. Celle-ci est la convention **stricte** (historique) ; la [suivante](#accuracy-sur-toutes-les-observations) est la convention **inclusive**.
+
+On tronque la vérité terrain (`{python} TRUTH`) et la prédiction aux `k` premiers niveaux et on compare. Les observations dont la vérité terrain a moins de `k` niveaux sont **exclues du dénominateur** à ce niveau (non évaluable) — d'où un `n` qui décroît avec `k`. Les prédictions plus profondes que la vérité sont considérées correctes si le préfixe correspond. Les prédictions plus courtes que `k` comptent comme erreur à ce niveau.
+
+> **Question à laquelle ce tableau répond :** parmi les observations *codables* à la profondeur `k`, quelle part a-t-on correctement codée ?
+
+::: {.callout-warning}
+## Les colonnes ne sont pas comparables entre elles
+Chaque niveau porte sur une **population différente** (voir les `n`). L'accuracy peut donc *augmenter* quand `k` augmente, non parce que la codification s'améliore en descendant, mais parce que les observations restantes sont les plus faciles — celles dont la vérité terrain est fine. Pour comparer les niveaux entre eux, utiliser la [convention inclusive](#accuracy-sur-toutes-les-observations).
+:::
 
 ```{python}
 # | label: tbl-global-accuracy
-global_tbl = accuracy_table(scorable)
+# Avec une vérité canonique, le niveau 5 est structurellement vide (les codes
+# prunés ont au plus 4 segments) : on ne l'affiche que pour les runs anciens.
+STRICT_LEVELS = CANONICAL_LEVELS if HAS_CANONICAL_TRUTH else LEVELS
+global_tbl = accuracy_table(scorable, levels=STRICT_LEVELS)
 Markdown(global_tbl.to_markdown(floatfmt=".1%"))
 ```
 
@@ -120,12 +144,101 @@ long["niveau"] = long["niveau"].str.extract(r"niv(\d)").astype(int)
 fig, ax = plt.subplots()
 sns.lineplot(long, x="niveau", y="accuracy", hue="méthode", marker="o", ax=ax)
 ax.set_ylim(0, 1)
-ax.set_title("Accuracy par niveau COICOP")
+ax.set_xticks(STRICT_LEVELS)
+ax.set_title("Accuracy par niveau COICOP (convention stricte, population variable)")
 ax.set_ylabel("Accuracy")
 ax.set_xlabel("Niveau (k)")
 plt.tight_layout()
 plt.show()
 ```
+
+## Accuracy sur toutes les observations {#accuracy-sur-toutes-les-observations}
+
+La convention stricte ci-dessus rétrécit le dénominateur quand `k` augmente : une observation dont la vérité terrain s'arrête au niveau 2 n'est pas comptée aux niveaux 3 et 4. Sur un dénominateur variable, les niveaux ne sont plus comparables entre eux, et l'accuracy ne dit rien de la population complète.
+
+Cette section calcule donc l'accuracy à chaque niveau **sur toutes les observations disposant d'une vérité terrain**, y compris celles dont la vérité tient sur moins de `k` positions. Pour ces dernières, la prédiction attendue est **le code court lui-même** : dans l'espace de codes canonique, si la vérité vaut `01.3`, alors `01.3` *est* la réponse de niveau 4 — ce n'est pas une troncature, c'est le code le plus fin qui existe pour ce poste (l'élagage a replié la hiérarchie linéaire, et 8 codes sont des feuilles dès le niveau 2). Une prédiction plus profonde y est donc comptée comme fausse, puisqu'elle désigne un code qui n'existe pas.
+
+> **Question à laquelle ce tableau répond :** sur l'ensemble de la population, quelle part des observations a-t-on correctement placée dans la grille de niveau `k` ? Le dénominateur est **constant** à tous les niveaux, ce qui rend les niveaux comparables entre eux et l'accuracy directement interprétable comme un taux de réussite global.
+
+```{python}
+# | label: tbl-truth-depth
+depth = truth_depth_distribution(scorable[TRUTH])
+depth_tbl = pd.DataFrame(
+    [
+        {
+            "niveau k": k,
+            "vérité moins profonde que k": depth["shallower_than"][k]["count"],
+            "part des observations": depth["shallower_than"][k]["pct"] / 100,
+        }
+        for k in CANONICAL_LEVELS
+    ]
+).set_index("niveau k")
+n_scorable = f"{len(scorable):,}".replace(",", " ")
+Markdown(
+    "**Profondeur de la vérité terrain** — nombre d'observations que la convention "
+    "stricte écarte à chaque niveau, et que la convention inclusive exige de prédire "
+    f"exactement (total scorable : {n_scorable} observations).\n\n"
+    + depth_tbl.to_markdown(floatfmt=(".0f", ".0f", ".1%"))
+)
+```
+
+```{python}
+# | label: tbl-global-accuracy-all
+all_tbl = accuracy_table(scorable, inclusive=True)
+Markdown(
+    f"Dénominateur constant : **{n_scorable}** observations à tous les niveaux.\n\n"
+    + all_tbl.to_markdown(floatfmt=".1%")
+)
+```
+
+```{python}
+# | label: fig-global-accuracy-all
+long_all = (
+    all_tbl.reset_index()
+    .melt(id_vars="méthode", var_name="niveau", value_name="accuracy")
+)
+long_all["niveau"] = long_all["niveau"].str.extract(r"niv(\d)").astype(int)
+
+fig, ax = plt.subplots()
+sns.lineplot(long_all, x="niveau", y="accuracy", hue="méthode", marker="o", ax=ax)
+ax.set_ylim(0, 1)
+ax.set_xticks(CANONICAL_LEVELS)
+ax.set_title("Accuracy par niveau COICOP — toutes les observations")
+ax.set_ylabel("Accuracy")
+ax.set_xlabel("Niveau (k)")
+plt.tight_layout()
+plt.show()
+```
+
+```{python}
+# | label: tbl-convention-gap
+K = 4
+rows = []
+for name, col in available_methods(scorable):
+    _, n_s, acc_s = accuracy(scorable[TRUTH], scorable[col], K)
+    _, n_i, acc_i = accuracy(scorable[TRUTH], scorable[col], K, inclusive=True)
+    rows.append(
+        {
+            "méthode": name,
+            f"stricte (n={n_s})": acc_s,
+            f"inclusive (n={n_i})": acc_i,
+            "écart": acc_i - acc_s,
+        }
+    )
+gap = pd.DataFrame(rows).set_index("méthode")
+Markdown(
+    f"**Comparaison des deux conventions au niveau {K}.** L'écart n'est pas un biais à "
+    "corriger : les deux chiffres mesurent des choses différentes sur des populations "
+    "différentes. Un écart positif signifie que les observations à vérité peu profonde "
+    "sont mieux codées que la moyenne ; un écart négatif, qu'elles le sont moins bien.\n\n"
+    + gap.to_markdown(floatfmt=".1%")
+)
+```
+
+::: {.callout-note}
+## Limite d'interprétation de la convention inclusive
+Une vérité terrain peu profonde peut avoir deux causes : le code est un **code canonique terminal** (il n'existe rien de plus fin — cas nominal, la convention inclusive est alors exacte), ou l'annotateur **s'est arrêté avant le niveau 4** alors que des codes plus fins existent. Dans ce second cas, une prédiction plus profonde est comptée fausse alors qu'elle pourrait être correcte : rien ne permet de la vérifier. La convention inclusive constitue donc une **borne inférieure** de l'accuracy réelle, et la convention stricte une borne calculée sur un sous-ensemble. Lire les deux ensemble.
+:::
 
 ## Accuracy par groupe (niveau COICOP, `shop`, `shop_type_name`, décile de `budget`)
 
@@ -141,7 +254,7 @@ def grouped_accuracy(data: pd.DataFrame, group_col: str, k: int = 4) -> pd.DataF
     for grp, sub in data.groupby(group_col, dropna=False):
         row = {group_col: grp, "n": len(sub)}
         for name, col in available_methods(data):
-            _, n_app, acc = accuracy(sub["code"], sub[col], k)
+            _, n_app, acc = accuracy(sub[TRUTH], sub[col], k)
             row[name] = acc
             row[f"{name}_n"] = n_app
         out.append(row)
@@ -167,7 +280,7 @@ Regroupe les observations par le premier segment de `code` (ex. `01`, `02`, …)
 ```{python}
 # | label: tbl-coicop-lvl1
 _lvl = scorable.assign(
-    truth_lvl1=scorable["code"].map(
+    truth_lvl1=scorable[TRUTH].map(
         lambda c: code_parts(c)[0] if code_parts(c) else None
     )
 ).dropna(subset=["truth_lvl1"])
@@ -187,7 +300,7 @@ Regroupe par les deux premiers segments de `code` (ex. `01.1`, `01.2`, …).
 ```{python}
 # | label: tbl-coicop-lvl2
 _lvl = scorable.assign(
-    truth_lvl2=scorable["code"].map(
+    truth_lvl2=scorable[TRUTH].map(
         lambda c: ".".join(code_parts(c)[:2]) if len(code_parts(c)) >= 2 else None
     )
 ).dropna(subset=["truth_lvl2"])
@@ -277,7 +390,7 @@ def at_level(s: pd.Series, k: int) -> pd.Series:
 
 k = 4
 df_k = scorable.assign(
-    truth_k=at_level(scorable["code"], k),
+    truth_k=at_level(scorable[TRUTH], k),
     pred_k=at_level(scorable["llm_code"], k),
 )
 df_k = df_k.dropna(subset=["truth_k", "pred_k"])
@@ -305,7 +418,7 @@ La commande `decide-coicop` retourne un score de confiance de 1 à 5. Une calibr
 # | label: fig-calibration
 cal_df = scorable.dropna(subset=["llm_confiance"]).copy()
 if len(cal_df):
-    cal_df["acc_niv4"] = accuracy_series(cal_df["code"], cal_df["llm_code"], 4)
+    cal_df["acc_niv4"] = accuracy_series(cal_df[TRUTH], cal_df["llm_code"], 4)
     cal_df = cal_df.dropna(subset=["acc_niv4"])
     cal = (
         cal_df.assign(acc=cal_df["acc_niv4"].astype(bool).astype(int))
@@ -360,7 +473,7 @@ def keyk(s: pd.Series, k: int = K_EVAL) -> pd.Series:
     return s.map(lambda x: ".".join(code_parts(x)[:k]) if len(code_parts(x)) >= k else None)
 
 
-work = scorable.assign(_truth=keyk(scorable["code"]), _llm=keyk(scorable["llm_code"]))
+work = scorable.assign(_truth=keyk(scorable[TRUTH]), _llm=keyk(scorable["llm_code"]))
 for col in PRED_COLS:
     work[f"_{col}"] = keyk(scorable[col])
 work = work.dropna(subset=["_truth", "_llm"])
@@ -519,11 +632,11 @@ else:
 
     arb["_in_main"] = arb.apply(lambda r: str(r["llm_code"]) in main_set(r), axis=1)
     arb["_in_avail"] = arb.apply(lambda r: str(r["llm_code"]) in avail_set(r), axis=1)
-    arb["_llm_ok"] = accuracy_series(arb["code"], arb["llm_code"], 4) == True  # noqa: E712
+    arb["_llm_ok"] = accuracy_series(arb[TRUTH], arb["llm_code"], 4) == True  # noqa: E712
     src_ok_cols = []
     for c in PRED_COLS:
         oc = f"_ok_{c}"
-        arb[oc] = accuracy_series(arb["code"], arb[c], 4) == True  # noqa: E712
+        arb[oc] = accuracy_series(arb[TRUTH], arb[c], 4) == True  # noqa: E712
         src_ok_cols.append(oc)
     arb["_any_src_ok"] = arb[src_ok_cols].any(axis=1)
 
@@ -573,11 +686,16 @@ else:
             f"prédiction correcte.".replace(",", " ")
         ))
 
-        labels = {"raw_product": "Produit", "code": "Vérité", "llm_code": "LLM (juge)",
-                  "llm_confiance": "Confiance"}
+        labels = {"raw_product": "Produit", "llm_code": "LLM (juge)",
+                  "llm_confiance": "Confiance",
+                  "code": "Vérité (brute)", TRUTH: "Vérité (scorée)"}
         labels.update({c: n for n, c in PREDICTORS.items()})
         labels.update({"ttc_code_2": "TTC top2", "ttc_code_3": "TTC top3"})
-        ex_cols = ["raw_product"] + PRED_COLS + extra_cols + ["code", "llm_code"]
+        # Les deux colonnes de vérité : la brute (telle qu'annotée) et celle
+        # réellement comparée. Sans la seconde, un lecteur croit à une erreur
+        # quand le juge a répondu le code canonique d'une annotation niveau 5.
+        truth_cols = ["code"] if TRUTH == "code" else ["code", TRUTH]
+        ex_cols = ["raw_product"] + PRED_COLS + extra_cols + truth_cols + ["llm_code"]
         if "llm_confiance" in out.columns:
             ex_cols.append("llm_confiance")
         ex_cols = [c for c in ex_cols if c in out.columns]
@@ -588,14 +706,18 @@ else:
 
 ## Récapitulatif
 
+Accuracy dans les deux conventions : `strict` sur les seules observations évaluables à ce niveau, `tous` sur l'ensemble des observations scorables (dénominateur constant).
+
 ```{python}
 # | label: tbl-summary
 summary_rows = []
 for name, col in available_methods(scorable):
     row = {"méthode": name}
-    for k in [1, 3, 4, 5]:
-        _, _, acc = accuracy(scorable["code"], scorable[col], k)
-        row[f"acc niv{k}"] = acc
+    for k in [1, 3, 4]:
+        _, _, acc = accuracy(scorable[TRUTH], scorable[col], k)
+        row[f"niv{k} strict"] = acc
+        _, _, acc_all = accuracy(scorable[TRUTH], scorable[col], k, inclusive=True)
+        row[f"niv{k} tous"] = acc_all
     summary_rows.append(row)
 summ = pd.DataFrame(summary_rows).set_index("méthode")
 Markdown(summ.to_markdown(floatfmt=".1%"))

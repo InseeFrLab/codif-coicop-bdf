@@ -79,9 +79,10 @@ l'éventail des valeurs possibles de `predicted_code` sur la page
 Quand une vérité terrain est disponible (jeu de test annoté, hors CSV BDF), `report.qmd`
 calcule l'**exactitude**. Ses sections :
 
-- **Métadonnées du run** ;
-- **Accuracy globale par niveau** COICOP (1 à 5) pour LCS, RAG notices, RAG annotations, TTC
-  et LLM (tableau + graphique) ;
+- **Métadonnées du run** (dont la colonne de vérité terrain effectivement scorée) ;
+- **Accuracy globale par niveau** COICOP pour LCS, RAG notices, RAG annotations, TTC
+  et LLM (tableau + graphique), en **convention stricte** ;
+- **Accuracy sur toutes les observations**, en **convention inclusive** (voir ci-dessous) ;
 - **Accuracy par groupe** : niveau COICOP 1 et 2, `shop`, `shop_type_name`, **décile de `budget`** ;
 - **Analyse d'erreurs** : matrice de confusion (top 20 paires `code` vs `llm_code` au
   niveau 4), **calibration** (accuracy par tranche de `llm_confiance`) ;
@@ -91,18 +92,58 @@ calcule l'**exactitude**. Ses sections :
 - **Décisions du juge hors des prédictions des classifieurs** ;
 - **Récapitulatif**.
 
-Méthodologie de l'accuracy par niveau : on tronque `code` et la prédiction aux `k` premiers
-segments ; les observations dont la vérité a moins de `k` niveaux sont exclues du dénominateur
-à ce niveau, et une prédiction plus courte que `k` compte comme une erreur.
+### Sur quelle vérité terrain le rapport score-t-il ?
+
+Sur **`code_lvl4`**, la version canonique de l'annotation produite par
+[`decide-coicop`](06-decide-coicop.qmd) — pas sur `code` brut. Les prédictions vivant dans
+l'espace de codes [pruné](pruning.qmd), la vérité doit y vivre aussi : sinon une prédiction
+canonique exacte (`01.3` face à une annotation `01.3.0.0.x`) est comptée fausse, un biais qui
+touche ~24 % des Postes de la nomenclature. Les runs antérieurs à l'introduction de
+`code_lvl4` retombent automatiquement sur `code` ; la colonne réellement utilisée est affichée
+dans les métadonnées du rapport.
+
+### Les deux conventions d'accuracy
+
+Le rapport publie **deux** accuracies par niveau, qui répondent à deux questions distinctes.
+Le tableau récapitulatif les met côte à côte, et MLflow reçoit les deux séries
+(`accuracy_<méthode>_niv<k>` et `accuracy_all_<méthode>_niv<k>`).
+
+| | Convention **stricte** | Convention **inclusive** |
+|---|---|---|
+| Dénominateur | seules les observations dont la vérité atteint le niveau `k` | **toutes** les observations disposant d'une vérité terrain |
+| Vérité moins profonde que `k` | **exclue** (non évaluable) | **incluse** : la prédiction attendue est le code court lui-même |
+| Prédiction plus courte que `k` | erreur | erreur (sauf si elle égale la vérité) |
+| Prédiction plus profonde que la vérité | correcte si le préfixe correspond | **erreur** : dans l'espace pruné, ce code n'existe pas |
+| Question | parmi les observations codables à la profondeur `k`, quelle part est juste ? | sur toute la population, quelle part est correctement placée dans la grille de niveau `k` ? |
+| Comparaison entre niveaux | **impossible** (population variable) | possible (dénominateur constant) |
+
+La convention inclusive est celle qui répond à « quel est mon taux de réussite au niveau 4 ? ».
+Elle n'a de sens que sur des codes canoniques : une fois les hiérarchies linéaires élaguées,
+une vérité `01.3` signifie que `01.3` **est** la réponse de niveau 4 — ce n'est pas une
+troncature faute de mieux, c'est le code le plus fin qui existe pour ce poste (8 codes sont des
+feuilles dès le niveau 2). Le rapport affiche aussi, pour chaque niveau, **combien
+d'observations** ont une vérité moins profonde que `k` : c'est la part de la population qui
+sépare les deux chiffres.
+
+::: {.callout-warning}
+## Pourquoi l'accuracy stricte peut *monter* avec le niveau
+Comme chaque niveau porte sur une population différente, l'accuracy stricte peut augmenter
+quand `k` augmente : les observations qui restent sont celles dont la vérité est fine, souvent
+les plus faciles. Ce n'est pas une amélioration de la codification en profondeur, c'est un
+effet de sélection. C'est la raison d'être de la convention inclusive.
+:::
 
 ::: {.callout-note}
-Depuis juillet 2026, la vérité terrain `code` est **normalisée** (troncature niveau 4 +
-élagage) par `decide-coicop` avant scoring, comme les prédictions : la comparaison se fait
-pruné vs pruné. Sans cela, une prédiction canonique exacte (ex. `01.3` face à une annotation
-`01.3.0.0.x`) était comptée fausse aux niveaux 3 et 4 — un biais qui touchait ~24 % des
-Postes de la nomenclature (voir [prune](pruning.qmd)). L'accuracy « niveau 5 » reste
-mécaniquement nulle dans l'espace pruné.
+## Limite d'interprétation de la convention inclusive
+Une vérité peu profonde a deux causes possibles : le code est un **code canonique terminal**
+(la convention inclusive est alors exacte), ou **l'annotateur s'est arrêté avant le niveau 4**
+alors que des codes plus fins existent. Dans ce second cas, une prédiction plus fine est
+comptée fausse sans qu'on puisse la vérifier. L'accuracy inclusive est donc une **borne
+inférieure**, la stricte une mesure sur un sous-ensemble : lire les deux ensemble.
 :::
+
+Avec une vérité canonique, le **niveau 5 n'est plus affiché** : les codes prunés ont au plus
+4 segments, la colonne serait structurellement vide.
 
 ## Rendre le rapport à la main
 
@@ -122,13 +163,16 @@ Sont enregistrés notamment :
 
 - **Paramètres** du pipeline pour rejouer/comparer un run : `run_id`, `run_date`,
   `model_name` (LLM RAG), `decide_model`, `decide_concurrency`, **`ttc_model_uri`** (URI du
-  modèle utilisé par [`run-ttc`](05-run-ttc.qmd)), `skip_vector_db`, l'emplacement S3 de
-  sortie, etc.
+  modèle utilisé par [`run-ttc`](05-run-ttc.qmd)), `skip_vector_db`, `truth_column` (la
+  colonne de vérité terrain scorée), l'emplacement S3 de sortie, etc.
 - **Tags** : mode (`prediction`/`evaluation`), commit et branche git.
 - **Métriques** : durées des étapes Argo, nombre d'observations, distribution des codes
-  prédits par niveau ; et en mode évaluation, l'accuracy par méthode (LCS/RAG/TTC/LLM) et par
-  niveau.
-- **Artefact** : le `report.html`.
+  prédits par niveau ; et en mode évaluation, pour chaque méthode (LCS/RAG/RAG-annot/TTC/LLM)
+  et chaque niveau, les **deux conventions** — `accuracy_<méthode>_niv<k>` (stricte) et
+  `accuracy_all_<méthode>_niv<k>` (inclusive) — plus
+  `truth_shallower_than_niv<k>_count`, qui donne la population séparant les deux.
+- **Artefacts** : le `report.html`, `prediction_distribution.json` et
+  `truth_depth_distribution.json`.
 
 Logguer `ttc_model_uri` permet de savoir, pour chaque run, **quel modèle TTC** a produit les
 prédictions — utile pour comparer deux versions du classifieur.
