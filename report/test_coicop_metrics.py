@@ -13,6 +13,10 @@ from coicop_metrics import (
     TRUTH_COL_RAW,
     accuracy,
     accuracy_table,
+    answer_mask,
+    coverage_table,
+    declared_refusal_table,
+    is_answer,
     level_result,
     regime_accuracy_table,
     regime_masks,
@@ -133,6 +137,72 @@ class TestTables:
         cols = list(accuracy_table(df).columns)
         assert cols[0] == "niv1 (n=1)"
         assert cols[3] == "niv4 (n=0)"
+
+
+class TestAbstention:
+    def test_recognises_the_forms_a_refusal_takes(self):
+        for refusal in [None, float("nan"), "", "   ", "N/A", "n/a", "None", "null", "-"]:
+            assert is_answer(refusal) is False, refusal
+        for code in ["01.3", "01.1.1.3", " 02.1 "]:
+            assert is_answer(code) is True, code
+
+    def test_answer_mask_follows_the_series(self):
+        pred = pd.Series(["01.3", None, "N/A", "02.1"])
+        assert list(answer_mask(pred)) == [True, False, False, True]
+
+    @staticmethod
+    def _frame():
+        """Quatre observations : deux codes justes, un code faux, une abstention."""
+        return pd.DataFrame(
+            {
+                TRUTH_COL_CANONICAL: ["01.3", "01.1.1.3", "02.1.1.1", "03.2"],
+                "llm_code": ["01.3", "01.1.1.3", "02.1.1.9", None],
+            }
+        )
+
+    def test_global_accuracy_factorises_into_coverage_times_answered(self):
+        """C'est l'identité qui justifie le tableau : sous la convention inclusive,
+        une abstention est une erreur, donc globale = couverture × sur réponses."""
+        tbl = coverage_table(self._frame(), 4)
+        row = tbl.loc["LLM"]
+        assert row["couverture"] == 0.75
+        assert row["abstentions"] == 1
+        assert row["accuracy niv4 sur réponses"] == 2 / 3
+        assert row["accuracy niv4 globale"] == 0.5
+        assert row["accuracy niv4 globale"] == (
+            row["couverture"] * row["accuracy niv4 sur réponses"]
+        )
+
+    def test_sentinel_string_is_an_abstention_not_a_wrong_code(self):
+        """Sans le traitement des sentinelles, "N/A" gonflerait le dénominateur
+        des réponses et écraserait l'accuracy sur réponses."""
+        df = self._frame()
+        df.loc[3, "llm_code"] = "N/A"
+        tbl = coverage_table(df, 4)
+        assert tbl.loc["LLM", "couverture"] == 0.75
+        assert tbl.loc["LLM", "accuracy niv4 sur réponses"] == 2 / 3
+
+    def test_declared_flag_is_crossed_with_the_emitted_code(self):
+        df = pd.DataFrame(
+            {
+                TRUTH_COL_CANONICAL: ["01.3", "01.3", "01.3", "01.3"],
+                "ragann_code": ["01.3", None, "01.3", None],
+                "ragann_codable": [True, True, False, False],
+            }
+        )
+        tbl = declared_refusal_table(df, 4)
+        assert set(tbl["sortie"]) == {"code émis", "abstention"}
+        assert tbl["n"].sum() == 4
+        # Le cas contradictoire (déclaré non codable mais code émis) est isolé.
+        contradiction = tbl[
+            (tbl["drapeau"] == "ragann_codable = non codable")
+            & (tbl["sortie"] == "code émis")
+        ]
+        assert int(contradiction["n"].iloc[0]) == 1
+
+    def test_no_flag_column_yields_none(self):
+        df = pd.DataFrame({TRUTH_COL_CANONICAL: ["01.3"], "llm_code": ["01.3"]})
+        assert declared_refusal_table(df) is None
 
 
 class TestRegimes:

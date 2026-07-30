@@ -39,8 +39,11 @@ from coicop_metrics import (
     accuracy,
     accuracy_series,
     accuracy_table,
+    answer_mask,
     available_methods,
     code_parts,
+    coverage_table,
+    declared_refusal_table,
     regime_accuracy_table,
     regime_masks,
     truth_column,
@@ -242,6 +245,111 @@ Markdown(
 ## Limite d'interprétation de la convention inclusive
 Une vérité terrain peu profonde peut avoir deux causes : le code est un **code canonique terminal** (il n'existe rien de plus fin — cas nominal, la convention inclusive est alors exacte), ou l'annotateur **s'est arrêté avant le niveau 4** alors que des codes plus fins existent. Dans ce second cas, une prédiction plus profonde est comptée fausse alors qu'elle pourrait être correcte : rien ne permet de la vérifier. La convention inclusive constitue donc une **borne inférieure** de l'accuracy réelle, et la convention stricte une borne calculée sur un sous-ensemble. Lire les deux ensemble.
 :::
+
+## Couverture et refus de coder
+
+Une brique peut se taire au lieu de se tromper : `rag_code` et `ragann_code` sont NULL quand le RAG ne trouve rien d'exploitable, et `llm_code` vaut `N/A` quand l'arbitrage échoue. Les tableaux d'accuracy comptent ces abstentions comme des erreurs — c'est légitime pour mesurer la chaîne de bout en bout, mais cela **mélange deux défauts opposés** : coder faux, et ne pas coder. Le premier demande un meilleur modèle, le second une meilleure couverture.
+
+Sous la convention inclusive, la décomposition est exacte :
+
+$$\text{accuracy globale} = \text{couverture} \times \text{accuracy sur les réponses}$$
+
+```{python}
+# | label: tbl-coverage
+cov_tbl = coverage_table(scorable, REGIME_LEVEL)
+# Refus exprimés autrement que par un NULL (chaîne vide, "N/A", …) : ils passeraient
+# pour des codes si on ne les traitait pas comme des abstentions.
+sentinels = {
+    name: int((scorable[col].notna() & ~answer_mask(scorable[col])).sum())
+    for name, col in available_methods(scorable)
+}
+sentinel_note = ", ".join(f"{name} : {n}" for name, n in sentinels.items() if n)
+Markdown(
+    f"**Couverture et accuracy au niveau {REGIME_LEVEL}** sur {n_scorable} observations. "
+    "Une abstention (NULL, chaîne vide, sentinelle textuelle) n'entre pas dans la colonne "
+    "« sur réponses ».\n\n"
+    + cov_tbl.to_markdown(
+        floatfmt=(".0f", ".1%", ".0f", ".1%", ".1%"), missingval="—"
+    )
+    + (
+        "\n\nRefus exprimés par une sentinelle textuelle plutôt qu'un NULL — "
+        f"{sentinel_note}."
+        if sentinel_note
+        else "\n\nTous les refus de ce run sont des NULL."
+    )
+)
+```
+
+```{python}
+# | label: fig-coverage
+cov_plot = cov_tbl.reset_index().melt(
+    id_vars="méthode",
+    value_vars=["couverture", f"accuracy niv{REGIME_LEVEL} sur réponses",
+                f"accuracy niv{REGIME_LEVEL} globale"],
+    var_name="indicateur",
+    value_name="valeur",
+)
+fig, ax = plt.subplots()
+sns.barplot(cov_plot, x="méthode", y="valeur", hue="indicateur", ax=ax)
+ax.set_ylim(0, 1)
+ax.set_title(f"Couverture, accuracy sur réponses et accuracy globale (niveau {REGIME_LEVEL})")
+ax.set_ylabel("")
+ax.set_xlabel("")
+ax.legend(loc="lower right", fontsize="small")
+plt.tight_layout()
+plt.show()
+```
+
+### Accuracy du juge selon le nombre de sources muettes
+
+Quand les sources amont s'abstiennent, le juge arbitre avec moins de matière. Ce tableau ventile l'accuracy finale (`llm_code`) selon le nombre de classifieurs amont sans code sur l'observation.
+
+```{python}
+# | label: tbl-abstention-load
+_srcs = [(name, col) for name, col in available_methods(scorable) if name != "LLM"]
+_silent = pd.concat(
+    [~answer_mask(scorable[col]) for _name, col in _srcs], axis=1
+).sum(axis=1)
+rows = []
+for n_silent, sub in scorable.assign(_silent=_silent).groupby("_silent"):
+    _, _, acc = accuracy(sub[TRUTH], sub["llm_code"], REGIME_LEVEL, inclusive=True)
+    rows.append(
+        {
+            "sources muettes": int(n_silent),
+            "n": len(sub),
+            "part des observations": len(sub) / len(scorable),
+            f"accuracy LLM niv{REGIME_LEVEL}": acc,
+            "couverture du juge": float(answer_mask(sub["llm_code"]).mean()),
+        }
+    )
+silence_tbl = pd.DataFrame(rows).set_index("sources muettes")
+Markdown(
+    f"Sources considérées : {', '.join(name for name, _col in _srcs)} "
+    f"({len(_srcs)} classifieurs amont).\n\n"
+    + silence_tbl.to_markdown(floatfmt=(".0f", ".0f", ".1%", ".1%", ".1%"))
+)
+```
+
+### Refus déclarés vs code émis
+
+Certaines briques exposent un drapeau de codabilité distinct du code produit ; les deux signaux peuvent se contredire.
+
+```{python}
+# | label: tbl-declared-refusal
+refusal_tbl = declared_refusal_table(scorable, REGIME_LEVEL)
+if refusal_tbl is None:
+    md = "_Aucun drapeau de codabilité (`codable`, `ragann_codable`) dans ce run._"
+else:
+    _acc_col = f"accuracy niv{REGIME_LEVEL}"
+    _view = refusal_tbl.copy()
+    _view[_acc_col] = _view[_acc_col].map(lambda v: "—" if pd.isna(v) else f"{v:.1%}")
+    md = (
+        "L'accuracy n'est renseignée que sur les lignes où un code a été émis : sur une "
+        "abstention elle vaut 0 par construction.\n\n"
+        + _view.to_markdown(index=False, disable_numparse=True)
+    )
+Markdown(md)
+```
 
 ## Accuracy par régime de décision : consensus ou arbitrage réel
 

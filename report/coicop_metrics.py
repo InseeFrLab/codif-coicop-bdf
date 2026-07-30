@@ -70,6 +70,18 @@ REGIMES = [("Consensus", "consensus"), ("Arbitré", "arbitrated")]
 # partagé par report.qmd et main.py pour que les deux ne divergent pas.
 REGIME_LEVEL = 4
 
+# Un classifieur peut refuser de coder. Le refus arrive dans les données sous
+# plusieurs formes selon la brique : NULL, chaîne vide, ou sentinelle textuelle
+# (`llm_code` vaut "N/A" quand l'arbitrage LLM échoue). Toutes comptent comme
+# abstention, pas comme code.
+ABSTENTION_SENTINELS = frozenset(
+    {"", "-", "?", "n/a", "na", "nan", "nat", "none", "null"}
+)
+
+# Colonnes booléennes par lesquelles une brique déclare explicitement que
+# l'observation n'est pas codable, indépendamment du code qu'elle émet.
+CODABLE_FLAGS = {"RAG": "codable", "RAG-annot": "ragann_codable"}
+
 
 def available_methods(data: pd.DataFrame) -> list[tuple[str, str]]:
     """METHODS whose prediction column is present in ``data`` (backward compatible
@@ -160,6 +172,99 @@ def accuracy_table(
             row[f"niv{k}" if inclusive else f"niv{k} (n={n_app})"] = acc
         rows.append(row)
     return pd.DataFrame(rows).set_index("méthode")
+
+
+def is_answer(value) -> bool:
+    """True when the classifier actually returned an exploitable code.
+
+    A refusal to code (NULL, empty string, ``"N/A"`` …) is *not* a wrong code: it
+    is the absence of an answer. Both are counted as errors by ``accuracy`` — see
+    ``coverage_table`` to separate the two.
+    """
+    if value is None:
+        return False
+    if isinstance(value, float) and np.isnan(value):
+        return False
+    return str(value).strip().lower() not in ABSTENTION_SENTINELS
+
+
+def answer_mask(pred: pd.Series) -> pd.Series:
+    """Boolean mask of the rows where ``pred`` carries a code."""
+    return pred.map(is_answer)
+
+
+def coverage_table(
+    data: pd.DataFrame, k: int = REGIME_LEVEL, *, inclusive: bool = True
+) -> pd.DataFrame:
+    """Split each method's accuracy into coverage × accuracy-when-answering.
+
+    The global accuracy conflates two very different failures: coding the wrong
+    thing, and refusing to code. Under the inclusive convention an abstention is
+    counted as an error, so the global figure factorises exactly:
+
+        accuracy globale = couverture × accuracy sur les réponses
+
+    A method can therefore look mediocre because it is wrong, or because it is
+    silent — two problems with opposite remedies.
+    """
+    truth = data[truth_column(data)]
+    n_total = len(data)
+    rows = []
+    for name, col in available_methods(data):
+        answered = answer_mask(data[col])
+        n_ans = int(answered.sum())
+        _, _, acc_all = accuracy(truth, data[col], k, inclusive=inclusive)
+        _, _, acc_ans = accuracy(
+            truth[answered], data[col][answered], k, inclusive=inclusive
+        )
+        rows.append(
+            {
+                "méthode": name,
+                "couverture": (n_ans / n_total) if n_total else float("nan"),
+                "abstentions": n_total - n_ans,
+                f"accuracy niv{k} sur réponses": acc_ans,
+                f"accuracy niv{k} globale": acc_all,
+            }
+        )
+    return pd.DataFrame(rows).set_index("méthode")
+
+
+def declared_refusal_table(data: pd.DataFrame, k: int = REGIME_LEVEL) -> pd.DataFrame | None:
+    """Cross a brick's ``codable`` flag with whether it emitted a code anyway.
+
+    The two signals can disagree: a brick may flag an observation as not codable
+    and still return a code (or the reverse). Returns None when no flag column is
+    present in ``data``.
+    """
+    truth = data[truth_column(data)]
+    rows = []
+    for name, flag in CODABLE_FLAGS.items():
+        col = dict(METHODS).get(name)
+        if flag not in data.columns or col not in data.columns:
+            continue
+        declared = data[flag].fillna(False).astype(bool)
+        answered = answer_mask(data[col])
+        for decl_label, decl_mask in (("codable", declared), ("non codable", ~declared)):
+            for ans_label, ans_mask in (("code émis", answered), ("abstention", ~answered)):
+                mask = decl_mask & ans_mask
+                # Sur les lignes d'abstention l'accuracy vaut 0 par construction
+                # (pas de code = erreur) : on la laisse vide plutôt que d'afficher
+                # un chiffre qui n'apporte rien.
+                acc = float("nan")
+                if ans_label == "code émis" and mask.any():
+                    _, _, acc = accuracy(truth[mask], data[col][mask], k, inclusive=True)
+                rows.append(
+                    {
+                        "méthode": name,
+                        "drapeau": f"{flag} = {decl_label}",
+                        "sortie": ans_label,
+                        "n": int(mask.sum()),
+                        f"accuracy niv{k}": acc,
+                    }
+                )
+    if not rows:
+        return None
+    return pd.DataFrame(rows)
 
 
 def regime_masks(data: pd.DataFrame) -> list[tuple[str, str, pd.Series]] | None:

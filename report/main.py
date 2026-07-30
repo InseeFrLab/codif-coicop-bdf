@@ -12,6 +12,7 @@ from urllib.parse import urlparse
 
 import boto3
 import duckdb
+import pandas as pd
 
 from coicop_metrics import (
     CANONICAL_LEVELS,
@@ -20,6 +21,7 @@ from coicop_metrics import (
     REGIME_LEVEL,
     TRUTH_COL_CANONICAL,
     accuracy,
+    coverage_table,
     parse_step_timings,
     prediction_depth_distribution,
     regime_masks,
@@ -224,6 +226,22 @@ def log_to_mlflow(args, run_root, output_s3, decide_path, prediction) -> None:
                         mlflow.log_metric(
                             f"accuracy_all_{name.lower()}_niv{k}", acc_all
                         )
+            # Coverage vs accuracy-when-answering: the global accuracy above
+            # counts a refusal to code (NULL, "", "N/A") as an error, which hides
+            # whether a method is wrong or simply silent.
+            cov = coverage_table(scorable, REGIME_LEVEL)
+            for name in cov.index:
+                slug = name.lower()
+                mlflow.log_metric(f"coverage_{slug}", float(cov.loc[name, "couverture"]))
+                mlflow.log_metric(
+                    f"abstention_{slug}_count", int(cov.loc[name, "abstentions"])
+                )
+                acc_ans = cov.loc[name, f"accuracy niv{REGIME_LEVEL} sur réponses"]
+                if pd.notna(acc_ans):
+                    mlflow.log_metric(
+                        f"accuracy_answered_{slug}_niv{REGIME_LEVEL}", float(acc_ans)
+                    )
+
             # Per-regime accuracy at the survey target level: the pooled figures
             # above mix the consensus short-circuit (where `llm_code` is TTC
             # top-1, so LLM and TTC are identical by construction) with the rows
