@@ -17,10 +17,12 @@ from coicop_metrics import (
     CANONICAL_LEVELS,
     LEVELS,
     METHODS,
+    REGIME_LEVEL,
     TRUTH_COL_CANONICAL,
     accuracy,
     parse_step_timings,
     prediction_depth_distribution,
+    regime_masks,
     truth_column,
     truth_depth_distribution,
 )
@@ -222,6 +224,30 @@ def log_to_mlflow(args, run_root, output_s3, decide_path, prediction) -> None:
                         mlflow.log_metric(
                             f"accuracy_all_{name.lower()}_niv{k}", acc_all
                         )
+            # Per-regime accuracy at the survey target level: the pooled figures
+            # above mix the consensus short-circuit (where `llm_code` is TTC
+            # top-1, so LLM and TTC are identical by construction) with the rows
+            # the judge really arbitrated. Only the latter measure the judge.
+            masks = regime_masks(scorable)
+            if masks is not None:
+                for _label, suffix, mask in masks:
+                    sub = scorable[mask]
+                    mlflow.log_metric(f"n_{suffix}", len(sub))
+                    if not len(sub):
+                        continue
+                    for name, col in METHODS:
+                        if col not in sub.columns:
+                            continue
+                        _, n_sub, acc_sub = accuracy(
+                            sub[truth_col], sub[col], REGIME_LEVEL, inclusive=True
+                        )
+                        if n_sub:
+                            mlflow.log_metric(
+                                f"accuracy_all_{name.lower()}_niv{REGIME_LEVEL}_{suffix}",
+                                acc_sub,
+                            )
+                consensus_mask = masks[0][2]
+                mlflow.log_metric("consensus_share", float(consensus_mask.mean()))
             if "llm_error" in scorable.columns:
                 mlflow.log_metric("llm_error_count", int(scorable["llm_error"].notna().sum()))
             if "llm_code" in scorable.columns:

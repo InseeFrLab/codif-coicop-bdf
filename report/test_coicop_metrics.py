@@ -7,11 +7,15 @@ import pandas as pd
 
 from coicop_metrics import (
     CANONICAL_LEVELS,
+    CONSENSUS_LABEL,
+    REGIME_COL,
     TRUTH_COL_CANONICAL,
     TRUTH_COL_RAW,
     accuracy,
     accuracy_table,
     level_result,
+    regime_accuracy_table,
+    regime_masks,
     truth_column,
     truth_depth_distribution,
 )
@@ -129,6 +133,64 @@ class TestTables:
         cols = list(accuracy_table(df).columns)
         assert cols[0] == "niv1 (n=1)"
         assert cols[3] == "niv4 (n=0)"
+
+
+class TestRegimes:
+    @staticmethod
+    def _frame():
+        """Deux consensus (le juge reprend TTC top-1, juste dans les deux cas) et
+        trois arbitrages : le juge casse deux bons codes TTC et en répare un.
+        TTC arbitré = 2/3, LLM arbitré = 1/3, LLM d'ensemble = 3/5."""
+        return pd.DataFrame(
+            {
+                TRUTH_COL_CANONICAL: ["01.3", "01.1.1.3", "02.1.1.1", "03.2", "04.1.1.1"],
+                "ttc_code_1": ["01.3", "01.1.1.3", "02.1.1.1", "03.2", "04.1.1.9"],
+                "llm_code": ["01.3", "01.1.1.3", "02.1.1.9", "03.9", "04.1.1.1"],
+                REGIME_COL: [
+                    CONSENSUS_LABEL,
+                    CONSENSUS_LABEL,
+                    "gemma4-26b-moe",
+                    "gemma4-26b-moe",
+                    "gemma4-26b-moe",
+                ],
+            }
+        )
+
+    def test_masks_split_consensus_from_arbitration(self):
+        masks = regime_masks(self._frame())
+        labels = [label for label, _suffix, _mask in masks]
+        suffixes = [suffix for _label, suffix, _mask in masks]
+        assert labels == ["Consensus", "Arbitré"]
+        assert suffixes == ["consensus", "arbitrated"]
+        assert [int(mask.sum()) for _l, _s, mask in masks] == [2, 3]
+
+    def test_absent_regime_column_yields_none(self):
+        """Runs antérieurs au tag `llm_model` : pas de découpage possible."""
+        df = self._frame().drop(columns=[REGIME_COL])
+        assert regime_masks(df) is None
+        assert regime_accuracy_table(df) is None
+
+    def test_table_reports_pooled_and_per_regime_counts(self):
+        tbl = regime_accuracy_table(self._frame(), 4)
+        assert list(tbl.columns) == [
+            "Ensemble (n=5)",
+            "Consensus (n=2)",
+            "Arbitré (n=3)",
+        ]
+
+    def test_llm_equals_ttc_on_consensus_rows(self):
+        """Le raccourci consensus retient TTC top-1 : sur ce sous-ensemble les deux
+        colonnes sont tautologiquement égales, d'où l'intérêt du découpage."""
+        tbl = regime_accuracy_table(self._frame(), 4)
+        assert tbl.loc["LLM", "Consensus (n=2)"] == tbl.loc["TTC", "Consensus (n=2)"]
+        assert tbl.loc["LLM", "Arbitré (n=3)"] != tbl.loc["TTC", "Arbitré (n=3)"]
+
+    def test_pooled_figure_hides_the_arbitration_result(self):
+        """Le chiffre d'ensemble est une moyenne des deux régimes : il surestime
+        ce que le juge fait là où il décide vraiment."""
+        tbl = regime_accuracy_table(self._frame(), 4)
+        pooled = tbl.loc["LLM", "Ensemble (n=5)"]
+        assert tbl.loc["LLM", "Arbitré (n=3)"] < pooled < tbl.loc["LLM", "Consensus (n=2)"]
 
 
 class TestTruthDepth:

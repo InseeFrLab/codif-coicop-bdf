@@ -34,12 +34,15 @@ from coicop_metrics import (
     CANONICAL_LEVELS,
     LEVELS,
     METHODS,
+    REGIME_LEVEL,
     TRUTH_COL_CANONICAL,
     accuracy,
     accuracy_series,
     accuracy_table,
     available_methods,
     code_parts,
+    regime_accuracy_table,
+    regime_masks,
     truth_column,
     truth_depth_distribution,
 )
@@ -239,6 +242,66 @@ Markdown(
 ## Limite d'interprétation de la convention inclusive
 Une vérité terrain peu profonde peut avoir deux causes : le code est un **code canonique terminal** (il n'existe rien de plus fin — cas nominal, la convention inclusive est alors exacte), ou l'annotateur **s'est arrêté avant le niveau 4** alors que des codes plus fins existent. Dans ce second cas, une prédiction plus profonde est comptée fausse alors qu'elle pourrait être correcte : rien ne permet de la vérifier. La convention inclusive constitue donc une **borne inférieure** de l'accuracy réelle, et la convention stricte une borne calculée sur un sous-ensemble. Lire les deux ensemble.
 :::
+
+## Accuracy par régime de décision : consensus ou arbitrage réel
+
+Les tableaux ci-dessus agrègent deux régimes de décision que `decide-coicop` traite différemment, et que la colonne `llm_model` distingue :
+
+- **Consensus** — le raccourci `try_consensus_decision` : toutes les sources disponibles s'accordent avec le top-1 de TTC et la confiance TTC est ≥ 0,90. Aucun appel au juge, `llm_code` **est** `ttc_code_1`.
+- **Arbitré** — le juge a été appelé et a choisi parmi les propositions (ou en dehors).
+
+Sur les lignes de consensus, les colonnes LLM et TTC sont donc égales par construction : elles ne mesurent pas le juge, et comme ces lignes sont sélectionnées sur la confiance de TTC, elles tirent les deux chiffres vers le haut. Comparer LLM et TTC sur l'ensemble ne dit rien d'exploitable ; seule la colonne **Arbitré** compare le juge aux sources qu'il a effectivement arbitrées.
+
+```{python}
+# | label: tbl-regime-accuracy
+regime_tbl = regime_accuracy_table(scorable, REGIME_LEVEL, inclusive=True)
+if regime_tbl is None:
+    md = (
+        "_Colonne `llm_model` absente de ce run : impossible de distinguer les "
+        "décisions par consensus des arbitrages réels._"
+    )
+else:
+    _masks = regime_masks(scorable)
+    _n_cons = int(_masks[0][2].sum())
+    md = (
+        f"**Accuracy au niveau {REGIME_LEVEL}** (convention inclusive), ventilée par régime. "
+        f"Consensus : {_n_cons} observations sur {len(scorable)} "
+        f"({_n_cons / len(scorable):.1%} du scorable).\n\n"
+        + regime_tbl.to_markdown(floatfmt=".1%")
+    )
+Markdown(md)
+```
+
+```{python}
+# | label: tbl-regime-judge-gap
+# Écart du juge à la meilleure source amont, par régime : c'est la seule lecture
+# qui dise si l'arbitrage apporte quelque chose.
+if regime_tbl is None:
+    md = ""
+else:
+    sources = [name for name, _col in available_methods(scorable) if name != "LLM"]
+    rows = []
+    for label, _suffix, mask in regime_masks(scorable):
+        sub = regime_tbl[[c for c in regime_tbl.columns if c.startswith(label)]].iloc[:, 0]
+        best_src = sub[sources].idxmax()
+        rows.append(
+            {
+                "régime": label,
+                "n": int(mask.sum()),
+                "LLM": sub.get("LLM"),
+                "meilleure source": f"{best_src} ({sub[best_src]:.1%})",
+                "écart LLM − meilleure source": sub.get("LLM") - sub[best_src],
+            }
+        )
+    gap_regime = pd.DataFrame(rows).set_index("régime")
+    md = (
+        "**Le juge fait-il mieux que la meilleure source amont ?** Un écart négatif sur "
+        "la ligne `Arbitré` signifie qu'un choix systématique de cette source aurait mieux "
+        "codé les observations soumises au juge.\n\n"
+        + gap_regime.to_markdown(floatfmt=(".0f", ".0f", ".1%", "", ".1%"))
+    )
+Markdown(md)
+```
 
 ## Accuracy par groupe (niveau COICOP, `shop`, `shop_type_name`, décile de `budget`)
 

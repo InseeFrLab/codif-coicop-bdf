@@ -56,6 +56,20 @@ CANONICAL_LEVELS = [1, 2, 3, 4]
 TRUTH_COL_RAW = "code"
 TRUTH_COL_CANONICAL = "code_lvl4"
 
+# decide-coicop records the arbitration regime in `llm_model`: the consensus
+# short-circuit (`try_consensus_decision` — every available source agrees with
+# TTC top-1 and its confidence is >= 0.90) retains that code without calling the
+# judge, so `llm_code == ttc_code_1` by construction on those rows. Pooling the
+# two regimes makes the LLM and TTC columns partly tautological, hence the
+# per-regime split below.
+REGIME_COL = "llm_model"
+CONSENSUS_LABEL = "consensus"
+# (label affiché, suffixe de métrique MLflow)
+REGIMES = [("Consensus", "consensus"), ("Arbitré", "arbitrated")]
+# Niveau auquel le découpage par régime est rapporté (niveau cible de l'enquête),
+# partagé par report.qmd et main.py pour que les deux ne divergent pas.
+REGIME_LEVEL = 4
+
 
 def available_methods(data: pd.DataFrame) -> list[tuple[str, str]]:
     """METHODS whose prediction column is present in ``data`` (backward compatible
@@ -144,6 +158,52 @@ def accuracy_table(
         for k in levels:
             _, n_app, acc = accuracy(truth, data[col], k, inclusive=inclusive)
             row[f"niv{k}" if inclusive else f"niv{k} (n={n_app})"] = acc
+        rows.append(row)
+    return pd.DataFrame(rows).set_index("méthode")
+
+
+def regime_masks(data: pd.DataFrame) -> list[tuple[str, str, pd.Series]] | None:
+    """Split ``data`` into consensus vs judge-arbitrated rows.
+
+    Returns ``[(label, metric_suffix, mask), …]``, or None when ``REGIME_COL`` is
+    absent (runs produced before decide-coicop tagged the regime).
+    """
+    if REGIME_COL not in data.columns:
+        return None
+    consensus = data[REGIME_COL] == CONSENSUS_LABEL
+    masks = {"consensus": consensus, "arbitrated": ~consensus}
+    return [(label, suffix, masks[suffix]) for label, suffix in REGIMES]
+
+
+def regime_accuracy_table(
+    data: pd.DataFrame, k: int = 4, *, inclusive: bool = True
+) -> pd.DataFrame | None:
+    """Accuracy at level ``k`` per method, split by arbitration regime.
+
+    The pooled figures mix two regimes that measure different things. On the
+    consensus rows the judge was never called and ``llm_code`` *is* TTC top-1, so
+    the LLM and TTC columns are identical there by construction — those rows say
+    nothing about the judge while pulling both figures up (they are the easy
+    cases, selected on TTC confidence). Only the arbitrated subset compares the
+    judge with the sources it actually arbitrated.
+
+    Returns None when the regime column is absent.
+    """
+    masks = regime_masks(data)
+    if masks is None:
+        return None
+    truth = data[truth_column(data)]
+    rows = []
+    for name, col in available_methods(data):
+        row = {"méthode": name}
+        _, n_all, acc_all = accuracy(truth, data[col], k, inclusive=inclusive)
+        row[f"Ensemble (n={n_all})"] = acc_all
+        for label, _suffix, mask in masks:
+            sub = data[mask]
+            _, n_sub, acc_sub = accuracy(
+                sub[truth_column(data)], sub[col], k, inclusive=inclusive
+            )
+            row[f"{label} (n={n_sub})"] = acc_sub
         rows.append(row)
     return pd.DataFrame(rows).set_index("méthode")
 
