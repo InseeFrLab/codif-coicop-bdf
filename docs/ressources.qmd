@@ -6,15 +6,37 @@ subtitle: "Liens utiles, outils et contacts du projet"
 
 ## Code et documentation
 
-- **Dépôt GitHub** : <https://github.com/InseeFrLab/codif-coicop-bdf>
-
+- **Dépôt GitHub du pipeline** : <https://github.com/InseeFrLab/codif-coicop-bdf>
 - **Présentation du projet à ISI 2026** : <https://github.com/Lagaims/prez-coicop-isi>
+- **Guide opérationnel Argo** : `argo/argo_helper.md` dans le dépôt (installation de la CLI,
+  `argo submit` / `logs` / `retry`, table des paramètres)
+- **Paramétrage d'un run** : `argo/params.yaml` (fichier à codifier, mode production ou
+  évaluation, échantillonnage, branche git…)
 
 ## Nomenclature COICOP (références externes)
 
-https://www.insee.fr/fr/metadonnees/coicop2018/division/01?champRecherche=true
+- [Métadonnées COICOP 2018 sur insee.fr](https://www.insee.fr/fr/metadonnees/coicop2018/division/01?champRecherche=true)
+  — arborescence officielle, division par division
+- Export RMES utilisé par le pipeline : voir [Les données](donnees.qmd) et
+  [Troncature & élagage](pruning.qmd) pour la façon dont il est transformé
 
 ## Application Copain (solution OJS pour faire de l'annotation)
 
-- App : https://ssplab.pages.lab.sspcloud.fr/experimentation-bdf/copain/
-- Code : https://git.lab.sspcloud.fr/ssplab/experimentation-bdf/copain/pages#overview
+- App : <https://ssplab.pages.lab.sspcloud.fr/experimentation-bdf/copain/>
+- Code : <https://git.lab.sspcloud.fr/ssplab/experimentation-bdf/copain/pages#overview>
+
+## Construction du jeu d'annotations
+
+- Dépôt de construction du dataset :
+  <https://git.lab.sspcloud.fr/ssplab/experimentation-bdf/construction-dataset>
+
+## Outils de la plateforme
+
+| Outil | Usage dans le projet |
+|---|---|
+| Argo Workflows | orchestration du pipeline (DAG `argo/codif-pipeline.yaml`) |
+| MinIO / S3 | tous les artefacts de run (`projet-budget-famille`) |
+| Qdrant | bases vectorielles des deux branches RAG |
+| llm.lab | embeddings et génération (API OpenAI-compatible) |
+| Langfuse | traçage des appels LLM et versionnement des prompts |
+| MLflow | suivi des runs, métriques, modèle TTC |

@@ -2,8 +2,8 @@
 > Décrit la migration (aujourd'hui effectuée) qui a consolidé les 5 dépôts source
 > en monorepo. L'état courant du repo peut différer de ce plan (ex. `coicop-bdf-classifier/`
 > a depuis été scindé en `codif-ttc/` + `decide-coicop/`, l'étape de pruning est
-> unifiée dans `prune/`…). Pour l'état à jour, voir `CLAUDE.md`, `README.md` et
-> `docs/inputs-outputs.md`.
+> unifiée dans `prune/`…). Pour l'état à jour, voir `CLAUDE.md`, `README.md` et le site
+> Quarto (`docs/`, notamment `docs/index.qmd` et `docs/pruning.qmd`).
 
 # Consolidate pipeline sub-repos into codif-coicop-bdf
 

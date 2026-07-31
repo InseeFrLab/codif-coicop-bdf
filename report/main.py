@@ -12,13 +12,21 @@ from urllib.parse import urlparse
 
 import boto3
 import duckdb
+import pandas as pd
 
 from coicop_metrics import (
+    CANONICAL_LEVELS,
     LEVELS,
     METHODS,
+    REGIME_LEVEL,
+    TRUTH_COL_CANONICAL,
     accuracy,
+    coverage_table,
     parse_step_timings,
     prediction_depth_distribution,
+    regime_masks,
+    truth_column,
+    truth_depth_distribution,
 )
 
 
@@ -176,21 +184,88 @@ def log_to_mlflow(args, run_root, output_s3, decide_path, prediction) -> None:
             mlflow.log_dict(dist, "prediction_distribution.json")
 
         # ---- accuracy metrics (evaluation mode only) ----
+        # Scored against the canonical truth (`code_lvl4`) so predictions and
+        # ground truth live in the same pruned code space.
+        truth_col = truth_column(df)
         scorable = df
-        if "code" in df.columns:
-            scorable = df[df["code"].notna() & (df["code"].astype(str).str.len() > 0)].copy()
+        if truth_col in df.columns:
+            scorable = df[
+                df[truth_col].notna() & (df[truth_col].astype(str).str.len() > 0)
+            ].copy()
         if not prediction and len(scorable) > 0:
             mlflow.log_metric("n_scorable", len(scorable))
+            mlflow.log_param("truth_column", truth_col)
+            truth = scorable[truth_col]
+            depth = truth_depth_distribution(truth)
+            for k in CANONICAL_LEVELS:
+                mlflow.log_metric(
+                    f"truth_shallower_than_niv{k}_count", depth["shallower_than"][k]["count"]
+                )
+            mlflow.log_dict(depth, "truth_depth_distribution.json")
+            # Avec une vérité canonique, le niveau 5 est structurellement vide.
+            strict_levels = (
+                CANONICAL_LEVELS if truth_col == TRUTH_COL_CANONICAL else LEVELS
+            )
             for name, col in METHODS:
                 if col not in scorable.columns:
                     continue
-                for k in LEVELS:
-                    n_ok, n_app, acc = accuracy(scorable["code"], scorable[col], k)
+                for k in strict_levels:
+                    n_ok, n_app, acc = accuracy(truth, scorable[col], k)
                     if name == "LLM":
                         # headline: final accuracy after decide-coicop
                         mlflow.log_metric(f"n_applicable_niv{k}", n_app)
                     if n_app:
                         mlflow.log_metric(f"accuracy_{name.lower()}_niv{k}", acc)
+                # Inclusive convention: every row counts at every level (a truth
+                # shallower than k must be predicted exactly).
+                for k in CANONICAL_LEVELS:
+                    _, n_all, acc_all = accuracy(
+                        truth, scorable[col], k, inclusive=True
+                    )
+                    if n_all:
+                        mlflow.log_metric(
+                            f"accuracy_all_{name.lower()}_niv{k}", acc_all
+                        )
+            # Coverage vs accuracy-when-answering: the global accuracy above
+            # counts a refusal to code (NULL, "", "N/A") as an error, which hides
+            # whether a method is wrong or simply silent.
+            cov = coverage_table(scorable, REGIME_LEVEL)
+            for name in cov.index:
+                slug = name.lower()
+                mlflow.log_metric(f"coverage_{slug}", float(cov.loc[name, "couverture"]))
+                mlflow.log_metric(
+                    f"abstention_{slug}_count", int(cov.loc[name, "abstentions"])
+                )
+                acc_ans = cov.loc[name, f"accuracy niv{REGIME_LEVEL} sur réponses"]
+                if pd.notna(acc_ans):
+                    mlflow.log_metric(
+                        f"accuracy_answered_{slug}_niv{REGIME_LEVEL}", float(acc_ans)
+                    )
+
+            # Per-regime accuracy at the survey target level: the pooled figures
+            # above mix the consensus short-circuit (where `llm_code` is TTC
+            # top-1, so LLM and TTC are identical by construction) with the rows
+            # the judge really arbitrated. Only the latter measure the judge.
+            masks = regime_masks(scorable)
+            if masks is not None:
+                for _label, suffix, mask in masks:
+                    sub = scorable[mask]
+                    mlflow.log_metric(f"n_{suffix}", len(sub))
+                    if not len(sub):
+                        continue
+                    for name, col in METHODS:
+                        if col not in sub.columns:
+                            continue
+                        _, n_sub, acc_sub = accuracy(
+                            sub[truth_col], sub[col], REGIME_LEVEL, inclusive=True
+                        )
+                        if n_sub:
+                            mlflow.log_metric(
+                                f"accuracy_all_{name.lower()}_niv{REGIME_LEVEL}_{suffix}",
+                                acc_sub,
+                            )
+                consensus_mask = masks[0][2]
+                mlflow.log_metric("consensus_share", float(consensus_mask.mean()))
             if "llm_error" in scorable.columns:
                 mlflow.log_metric("llm_error_count", int(scorable["llm_error"].notna().sum()))
             if "llm_code" in scorable.columns:

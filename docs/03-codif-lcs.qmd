@@ -1,5 +1,5 @@
 ---
-title: "3. Codif LCS"
+title: "4. Codif LCS"
 ---
 
 ## Rôle de l'étape
@@ -12,7 +12,7 @@ Substring*).
 
 C'est une approche robuste pour les libellés qui ressemblent fortement à des libellés déjà vus.
 
-- Code : [`stats-annotations/`](../stats-annotations/) (R) — entrée `R/main.R`
+- Code : [`stats-annotations/`](https://github.com/InseeFrLab/codif-coicop-bdf/tree/main/stats-annotations) (R) — entrée `R/main.R`
 - Exécution : `Rscript R/main.R --run-id=<id> --run-date=YYYY-MM-DD`
 
 ## Entrées
@@ -107,4 +107,4 @@ l'étape d'arbitrage.
 | `{run}/analyse_codif_LCS.parquet` | table d'analyse qualité |
 | `{run}/eval/<…>.parquet` | tables d'évaluation (via `export_liste_df`) |
 
-➡️ Étape suivante : [4. RAG](04-coicop-rag.qmd)
+➡️ Étape suivante : [5. Codif TTC](05-run-ttc.qmd)

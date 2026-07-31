@@ -254,21 +254,38 @@ def filter_nomenclature(nomen: pd.DataFrame, obs: dict, full: bool = False) -> s
     return _nomen_to_str(filtered)
 
 
+# Vérité terrain canonique : `code` tronqué au niveau 4 puis élagué. Ajoutée à
+# côté de `code` (conservé brut) plutôt qu'à sa place, pour que la table
+# intermédiaire porte les deux et que l'aval choisisse.
+CANONICAL_TRUTH_COL = "code_lvl4"
+
+
 def _prune_predicted_codes(
-    df: pd.DataFrame, mapping_path: Path | str, code_cols: list[str]
+    df: pd.DataFrame,
+    mapping_path: Path | str,
+    code_cols: list[str],
+    rename: dict[str, str] | None = None,
 ) -> pd.DataFrame:
     """Applique la troncature niveau 4 + élagage des hiérarchies linéaires aux
-    colonnes de codes prédits indiquées, en réutilisant la logique centralisée du
-    module `prune` (aucune duplication). Les RAG produisent déjà des codes prunés ;
-    seuls LCS et TTC doivent être normalisés pour que le consensus et l'arbitrage
-    LLM raisonnent sur un espace de codes homogène.
+    colonnes de codes indiquées, en réutilisant la logique centralisée du module
+    `prune` (aucune duplication). Le RAG notices produit des codes prunés
+    structurellement (re-pruning explicite dans 2_run_rag.py), mais le RAG
+    annotations ne garantit le pruning que par son prompt : `ragann_code` doit
+    donc être normalisé ici, comme LCS et TTC — pour que le consensus,
+    l'arbitrage LLM et le scoring du report raisonnent tous sur le même espace
+    de codes. Idempotent sur un code déjà pruné ; les NA restent NA.
+
+    `rename` mappe une colonne source vers une colonne cible : le résultat y est
+    écrit sans écraser la source (utilisé pour la vérité terrain, dont la valeur
+    brute doit rester disponible).
     """
     mapping = _read_parquet(mapping_path)
+    rename = rename or {}
     for col in code_cols:
         if col not in df.columns:
             continue
         df = trunc_and_prune_lvl4(df, mapping, code_name=col)
-        df[col] = df[f"{col}_tpruned"]
+        df[rename.get(col, col)] = df[f"{col}_tpruned"]
         df = df.drop(columns=[f"{col}_tpruned"])
     return df
 
@@ -287,10 +304,12 @@ def load_all_observations(
     ragann_codable).
 
     `mapping_path` (table de mapping `mapping_lvl4.parquet` produite par l'étape
-    `prune`) est optionnel : s'il est fourni, les codes LCS et TTC sont tronqués au
-    niveau 4 et élagués comme les codes RAG, afin que le court-circuit consensus et
-    l'arbitrage LLM comparent des codes homogènes (et ne laissent pas fuiter un code
-    non pruné).
+    `prune`) est optionnel : s'il est fourni, les codes LCS, TTC et RAG-annotations
+    sont tronqués au niveau 4 et élagués sur place, afin que le court-circuit
+    consensus, l'arbitrage LLM et le scoring aval comparent des codes homogènes
+    (et ne laissent pas fuiter un code non pruné). La vérité terrain, elle, est
+    conservée **brute** dans `code` et dupliquée sous sa forme canonique dans
+    `code_lvl4` : la table intermédiaire porte les deux.
     """
     lcs_raw = _read_parquet(lcs_path)
     rag_raw = _read_parquet(rag_path)
@@ -354,11 +373,23 @@ def load_all_observations(
         )
         merged = merged.merge(ragann, on="id", how="left")
 
-    # Normalisation troncature niveau 4 + élagage des codes LCS/TTC (les codes RAG
-    # sont déjà prunés en amont). Idempotent sur un code déjà pruné.
+    # Normalisation troncature niveau 4 + élagage. Sur place pour les codes
+    # prédits (leur valeur brute reste dans le fichier de sortie de chaque
+    # classifieur) ; dans une colonne dédiée `code_lvl4` pour la vérité terrain,
+    # annotée au niveau 5 — sans elle le report comparerait pruné vs non-pruné.
     if mapping_path is not None:
         merged = _prune_predicted_codes(
-            merged, mapping_path, ["lcs_code", "ttc_code_1", "ttc_code_2", "ttc_code_3"]
+            merged,
+            mapping_path,
+            [
+                "lcs_code",
+                "ttc_code_1",
+                "ttc_code_2",
+                "ttc_code_3",
+                "ragann_code",
+                "code",
+            ],
+            rename={"code": CANONICAL_TRUTH_COL},
         )
 
     return merged
@@ -449,7 +480,6 @@ Libellé normalisé  : {fmt(obs.get("l_pr_product"))}
 Enseigne           : {fmt(obs.get("shop"))}
 Type de magasin    : {fmt(obs.get("shop_type_name"))}
 Montant (€)        : {fmt(obs.get("budget"), ".2f")}
-Code de référence  : {fmt(obs.get("code"))}
 
 ═══════════════════════════════════════
 PRÉDICTIONS DES MODÈLES

@@ -12,13 +12,14 @@ Le modèle utilisé est le **classifieur basique (« flat »)** . Il a été :
    hypermarchés / grandes surfaces uniquement) ;
 2. puis **fine-tuné** sur les **annotations produites lors du test de l'enquête BDF de 2024**.
 
-C'est la troisième prédiction « candidate » (avec [LCS](03-codif-lcs.qmd) et
-[RAG](04-coicop-rag.qmd)) que l'arbitrage final combinera.
+C'est l'une des quatre prédictions « candidates » (avec [LCS](03-codif-lcs.qmd),
+[RAG notices](04-coicop-rag.qmd) et [RAG annotations](09-rag-annotation.qmd)) que
+l'arbitrage final combinera.
 
-- Code (source vendorisée) : [`coicop-bdf-classifier/`](../coicop-bdf-classifier/) —
-  classifieur basique (`src/classifiers/basic_classifier.py`)
+- Code : [`codif-ttc/`](https://github.com/InseeFrLab/codif-coicop-bdf/tree/main/codif-ttc) —
+  classifieur basique (`codif-ttc/src/classifiers/basic_classifier.py`)
 - L'étape Argo construit depuis les sources comme les autres étapes : `git clone` du dépôt
-  puis `uv sync` + `uv run main.py predict-basic …` dans `coicop-bdf-classifier/`.
+  puis `uv sync` + `uv run main.py predict-basic …` dans `codif-ttc/`.
 
 
 ## Entrées
@@ -41,7 +42,7 @@ pour tracer quel modèle a servi à chaque run.
 
 Le classifieur est **basique (« flat »)** : il prédit directement le code COICOP à partir du
 libellé, sans cascade par niveaux. Architecture
-(`coicop-bdf-classifier/src/classifiers/basic_classifier.py`, package *torchTextClassifiers*) :
+(`codif-ttc/src/classifiers/basic_classifier.py`, package *torchTextClassifiers*) :
 
 - **tokenisation par n-grammes de caractères** (type fastText) : robuste aux abréviations et
   fautes des libellés de tickets (`bagu`, `tradit`…) ;
@@ -51,9 +52,12 @@ libellé, sans cascade par niveaux. Architecture
   retrait du bruit et des stopwords) avant tokenisation.
 
 L'entraînement et le fine-tuning ont leurs propres sous-commandes (`train-basic`,
-`fine-tune-basic` dans `coicop-bdf-classifier/main.py`) et leur propre workflow Argo
+`fine-tune-basic` dans `codif-ttc/main.py`) et leur propre workflow Argo
 (`argo/ttc-pipeline.yaml`) ; le modèle entraîné est stocké dans **MLflow** et référencé par
-l'URI `ttc-model-uri`.
+l'URI `ttc-model-uri`. À noter : les codes des données d'entraînement sont **tronqués au
+niveau 4** (`codif-ttc/src/data/build_training_data.py`), mais sans l'élagage des hiérarchies
+linéaires — le modèle peut donc prédire un code replié (ex. `11.2.0`) ; c'est la
+normalisation de [`decide-coicop`](06-decide-coicop.qmd) qui le ramène au code canonique.
 
 Pour chaque produit, le classifieur renvoie les **10 meilleurs** codes
 avec leur score de confiance (`--top-k 10`).
@@ -74,9 +78,10 @@ commerces, restauration, services…). C'est l'une des raisons d'être de l'arbi
 croise TTC avec LCS et RAG.
 :::
 
-Les colonnes produites sont `ttc_code_1 … ttc_code_10` et `ttc_conf_1 … ttc_conf_10`,
-classées par confiance décroissante. L'arbitrage utilise surtout le **top-1**
-(`ttc_code_1`, `ttc_conf_1`), notamment pour le court-circuit consensus.
+Les colonnes produites sont `predicted_code` (+ `confidence`) et
+`predicted_code_top2 … predicted_code_top10` (+ confiances), classées par confiance
+décroissante — renommées `ttc_code_1..3` / `ttc_conf_1..3` par `decide-coicop`, qui ne lit
+que le **top-3** et utilise surtout le **top-1** pour le court-circuit consensus.
 
 ## Exemple sur le fil rouge
 
@@ -85,13 +90,14 @@ classées par confiance décroissante. L'arbitrage utilise surtout le **top-1**
 | `bagu tradition u ble bretagne` | `01.1.1` (pains et céréales) | élevée |
 | `max garden flowers balle surprise` | code jouet/jardin | plus faible (libellé ambigu) |
 
-Quand la confiance top-1 est ≥ 0,90 **et** que LCS et RAG donnent le même code, l'arbitrage
-tranche sans appeler le LLM (voir [decide-coicop](06-decide-coicop.qmd)).
+Quand la confiance top-1 est ≥ 0,90 **et** que tous les autres codes disponibles (LCS, RAG
+notices, RAG annotations) donnent le même code, l'arbitrage tranche sans appeler le LLM
+(voir [decide-coicop](06-decide-coicop.qmd)).
 
 ## Sorties
 
 | Argument | Chemin |
 |---|---|
-| `--output` | `…/{run}/run-ttc/predictions.parquet` (`ttc_code_1..10`, `ttc_conf_1..10`) |
+| `--output` | `…/{run}/run-ttc/predictions.parquet` (`predicted_code[_topN]`, `confidence[_topN]`) |
 
-➡️ Étape suivante : [6. Decide (LLM-as-judge)](06-decide-coicop.qmd)
+➡️ Étape suivante : [6. Codification RAG](04-coicop-rag.qmd)

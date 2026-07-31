@@ -44,7 +44,7 @@ La codification porte sur le millésime BDF 2026 (dont les questionnaires remont
 
 Les résultats consolidés doivent être transmis à Eurostat en 2028.
 
-Les travaux de mise mise en place d'un pipeline de codification automatique ont débuté à l'autonne 2025, impliquant la MoA de l'enquête, la division IPC et le SSPlab.
+Les travaux de mise en place d'un pipeline de codification automatique ont débuté à l'automne 2025, impliquant la MoA de l'enquête, la division IPC et le SSPlab.
 
 À noter que la prochaine enquête BDF aura lieu en 2030 et il convient ainsi de rendre le processus de codification pérenne et reproductible pour pouvoir l'utiliser lors de ce prochain millésime.
 
@@ -62,51 +62,59 @@ Le diagramme ci-dessous montre les étapes **et les fichiers qui circulent entre
 
 ```{mermaid}
 flowchart LR
-  input[/"CSV d'entrée<br/>(input_file)"/] --> PRE[preprocessing]
-  PRE -- raw_test.parquet --> REG[codif-regex]
-  PRE -.->|"suggester.parquet"| LCS
-  PRE -.-> PC[prune-coicop]
-  PC -.-> VDB[create-vector-db]
-  VDB -.->|"collection Qdrant"| RAG
+  input[/"CSV d'entrée<br/>(input_file, mode prod)"/] --> PRE[preprocessing]
+  PRE -- "raw_test.parquet (éval)<br/>observations.parquet (prod)" --> REG[codif-regex]
+  REG -- raw_test_without_regex.parquet --> PRU[prune]
   REG -- raw_test_without_regex.parquet --> LCS[codif-lcs]
-  REG -- raw_test_without_regex.parquet --> PA[prune-annotations]
   REG -- raw_test_without_regex.parquet --> TTC[run-ttc]
-  PA -- "…_pruned.parquet" --> RAG[run-rag]
+  PRU -- nomenclature_pruned.parquet --> VDB[create-vector-db]
+  PRU -- "annotations_train_pruned<br/>+ suggester_pruned" --> VDBA[create-vector-db-annotations]
+  VDB -.->|"collection Qdrant"| RAG[run-rag]
+  VDBA -.->|"collection Qdrant"| RAGA[run-rag-annotations]
+  PRU -- annotations_test_pruned.parquet --> RAG
+  PRU -- annotations_test_pruned.parquet --> RAGA
   LCS -- raw_test_LCS.parquet --> DEC[decide-coicop]
   RAG -- predictions.parquet --> DEC
+  RAGA -- predictions.parquet --> DEC
   TTC -- predictions.parquet --> DEC
+  PRU -- mapping_lvl4.parquet --> DEC
   DEC -- predictions.parquet --> FIN[final-output]
   REG -- REGEX_pred.parquet --> FIN
   DEC -- predictions.parquet --> REP[report]
   FIN --> out[/"CSV livré<br/>(+ predicted_code)"/]
   REP --> html[/report.html/]
-  style PC stroke-dasharray: 5 5
   style VDB stroke-dasharray: 5 5
+  style VDBA stroke-dasharray: 5 5
 ```
 
-Les nœuds en pointillé (`prune-coicop`, `create-vector-db`) sont **sautés par défaut**
-(`skip-vector-db=true`) : leurs sorties — nomenclature prunée et base vectorielle — sont
-partagées entre les runs.
+Seuls les deux nœuds en pointillé (`create-vector-db`, `create-vector-db-annotations`) sont
+**skippables** (`-p skip-vector-db=true`) : les collections Qdrant sont réutilisées d'un run à
+l'autre. L'étape `prune`, elle, n'est **jamais** sautée : elle produit à chaque run le jeu à
+coder pruné et la table de mapping dont l'aval a besoin.
 
 ::: {.callout-note}
-## Deux variantes du pipeline
-Le dépôt contient deux workflows Argo : **`argo/codif-pipeline.yaml`** (mode **prédiction** —
-celui décrit ici, avec `final-output` pour livrer le CSV enrichi) et **`argo/pipeline.yaml`**
-(mode **évaluation** — entrée annotée, sans `final-output`, rapport d'exactitude). Les étapes
-Argo clonent la branche `codif-pipeline` du dépôt ; son contenu est fusionné dans `main`.
+## Un seul workflow, deux modes
+Le dépôt contient un unique workflow de codification, **`argo/codif-pipeline.yaml`**, qui
+fonctionne en deux modes selon le paramètre `input_file` : **production** (`input_file` non
+vide — le fichier externe est codifié et livré par `final-output`) ou **évaluation**
+(`input_file` vide — c'est le split test des annotations qui est codifié, et le rapport mesure
+l'exactitude). Chaque étape clone le dépôt sur la branche donnée par le paramètre
+**`git-branch`** (défaut : `main`). `argo/ttc-pipeline.yaml` est un workflow séparé, dédié à
+l'entraînement du classifieur TTC.
 :::
 
 | # | Étape | Rôle | Page |
 |---|---|---|---|
 | 1 | `preprocessing` | Construit toujours les annotations (complet + train/test) ; en prédiction, prépare aussi les observations à coder | [→](01-preprocessing.qmd) |
-| 2 | `codif-regex` | Code les libellés évidents par règles regex | [→](02-codif-regex.qmd) |
-| 3 | `codif-lcs` | Code par similarité de chaîne (LCS) sur un pool de référence | [→](03-codif-lcs.qmd) |
-| 4 | `prune` / `create-vector-db` / `run-rag` | Codification sémantique par RAG sur les notices COICOP (pruning unifié en amont) | [→](04-coicop-rag.qmd) |
-| 5 | `create-vector-db-annotations` / `run-rag-annotations` | Codification par RAG sur exemples déjà codifiés (few-shot) | [→](09-rag-annotation.qmd) |
-| 6 | `run-ttc` | Classifieur neuronal basique (caisses + fine-tuning BDF 2024) | [→](05-run-ttc.qmd) |
-| 7 | `decide-coicop` | Arbitrage final LLM-as-judge entre LCS / RAG notices / RAG annotations / TTC | [→](06-decide-coicop.qmd) |
-| 8 | `final-output` | Assemble le résultat utilisateur (regex + décision LLM) | [→](07-final-output.qmd) |
-| 9 | `report` | Rapport Quarto (qualité ou suivi de prédiction) | [→](08-report.qmd) |
+| 2 | `codif-regex` | Code les libellés évidents par règles regex ; point unique d'échantillonnage | [→](02-codif-regex.qmd) |
+| 3 | `prune` | Troncature niveau 4 + élagage des hiérarchies linéaires : produit tous les artefacts prunés | [→](pruning.qmd) |
+| 4 | `codif-lcs` | Code par similarité de chaîne (LCS) sur un pool de référence | [→](03-codif-lcs.qmd) |
+| 5 | `run-ttc` | Classifieur neuronal basique (caisses + fine-tuning BDF 2024) | [→](05-run-ttc.qmd) |
+| 6 | `create-vector-db` / `run-rag` | Codification sémantique par RAG sur les notices COICOP prunées | [→](04-coicop-rag.qmd) |
+| 7 | `create-vector-db-annotations` / `run-rag-annotations` | Codification par RAG sur exemples déjà codifiés (few-shot) | [→](09-rag-annotation.qmd) |
+| 8 | `decide-coicop` | Arbitrage final LLM-as-judge entre LCS / RAG notices / RAG annotations / TTC | [→](06-decide-coicop.qmd) |
+| 9 | `final-output` | Assemble le résultat utilisateur (regex + décision LLM) | [→](07-final-output.qmd) |
+| 10 | `report` | Rapport Quarto (qualité ou suivi de prédiction) | [→](08-report.qmd) |
 
 
 
@@ -117,7 +125,7 @@ Un script d'aide est présent dans le repo : **codif-coicop-bdf/argo/argo_helper
 Il donne les commandes d'installation et de lancement. Par ailleurs, le script de paramétrages du workflow se trouve ici **codif-coicop-bdf/argo/params.yaml** (il permet notamment de choisir sur quel fichier s'applique la codification, choisir entre une approche de production courante ou d'évaluation, coder sur un échantillon de produits, etc.).
 
 
-<!-- ## Fil rouge
+## Fil rouge
 
 Quatre lignes réelles du CSV sont suivies de bout en bout dans les pages suivantes :
 
@@ -137,21 +145,26 @@ arbitrées par le LLM. Voir [2. Codif regex](02-codif-regex.qmd).
 :::
 
 Chaque page d'étape reprend la même structure : **Rôle · Entrées · Traitement · Exemple sur le
-fil rouge · Sorties**. -->
+fil rouge · Sorties**.
 
 
 ```bash
-# Pipeline complet (défaut : skip-vector-db=true, skip-report=false)
-argo submit argo/codif-pipeline.yaml
+# Pipeline complet en mode évaluation (input_file vide)
+argo submit argo/codif-pipeline.yaml --parameter-file argo/params.yaml
 
-# Sur un autre fichier d'entrée et un autre mappage de colonnes
+# Mode production : sur un fichier d'entrée et son mappage de colonnes
 argo submit argo/codif-pipeline.yaml \
   -p input_file=s3://projet-budget-famille/data/workflow_inputs/mon_fichier.csv \
   -p text_column=NAT_DEP -p shop_column=MAG_DEP -p budget_column=MONT_DEP
 
-# Limiter à N observations à coder pour un test (sampling centralisé à codif-regex,
-# hérité par tous les classifieurs). En prod, -p sample-observations=100.
+# Limiter le test à N observations (sampling centralisé à codif-regex, hérité
+# par tous les classifieurs) : en mode évaluation
 argo submit argo/codif-pipeline.yaml -p sample-annotations=100
+# ... et en mode production (input_file non vide)
+argo submit argo/codif-pipeline.yaml -p input_file=... -p sample-observations=100
+
+# Réutiliser les collections Qdrant existantes (pas de reconstruction)
+argo submit argo/codif-pipeline.yaml -p skip-vector-db=true
 ```
 
 Pour relancer ou déboguer **une seule étape** (via Argo ou en local), voir

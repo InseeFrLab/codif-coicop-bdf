@@ -14,15 +14,25 @@ techniques (carte bancaire, prélèvement, remise…) et quelques catégories g�
 - Une ligne sans match → transmise telle quelle à [LCS](03-codif-lcs.qmd),
   [RAG](04-coicop-rag.qmd) et [TTC](05-run-ttc.qmd).
 
-- Code : [`regex-codif/`](../regex-codif/) — entrée `regex-codif/src/main.py`
-- Règles : [`regex-codif/config/rules.yaml`](../regex-codif/config/rules.yaml)
+- Code : [`regex-codif/`](https://github.com/InseeFrLab/codif-coicop-bdf/tree/main/regex-codif) — entrée `regex-codif/src/main.py`
+- Règles : [`regex-codif/config/rules.yaml`](https://github.com/InseeFrLab/codif-coicop-bdf/blob/main/regex-codif/config/rules.yaml)
 
 ## Entrées
 
-| Variable config | Chemin S3 |
-|---|---|
-| `paths.test_set` | `…/{run}/preprocessing/raw_test.parquet` |
-| `paths.train_set` | `…/{run}/preprocessing/raw_train.parquet` (vide en mode prédiction) |
+Les chemins dépendent du mode (sélectionné par `--input-file`, cf.
+[Généralités](00-generalites.qmd)) :
+
+| Variable config | Mode | Chemin S3 |
+|---|---|---|
+| `paths.test_set` | évaluation | `…/{run}/preprocessing/raw_test.parquet` |
+| `paths.train_set` | évaluation | `…/{run}/preprocessing/raw_train.parquet` |
+| `paths.test_set_prod` | production | `…/{run}/preprocessing/observations.parquet` (lignes à coder) |
+| `paths.train_set_prod` | production | `…/{run}/preprocessing/annotations_full.parquet` (KB complète) |
+
+C'est aussi ici qu'a lieu l'**échantillonnage centralisé** du pipeline : si
+`sample-annotations` (éval) ou `sample-observations` (prod) est renseigné, le jeu à coder est
+échantillonné une seule fois (`random_state=42`) et tous les classifieurs aval héritent des
+mêmes lignes via `raw_test_without_regex.parquet`.
 
 ## Traitement
 
@@ -66,7 +76,7 @@ Ce littéral se comporte ensuite comme n'importe quel code regex :
 
 ### Application
 
-`apply_regex()` ([`regex-codif/src/data/apply_regex.py`](../regex-codif/src/data/apply_regex.py))
+`apply_regex()` ([`regex-codif/src/data/apply_regex.py`](https://github.com/InseeFrLab/codif-coicop-bdf/blob/main/regex-codif/src/data/apply_regex.py))
 applique les règles sur la colonne **`s_pr_product`** (normalisation forte), puis sépare le
 jeu en deux :
 
@@ -107,4 +117,4 @@ regex ne traite que les cas non ambigus, le reste relève des modèles + arbitra
 | `{run}/raw_train_without_regex.parquet` | idem côté train / suggester |
 | `{run}/error_regex_pred.parquet` | erreurs (si vérité terrain disponible) |
 
-➡️ Étape suivante : [3. Codif LCS](03-codif-lcs.qmd)
+➡️ Étape suivante : [3. Prune — troncature & élagage](pruning.qmd)

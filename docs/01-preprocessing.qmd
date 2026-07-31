@@ -23,7 +23,7 @@ Désormais `raw_train`/`raw_test` désignent **toujours** le split train/test de
 sont disponibles.
 :::
 
-- Code : [`preprocessing/`](../preprocessing/) — entrée `preprocessing/main.py`
+- Code : [`preprocessing/`](https://github.com/InseeFrLab/codif-coicop-bdf/tree/main/preprocessing) — entrée `preprocessing/main.py`
 - Commande (évaluation) : `python main.py --run-id=<id> --run-date=YYYY-MM-DD`
 - Commande (prédiction) : `python main.py --run-id=<id> --run-date=YYYY-MM-DD --input-file=<s3> --text-column=NAT_DEP --shop-column=MAG_DEP --budget-column=MONT_DEP`
 
@@ -134,13 +134,11 @@ captée plus loin par la règle regex `^illisible$ → 98.4`.
 | `{run}/observations.parquet` | — | ✅ | lignes **à coder** (`id`, `raw_product`, `l_pr_product`, `s_pr_product`, `shop`, `shop_type_name`, `budget`, `code`(NA)…, `_source_input_file`, `source="prediction"`) |
 | `{run}/qa/*.parquet` | ✅ | ✅ | contrôles qualité (doublons suggester, produits multi-codes) |
 
-::: {.callout-important}
-**Transition en cours.** `raw_train`/`raw_test` désignant désormais toujours le split des
-annotations, les observations à coder en production se trouvent dans `observations.parquet`.
-Les étapes aval qui codifient en production (regex-codif `test_set`, `final-output`,
-`decide-coicop --extra-columns-file`) doivent être recâblées vers `observations.parquet` ;
-tant que ce n'est pas fait, la chaîne de codification traite en prod le split test des
-annotations.
+::: {.callout-note}
+En mode **production**, les étapes aval travaillent sur `observations.parquet`
+(`codif-regex` via `test_set_prod`, `decide-coicop --extra-columns-file`, `final-output`) ;
+en mode **évaluation**, elles travaillent sur `raw_test.parquet`. Voir
+[Généralités — modes prod / éval](00-generalites.qmd).
 :::
 
 ➡️ Étape suivante : [2. Codif regex](02-codif-regex.qmd)

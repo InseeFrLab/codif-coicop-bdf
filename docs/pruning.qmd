@@ -1,0 +1,131 @@
+---
+title: "3. Prune — troncature & élagage"
+---
+
+## Rôle de l'étape
+
+L'étape `prune` (module dédié [`prune/`](https://github.com/InseeFrLab/codif-coicop-bdf/tree/main/prune), entrée
+`prune/scripts/main.py`, exécutée après `codif-regex`) définit **l'espace de codes commun** à
+tout le pipeline : elle tronque la nomenclature au niveau 4 et replie les hiérarchies
+linéaires sur un code canonique, puis produit **tous** les artefacts prunés que l'aval se
+contente de lire. Un seul algorithme, un seul point de vérité.
+
+::: {.callout-note}
+Cette étape n'est **jamais** sautée (contrairement aux `create-vector-db*`) : elle produit à
+chaque run le jeu à coder pruné et la table de mapping dont dépendent `run-rag`,
+`run-rag-annotations`, `decide-coicop` et `final-output`.
+:::
+
+## La nomenclature source
+
+Fichier brut : `s3://projet-budget-famille/data/coicop-2018_envoi_rmes_20251022.csv`
+(COICOP 2018 / ECOICOP v2, export RMES, 949 codes) :
+
+| Niveau | Type | Nombre |
+|---|---|---|
+| 1 | Division | 13 |
+| 2 | Groupe | 52 |
+| 3 | Classe | 146 |
+| 4 | Sous-classe | 298 |
+| 5 | Poste | 440 |
+
+Les codes techniques BdF (`98.x`, `99.x`) **ne font pas partie** de ce fichier : ils
+traversent le pruning inchangés (voir [Limites et points de vigilance](limites-vigilance.qmd)).
+
+## L'algorithme
+
+### 1. Troncature — suppression du niveau 5
+
+Les 440 lignes de type `Poste` sont retirées avant l'élagage (949 → 509 codes) : le niveau 5
+est jugé trop granulaire pour la codification automatique, et la nomenclature présente des
+incohérences au-delà du niveau 4. Tout code plus profond rencontré ensuite dans le pipeline est
+tronqué à 4 segments (`truncate_code(code, level=4)` dans `prune/src/prune/utils.py`).
+
+### 2. Élagage — repli des hiérarchies linéaires
+
+Un parent qui n'a **qu'un seul enfant** lui est sémantiquement équivalent : 100 % de son
+contenu est dans cet enfant. La chaîne d'équivalences est alors repliée sur le code le plus
+agrégé, dit **code canonique** (`code_parent_equivalent`). Deux cas de figure :
+
+- **chaîne strictement linéaire** : `01.3` → `01.3.0` → `01.3.0.0` (un seul enfant à chaque
+  niveau) : les trois codes sont équivalents, seul `01.3` est conservé ;
+- **parent à enfant unique dont l'enfant se ramifie** : `11.2` n'a qu'un enfant `11.2.0`, qui
+  a lui-même 4 sous-classes. `11.2` ≡ `11.2.0` (le repli s'arrête là : les 4 sous-classes,
+  elles, ne sont pas équivalentes entre elles). `11.2.0` est replié sur `11.2`, ses enfants
+  survivent et leur `parent` est remappé sur `11.2`.
+
+Les codes concernés sont essentiellement les codes en `.0` (« non subdivisé ») :
+`01.2.1.0 → 01.2.1`, `02.2.0.0 → 02.2`, `10.4.0.0 → 10.4`, `11.2.0 → 11.2`, etc.
+
+::: {.callout-warning}
+## Correctif de juillet 2026
+Jusqu'en juillet 2026, l'implémentation ne retenait une relation parent→enfant que si
+l'enfant avait lui-même au plus un enfant — le second cas de figure ci-dessus était donc
+**oublié**. Sept codes redondants (`02.3.0`, `05.4.0`, `10.1.0`, `10.5.0`, `11.2.0`,
+`13.3.0`, `13.9.0`) coexistaient avec leur parent synonyme dans la nomenclature prunée et
+étaient absents de la table de mapping : une prédiction `11.2.0` et une annotation `11.2`
+étaient comptées comme un désaccord. C'est corrigé (avec tests unitaires,
+`prune/tests/test_pruning.py`).
+:::
+
+### Chiffres clés (nomenclature du 2025-10-22)
+
+- nomenclature prunée : **420 codes** (13 divisions, 52 groupes, 131 classes, 224 sous-classes) ;
+- **89 codes repliés** sur un code canonique ; aucun repli ne remonte au-delà du niveau 2 ;
+- la table `mapping_lvl4.parquet` contient les 89 replis plus les lignes identité des codes
+  canoniques retenus ;
+- conséquence méthodologique importante : **107 des 440 Postes (24 %) ont un code canonique
+  moins profond que le niveau 4** (95 au niveau 3, 12 au niveau 2). Un code final de niveau 2
+  ou 3 peut donc être *la* réponse exacte, pas une sous-codification — c'est précisément ce
+  que mesure la convention d'accuracy inclusive du [rapport](08-report.qmd#les-deux-conventions-daccuracy).
+
+## Application aux annotations et au suggester
+
+`prune_annotation_lvl4` (`prune/src/prune/pruning.py`) applique aux codes annotés exactement
+la même normalisation que la nomenclature :
+
+1. troncature au niveau 4 ;
+2. remplacement par le code canonique via `mapping_lvl4` (les codes hors mapping restent
+   inchangés) ;
+3. resynchronisation du libellé `coicop` depuis la nomenclature brute (les codes spéciaux
+   `98.x`/`99.x`, absents des notices, gardent leur libellé d'origine).
+
+Le suggester (codes au niveau 5, non prunés à la source) reçoit le même traitement.
+
+## Sorties
+
+Par run, sous `…/{run}/prune/` :
+
+| Fichier | Contenu | Consommé par |
+|---|---|---|
+| `nomenclature_pruned.parquet` | nomenclature prunée (niveaux 1 à 4, 420 codes) | `create-vector-db` |
+| `mapping_lvl4.parquet` | table `code → code_parent_equivalent` | `run-rag` (re-pruning), `decide-coicop` (normalisation), `final-output` (garde-fou) |
+| `annotations_train_pruned.parquet` | KB d'annotations prunées | `create-vector-db-annotations` |
+| `annotations_test_pruned.parquet` | jeu **à coder** pruné | `run-rag` et `run-rag-annotations` |
+| `suggester_pruned.parquet` | suggester pruné | `create-vector-db-annotations` |
+
+## Réapplications en aval
+
+L'espace de codes pruné est **ré-imposé** à trois endroits, pour rattraper tout code non
+canonique produit par un modèle (un LLM peut halluciner un code de niveau 5) :
+
+| Où | Sur quoi | Code |
+|---|---|---|
+| `run-rag` | `code_predict` et les codes retrouvés | `coicop-rag/scripts/2_run_rag.py` (étape 5) |
+| `decide-coicop` | `lcs_code`, `ttc_code_1..3`, `ragann_code` et la décision `llm_code` (sur place) ; la vérité terrain dans une colonne dédiée `code_lvl4` (`code` reste brut) | `decide-coicop/src/decide_coicop.py` (`--mapping-file`) |
+| `final-output` | `predicted_code` (garde-fou final, idempotent) | `final-output/main.py` |
+
+Le module `prune` est consommé comme **dépendance Python locale** par `decide-coicop` et
+`final-output` (`[tool.uv.sources] prune = { path = "../prune" }`) : la logique n'est jamais
+dupliquée.
+
+## Exemple sur le fil rouge
+
+`Bagu. Tradition U Blé Bretagne` relève d'un Poste (niveau 5) de la sous-classe `01.1.1.3`
+(*Pain et produits de boulangerie*). Après troncature niveau 4, la cible devient `01.1.1.3` ;
+ce code n'appartient à aucune hiérarchie linéaire, il reste tel quel. À l'inverse, un paquet
+de cigarettes annoté `02.3.0.1.1` (niveau 5) est tronqué en `02.3.0.1` (*Cigarettes*) — et si
+un modèle prédisait la classe `02.3.0` (*Tabac, non subdivisé*), celle-ci serait repliée sur
+son groupe équivalent `02.3`, seul survivant des deux dans la nomenclature prunée.
+
+➡️ Étape suivante : [4. Codif LCS](03-codif-lcs.qmd)
