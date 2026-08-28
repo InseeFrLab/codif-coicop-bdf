@@ -36,6 +36,8 @@ website:
             text: RAG sur annotations
           - href: 06-decide-coicop.qmd
             text: Arbitrage LLM-as-judge (decide)
+          - href: 06b-sirus.qmd
+            text: Conciliation par règles (SIRUS)
           - href: 07-final-output.qmd
             text: Final output
           - href: 08-report.qmd
@@ -69,6 +71,7 @@ website:
           - 04-coicop-rag.qmd
           - 09-rag-annotation.qmd
           - 06-decide-coicop.qmd
+          - 06b-sirus.qmd
           - 07-final-output.qmd
           - 08-report.qmd
       - section: "Guides"

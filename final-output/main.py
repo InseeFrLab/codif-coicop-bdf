@@ -47,7 +47,46 @@ def parse_args() -> argparse.Namespace:
         help="Présence => mode production : les colonnes utilisateur proviennent de "
              "observations.parquet. Absence => mode évaluation (raw_test.parquet).",
     )
+    p.add_argument(
+        "--decision-source", choices=["llm", "sirus"], default="llm",
+        help="Quelle étape de conciliation a produit le code final. `llm` "
+             "(défaut) => decide-coicop ; `sirus` => sirus-predict. Les deux "
+             "sont exclusives (paramètre Argo `conciliation`).",
+    )
+    p.add_argument(
+        "--decision-file", default=None,
+        help="Surcharge du parquet de conciliation à lire. Par défaut déduit de "
+             "--decision-source et du run. Réservé aux lancements manuels : le "
+             "workflow ne le passe pas, pour ne pas avoir deux façons de dire "
+             "le même chemin.",
+    )
     return p.parse_args()
+
+
+# Schéma de décision de chaque conciliation, ramené aux noms internes utilisés
+# par la logique de précédence ci-dessous. Nommer les colonnes honnêtement en
+# amont (sirus_code et non llm_code) impose cette traduction, mais évite qu'un
+# parquet mente sur son contenu.
+DECISION_SCHEMAS = {
+    "llm": {
+        "step": "decide-coicop",
+        "code": "llm_code",
+        "comment": "llm_explication",
+        "confidence": "llm_confiance",
+        "regime": "llm_model",
+    },
+    "sirus": {
+        "step": "sirus-predict",
+        "code": "sirus_code",
+        "comment": None,    # SIRUS ne produit pas d'explication en texte
+        "confidence": "sirus_proba",
+        # Pas de régime : SIRUS livre un code et un score, sans verdict sur le
+        # sort à leur réserver. Décider d'un seuil d'exploitation est une
+        # question métier, instruite par la section « Calibration de SIRUS » du
+        # rapport d'évaluation — pas figée dans le parquet de sortie.
+        "regime": None,
+    },
+}
 
 
 def init_duckdb() -> duckdb.DuckDBPyConnection:
@@ -127,28 +166,64 @@ def main() -> int:
     """).df()
     print(f"[final-output] regex predictions: {len(regex)} rows", flush=True)
 
-    # LLM decisions
-    print(f"[final-output] loading LLM decisions: {run_root}/decide-coicop/predictions.parquet", flush=True)
-    llm = con.sql(f"""
-        SELECT id, llm_code, llm_explication, llm_confiance, llm_model
-        FROM read_parquet('{run_root}/decide-coicop/predictions.parquet')
+    # Décisions de la conciliation retenue (decide-coicop ou sirus-predict).
+    schema = DECISION_SCHEMAS[args.decision_source]
+    decision_path = args.decision_file or f"{run_root}/{schema['step']}/predictions.parquet"
+    cols = [c for c in (schema["code"], schema["comment"], schema["confidence"], schema["regime"]) if c]
+    print(
+        f"[final-output] loading {args.decision_source} decisions: {decision_path}",
+        flush=True,
+    )
+    decisions = con.sql(f"""
+        SELECT id, {", ".join(cols)}
+        FROM read_parquet('{decision_path}')
     """).df()
-    print(f"[final-output] LLM decisions: {len(llm)} rows", flush=True)
+    # Noms internes : la suite ne connaît plus la conciliation d'origine.
+    decisions = decisions.rename(
+        columns={
+            schema["code"]: "_decision_code",
+            schema["confidence"]: "_decision_confidence",
+            **({schema["comment"]: "_decision_comment"} if schema["comment"] else {}),
+            **({schema["regime"]: "_decision_regime"} if schema["regime"] else {}),
+        }
+    )
+    # Une conciliation qui ne fournit ni explication ni régime voit les colonnes
+    # internes créées vides : la suite est écrite une seule fois pour les deux.
+    if not schema["comment"]:
+        decisions["_decision_comment"] = pd.NA
+    if not schema["regime"]:
+        decisions["_decision_regime"] = pd.NA
+    print(f"[final-output] {args.decision_source} decisions: {len(decisions)} rows", flush=True)
 
     result = raw.merge(regex[["id", "predict_code"]], on="id", how="left")
-    result = result.merge(llm, on="id", how="left")
+    result = result.merge(decisions, on="id", how="left")
 
-    # LLM code takes precedence; fallback to regex; else NA
-    result["predicted_code"] = result["llm_code"].where(
-        result["llm_code"].notna(), result["predict_code"]
+    # Le code de la conciliation prime ; repli sur la regex ; sinon NA.
+    result["predicted_code"] = result["_decision_code"].where(
+        result["_decision_code"].notna(), result["predict_code"]
     )
-    result["prediction_source"] = result.apply(
-        lambda r: ("consensus" if r["llm_model"] == "consensus" else "llm")
-        if pd.notna(r["llm_code"])
-        else ("regex" if pd.notna(r["predict_code"]) else None),
-        axis=1,
-    )
-    result["llm_comment"] = result["llm_explication"]
+
+    if args.decision_source == "llm":
+        # decide-coicop distingue deux régimes dans `llm_model` : le
+        # court-circuit consensus et l'arbitrage effectif du juge.
+        def _source(r):
+            if pd.notna(r["_decision_code"]):
+                return "consensus" if r["_decision_regime"] == "consensus" else "llm"
+            return "regex" if pd.notna(r["predict_code"]) else None
+    else:
+        # SIRUS n'a pas de régime : il livre un code et un score, sans verdict.
+        # Le score est exposé tel quel dans `prediction_confidence` ; c'est à
+        # l'aval de décider, s'il le souhaite, à partir de quel niveau il
+        # exploite le code sans relecture.
+        def _source(r):
+            if pd.notna(r["_decision_code"]):
+                return "sirus"
+            return "regex" if pd.notna(r["predict_code"]) else None
+
+    result["prediction_source"] = result.apply(_source, axis=1)
+    result["llm_comment"] = result["_decision_comment"]
+    if args.decision_source == "sirus":
+        result["prediction_confidence"] = result["_decision_confidence"]
 
     # Garde-fou final : quelle que soit la source de la décision (regex, consensus
     # ou LLM), le code final est tronqué au niveau 4 et élagué des hiérarchies
@@ -163,7 +238,13 @@ def main() -> int:
     result = result.drop(columns=["predicted_code_tpruned"])
 
     result = result.drop(
-        columns=["predict_code", "llm_code", "llm_explication", "llm_confiance", "llm_model"]
+        columns=[
+            "predict_code",
+            "_decision_code",
+            "_decision_comment",
+            "_decision_confidence",
+            "_decision_regime",
+        ]
     )
 
     # Restore original column names (preprocessing renamed them to pipeline names)

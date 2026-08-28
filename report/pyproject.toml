@@ -15,7 +15,11 @@ dependencies = [
     "pyarrow>=16",
     "seaborn>=0.13",
     "tabulate>=0.9",
+    "prune",
 ]
+
+[tool.uv.sources]
+prune = { path = "../prune" }
 
 [dependency-groups]
 dev = [

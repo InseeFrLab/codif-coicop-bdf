@@ -32,6 +32,8 @@ from datetime import datetime
 
 import numpy as np
 import pandas as pd
+from prune.utils import ABSTENTION_SENTINELS as prune_abstention_sentinels
+from prune.utils import is_answer
 
 # Prediction columns produced by decide-coicop, in display order.
 # ``llm_code`` is the final prediction (after the LLM arbitration step).
@@ -43,6 +45,15 @@ METHODS = [
     ("RAG-annot", "ragann_code"),
     ("TTC", "ttc_code_1"),
     ("LLM", "llm_code"),
+    ("SIRUS", "sirus_code"),
+]
+
+# Les deux conciliations possibles (paramètre Argo `conciliation`), de la plus
+# ancienne à la plus récente. Elles sont EXCLUSIVES : un run porte l'une ou
+# l'autre, jamais les deux.
+CONCILIATIONS = [
+    ("LLM", "llm_code"),
+    ("SIRUS", "sirus_code"),
 ]
 LEVELS = [1, 2, 3, 4, 5]
 
@@ -70,13 +81,12 @@ REGIMES = [("Consensus", "consensus"), ("Arbitré", "arbitrated")]
 # partagé par report.qmd et main.py pour que les deux ne divergent pas.
 REGIME_LEVEL = 4
 
-# Un classifieur peut refuser de coder. Le refus arrive dans les données sous
-# plusieurs formes selon la brique : NULL, chaîne vide, ou sentinelle textuelle
-# (`llm_code` vaut "N/A" quand l'arbitrage LLM échoue). Toutes comptent comme
-# abstention, pas comme code.
-ABSTENTION_SENTINELS = frozenset(
-    {"", "-", "?", "n/a", "na", "nan", "nat", "none", "null"}
-)
+# Le vocabulaire de l'abstention (« ce classifieur a-t-il répondu ? ») vit dans
+# `prune.utils` : c'est du vocabulaire de code COICOP, partagé avec le module
+# `sirus/`, qui ne peut pas dépendre de `report/` (jupyter, matplotlib, seaborn).
+# Ré-exporté ici pour que report.qmd, prediction_report.qmd et main.py continuent
+# de l'importer depuis `coicop_metrics` sans changement.
+ABSTENTION_SENTINELS = prune_abstention_sentinels
 
 # Colonnes booléennes par lesquelles une brique déclare explicitement que
 # l'observation n'est pas codable, indépendamment du code qu'elle émet.
@@ -87,6 +97,31 @@ def available_methods(data: pd.DataFrame) -> list[tuple[str, str]]:
     """METHODS whose prediction column is present in ``data`` (backward compatible
     with runs produced before a given method existed)."""
     return [(name, col) for name, col in METHODS if col in data.columns]
+
+
+def final_decision(data: pd.DataFrame, *, strict: bool = True):
+    """Nom d'affichage et colonne de la conciliation qui a tranché dans ce run.
+
+    Les deux conciliations étant exclusives, un run ne porte qu'une des deux
+    colonnes. Résoudre ici plutôt que d'écrire ``llm_code`` en dur partout
+    permet au rapport de rendre dans les deux modes — et les runs antérieurs à
+    SIRUS continuent de tomber sur ``llm_code``.
+
+    ``strict=True`` (défaut) lève si aucune colonne n'est présente : c'est le bon
+    comportement pour le rapport d'évaluation, dont tout l'objet est de scorer un
+    code final. ``strict=False`` renvoie ``(None, None)``, pour le rapport de
+    production qui sait déjà se dégrader section par section.
+    """
+    for name, col in CONCILIATIONS:
+        if col in data.columns:
+            return name, col
+    if not strict:
+        return None, None
+    raise KeyError(
+        "aucune colonne de conciliation dans ces données "
+        f"({[c for _, c in CONCILIATIONS]}) : le parquet ne vient ni de "
+        "decide-coicop ni de sirus-predict."
+    )
 
 
 def truth_column(data: pd.DataFrame) -> str:
@@ -174,18 +209,9 @@ def accuracy_table(
     return pd.DataFrame(rows).set_index("méthode")
 
 
-def is_answer(value) -> bool:
-    """True when the classifier actually returned an exploitable code.
-
-    A refusal to code (NULL, empty string, ``"N/A"`` …) is *not* a wrong code: it
-    is the absence of an answer. Both are counted as errors by ``accuracy`` — see
-    ``coverage_table`` to separate the two.
-    """
-    if value is None:
-        return False
-    if isinstance(value, float) and np.isnan(value):
-        return False
-    return str(value).strip().lower() not in ABSTENTION_SENTINELS
+# `is_answer` est importé de `prune.utils` (voir ABSTENTION_SENTINELS ci-dessus)
+# et ré-exporté ici : report.qmd et prediction_report.qmd l'importent depuis ce
+# module. Voir ``coverage_table`` pour séparer « coder faux » de « ne pas coder ».
 
 
 def answer_mask(pred: pd.Series) -> pd.Series:
@@ -380,9 +406,16 @@ def _parse_ts(value: str):
     if not value or value.startswith("{{"):
         return None
     try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return None
+    # Une tâche *skippée* (conciliation non retenue, cf. le paramètre
+    # `conciliation`) voit ses `startedAt`/`finishedAt` résolus par Argo en zéro
+    # temps, "0001-01-01T00:00:00Z". Cela parse sans erreur et produirait une
+    # durée de l'ordre de -6e10 secondes dans MLflow.
+    if parsed.year < 2000:
+        return None
+    return parsed
 
 
 def parse_step_timings(raw: str) -> dict[str, float]:
@@ -409,12 +442,21 @@ def parse_step_timings(raw: str) -> dict[str, float]:
         start, end = _parse_ts(pair[0]), _parse_ts(pair[1])
         parsed[step] = (start, end)
         if start and end:
-            key = "duration_" + step.replace("-", "_") + "_seconds"
-            out[key] = (end - start).total_seconds()
+            duree = (end - start).total_seconds()
+            # Une durée négative ou nulle n'est pas une mesure : c'est le signe
+            # d'un horodatage non résolu qui aurait franchi les filtres.
+            if duree > 0:
+                out["duration_" + step.replace("-", "_") + "_seconds"] = duree
 
-    # Total codification span: first step start -> decide-coicop finish.
+    # Durée totale de codification : début de preprocessing → fin de la
+    # conciliation. Les deux conciliations étant exclusives (paramètre
+    # `conciliation`), on prend celle qui a effectivement tourné : l'autre est
+    # skippée et ses horodatages ont été écartés ci-dessus.
     start = parsed.get("preprocessing", (None, None))[0]
-    end = parsed.get("decide-coicop", (None, None))[1]
-    if start and end:
+    end = (
+        parsed.get("decide-coicop", (None, None))[1]
+        or parsed.get("sirus-predict", (None, None))[1]
+    )
+    if start and end and (end - start).total_seconds() > 0:
         out["codification_total_seconds"] = (end - start).total_seconds()
     return out

@@ -30,6 +30,8 @@ local, il faut exporter soi-même les variables requises par l'étape :
 | `run-ttc` | `AWS_*` + `MLFLOW_TRACKING_*` (chargement du modèle depuis MLflow) |
 | `decide-coicop` | `AWS_*` + `LLMLAB_API_KEY` (+ `LLMLAB_URL` pour un endpoint non-OpenAI) |
 | `report` | `AWS_*` + `MLFLOW_TRACKING_*` (facultatif : sans `MLFLOW_TRACKING_URI`, le log MLflow est sauté) |
+| `sirus-predict` | `AWS_*` + `MLFLOW_TRACKING_*` (résolution de `sirus-model-uri`) |
+| entraînement SIRUS (`sirus/train.sh`, hors pipeline) | `AWS_*` + `MLFLOW_TRACKING_*` — **obligatoires** ici, contrairement au `report` : le modèle et ses métriques n'ont pas d'autre destination, et le script refuse de démarrer sans `MLFLOW_TRACKING_URI` |
 
 ## Mode 1 — via Argo (`--entrypoint`)
 
@@ -238,6 +240,30 @@ uv run main.py decide-coicop --id <uuid-de-la-ligne> --output json \
   --mapping-file "$RUN_ROOT/prune/mapping_lvl4.parquet"
 ```
 
+### 8bis. sirus-predict (depuis `sirus/`)
+
+Alternative au juge LLM (cf. [8bis. SIRUS](06b-sirus.qmd)) : ne tourne dans le pipeline que
+si `conciliation: sirus`. Python pur, aucun besoin de R.
+
+```bash
+cd sirus && uv sync
+uv run main.py predict \
+  --lcs-file "$RUN_ROOT/codif-lcs/raw_test_LCS.parquet" \
+  --rag-file "$RUN_ROOT/run-rag/predictions.parquet" \
+  --rag-annotations-file "$RUN_ROOT/rag-annotation/predictions.parquet" \
+  --ttc-file "$RUN_ROOT/run-ttc/predictions.parquet" \
+  --mapping-file "$RUN_ROOT/prune/mapping_lvl4.parquet" \
+  --tocodify-file "$RUN_ROOT/codif-regex/raw_test_without_regex.parquet" \
+  --extra-columns-file "$RUN_ROOT/preprocessing/raw_test.parquet" \
+  --model-uri "mlflow-artifacts:/12/9f3c.../artifacts/model" \
+  --output-file "$RUN_ROOT/sirus-predict/predictions.parquet"
+```
+
+En mode production, remplacer `--extra-columns-file` par
+`"$RUN_ROOT/preprocessing/observations.parquet"`. L'URI du modèle est le paramètre de workflow
+`sirus-model-uri` ; un chemin local vers un dossier contenant `rules.json` est aussi accepté,
+ce qui permet de tester sans MLflow.
+
 ### 9. final-output
 
 ```bash
@@ -260,6 +286,44 @@ uv run main.py --run-id $RUN_ID --run-date $RUN_DATE \
 
 Le mode (évaluation ou prédiction) est détecté automatiquement (voir
 [8. Report](08-report.qmd)). Sans `MLFLOW_TRACKING_URI`, le log MLflow est simplement sauté.
+
+## Entraîner le modèle SIRUS (hors pipeline)
+
+L'entraînement **n'est pas une étape du pipeline** : il produit un modèle destiné à un run
+*futur*, et `sirus-model-uri` doit être connue au `argo submit`. Il se lance donc à la main,
+comme celui de [TTC](05-run-ttc.qmd), sur un run d'**évaluation** passé — un run de production
+ne porte pas la vérité terrain dont l'ajustement a besoin.
+
+```bash
+cd sirus/
+./train.sh 2026-06-29/codif-vvkv9
+```
+
+Réglages optionnels, par variables d'environnement (les défauts conviennent dans la
+quasi-totalité des cas) : `NUM_RULE`, `MAX_DEPTH`, `SEED`, `EXPERIMENT`.
+
+Le script enchaîne trois étapes : construction de la table candidat-level en Python,
+ajustement en R, mesures et log MLflow en Python. Il vérifie au préalable que
+`MLFLOW_TRACKING_URI` est définie — seul échec qui n'arriverait qu'au dernier pas, après
+plusieurs minutes d'ajustement. La première exécution compile le paquet `sirus` depuis la
+source d'archive CRAN (~1 min 30) : il a été archivé et n'existe plus en binaire.
+
+Il termine en affichant l'URI à recopier dans `argo/params.yaml` :
+
+```
+Modèle SIRUS loggué. Pour l'utiliser, mettre dans argo/params.yaml :
+    sirus-model-uri: mlflow-artifacts:/12/9f3c.../artifacts/model
+```
+
+::: {.callout-tip}
+Les artefacts restent dans `--artifacts-dir`. Si le log MLflow échoue (réseau, URI mal réglée),
+relancer la **3ᵉ étape seule** suffit — inutile de réajuster le modèle :
+
+```bash
+uv run main.py finalize --artifacts-dir artifacts/codif-vvkv9 \
+  --experiment codif-coicop-sirus --run-id codif-vvkv9 --run-date 2026-06-29
+```
+:::
 
 ## Déboguer un run
 

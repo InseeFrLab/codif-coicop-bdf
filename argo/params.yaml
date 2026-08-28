@@ -45,3 +45,20 @@ ttc-model-uri: "mlflow-artifacts:/10/cacf2603514b4887bbfb77e2654c9bc1/artifacts/
 skip-vector-db: "false"      # "false" to rebuild the Qdrant vector store
 skip-report: "false"        # "true" to skip the Quarto report
 report-experiment: codif-coicop-eval
+
+# --- Conciliation ---------------------------------------------------------
+# EXCLUSIF : `llm` → decide-coicop (juge LLM) ; `sirus` → sirus-predict
+# (re-ranking par règles interprétables). L'étape non retenue est skippée ;
+# final-output et report dépendent des deux et tolèrent qu'une soit Skipped.
+conciliation: llm
+
+# Modèle SIRUS chargé par sirus-predict, OBLIGATOIRE si conciliation: sirus.
+#
+# L'entraînement se fait HORS pipeline : `cd sirus/ && ./train.sh <date>/<run_id>`
+# (cf. sirus/README.md). Il logue le modèle dans MLflow et affiche l'URI à
+# recopier ici — même pratique que ttc-model-uri.
+#
+# Le détour par ce paramètre est ce qui rend la fuite impossible : le modèle
+# utilisé en prédiction n'est jamais celui qu'on vient d'entraîner sur ces
+# mêmes lignes.
+sirus-model-uri: "" # ex. "mlflow-artifacts:/12/9f3c.../artifacts/model"

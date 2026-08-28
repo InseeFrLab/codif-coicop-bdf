@@ -100,3 +100,5 @@ argo resubmit @latest   # rerun as-is
 | `skip-vector-db` | `true` | skip Qdrant rebuild |
 | `skip-report` | `false` | generate the Quarto report |
 | `report-experiment` | `codif-coicop-eval` | report's MLflow experiment |
+| `conciliation` | `llm` | which step decides the final code: `llm` (`decide-coicop`) or `sirus` (`sirus-predict`). **Mutually exclusive** — the other is skipped |
+| `sirus-model-uri` | `""` | SIRUS model (MLflow), required when `conciliation: sirus`. Produced out of pipeline by `sirus/train.sh` |

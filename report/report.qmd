@@ -1,6 +1,6 @@
 ---
 title: "Rapport de codification COICOP"
-subtitle: "Comparaison LCS / RAG / RAG-annot / TTC / LLM, accords et analyse d'erreurs"
+subtitle: "Comparaison LCS / RAG / RAG-annot / TTC et de la conciliation finale, accords et analyse d'erreurs"
 format:
   html:
     toc: true
@@ -44,6 +44,7 @@ from coicop_metrics import (
     code_parts,
     coverage_table,
     declared_refusal_table,
+    final_decision,
     regime_accuracy_table,
     regime_masks,
     truth_column,
@@ -88,6 +89,21 @@ df = con.sql(f"SELECT * FROM read_parquet('{INPUT}')").df()
 TRUTH = truth_column(df)
 HAS_CANONICAL_TRUTH = TRUTH == TRUTH_COL_CANONICAL
 
+# Colonne du code final, c'est-à-dire de l'étape de conciliation qui a tranché
+# dans ce run. Les deux conciliations (juge LLM via decide-coicop, règles SIRUS
+# via sirus-predict) sont EXCLUSIVES : un run porte `llm_code` ou `sirus_code`,
+# jamais les deux. Résoudre ici plutôt qu'écrire `llm_code` en dur permet à ce
+# rapport de rendre dans les deux modes.
+FINAL_NAME, FINAL_COL = final_decision(df)
+
+# Score de confiance associé à la décision finale, quand la conciliation en
+# produit un. Sémantiques différentes — entier 1-5 pour le juge LLM, probabilité
+# continue pour SIRUS — donc jamais mélangés dans un même tableau : chaque
+# conciliation a sa propre section de calibration.
+FINAL_CONF_COL = next(
+    (c for c in ("llm_confiance", "sirus_proba") if c in df.columns), None
+)
+
 # Keep a "scorable" view: rows carrying a ground truth
 scorable = df[df[TRUTH].notna() & (df[TRUTH].astype(str).str.len() > 0)].copy()
 ```
@@ -102,7 +118,8 @@ scorable = df[df[TRUTH].notna() & (df[TRUTH].astype(str).str.len() > 0)].copy()
 | Observations totales | `{python} f"{len(df):,}".replace(",", " ")` |
 | Observations avec code de référence | `{python} f"{len(scorable):,}".replace(",", " ")` |
 | Colonne de vérité terrain scorée | `{python} TRUTH` `{python} "(canonique : tronquée niveau 4 + élaguée)" if HAS_CANONICAL_TRUTH else "(code brut — run antérieur à code_lvl4)"` |
-| Erreurs LLM (`llm_error` non nul) | `{python} int(df["llm_error"].notna().sum()) if "llm_error" in df.columns else 0` |
+| Conciliation | `{python} FINAL_NAME` (colonne `{python} FINAL_COL`) |
+| Erreurs LLM (`llm_error` non nul) | `{python} int(df["llm_error"].notna().sum()) if "llm_error" in df.columns else "— (pas de conciliation LLM sur ce run)"` |
 
 ```{python}
 # | tags: [utils]
@@ -248,7 +265,7 @@ Une vérité terrain peu profonde peut avoir deux causes : le code est un **code
 
 ## Couverture et refus de coder
 
-Une brique peut se taire au lieu de se tromper : `rag_code` et `ragann_code` sont NULL quand le RAG ne trouve rien d'exploitable, et `llm_code` vaut `N/A` quand l'arbitrage échoue. Les tableaux d'accuracy comptent ces abstentions comme des erreurs — c'est légitime pour mesurer la chaîne de bout en bout, mais cela **mélange deux défauts opposés** : coder faux, et ne pas coder. Le premier demande un meilleur modèle, le second une meilleure couverture.
+Une brique peut se taire au lieu de se tromper : `rag_code` et `ragann_code` sont NULL quand le RAG ne trouve rien d'exploitable, et le code final (`{python} FINAL_COL`) peut être absent lui aussi — `N/A` quand l'arbitrage LLM échoue, NULL quand aucun classifieur n'a proposé de candidat scorable à SIRUS. Les tableaux d'accuracy comptent ces abstentions comme des erreurs — c'est légitime pour mesurer la chaîne de bout en bout, mais cela **mélange deux défauts opposés** : coder faux, et ne pas coder. Le premier demande un meilleur modèle, le second une meilleure couverture.
 
 Sous la convention inclusive, la décomposition est exacte :
 
@@ -300,26 +317,29 @@ plt.tight_layout()
 plt.show()
 ```
 
-### Accuracy du juge selon le nombre de sources muettes
+### Accuracy de la conciliation selon le nombre de sources muettes
 
-Quand les sources amont s'abstiennent, le juge arbitre avec moins de matière. Ce tableau ventile l'accuracy finale (`llm_code`) selon le nombre de classifieurs amont sans code sur l'observation.
+Quand les sources amont s'abstiennent, la conciliation tranche avec moins de matière. Ce tableau ventile l'accuracy finale (`{python} FINAL_COL`) selon le nombre de classifieurs amont sans code sur l'observation.
 
 ```{python}
 # | label: tbl-abstention-load
-_srcs = [(name, col) for name, col in available_methods(scorable) if name != "LLM"]
+# Sources amont = tout sauf la colonne de décision finale. On exclut par COLONNE
+# et non par nom : `available_methods` liste les deux conciliations possibles, et
+# seule celle du run est présente.
+_srcs = [(name, col) for name, col in available_methods(scorable) if col != FINAL_COL]
 _silent = pd.concat(
     [~answer_mask(scorable[col]) for _name, col in _srcs], axis=1
 ).sum(axis=1)
 rows = []
 for n_silent, sub in scorable.assign(_silent=_silent).groupby("_silent"):
-    _, _, acc = accuracy(sub[TRUTH], sub["llm_code"], REGIME_LEVEL, inclusive=True)
+    _, _, acc = accuracy(sub[TRUTH], sub[FINAL_COL], REGIME_LEVEL, inclusive=True)
     rows.append(
         {
             "sources muettes": int(n_silent),
             "n": len(sub),
             "part des observations": len(sub) / len(scorable),
-            f"accuracy LLM niv{REGIME_LEVEL}": acc,
-            "couverture du juge": float(answer_mask(sub["llm_code"]).mean()),
+            f"accuracy {FINAL_NAME} niv{REGIME_LEVEL}": acc,
+            f"couverture {FINAL_NAME}": float(answer_mask(sub[FINAL_COL]).mean()),
         }
     )
 silence_tbl = pd.DataFrame(rows).set_index("sources muettes")
@@ -353,21 +373,45 @@ Markdown(md)
 
 ## Accuracy par régime de décision : consensus ou arbitrage réel
 
-Les tableaux ci-dessus agrègent deux régimes de décision que `decide-coicop` traite différemment, et que la colonne `llm_model` distingue :
+```{python}
+# | label: txt-regime-intro
+# Section propre au juge LLM : le court-circuit consensus est une mécanique de
+# `decide-coicop`, sans équivalent dans la conciliation par règles SIRUS (qui
+# score tous les candidats de la même façon, sans raccourci).
+if "llm_model" in scorable.columns:
+    md = dedent(
+        """
+        Les tableaux ci-dessus agrègent deux régimes de décision que `decide-coicop`
+        traite différemment, et que la colonne `llm_model` distingue :
 
-- **Consensus** — le raccourci `try_consensus_decision` : toutes les sources disponibles s'accordent avec le top-1 de TTC et la confiance TTC est ≥ 0,90. Aucun appel au juge, `llm_code` **est** `ttc_code_1`.
-- **Arbitré** — le juge a été appelé et a choisi parmi les propositions (ou en dehors).
+        - **Consensus** — le raccourci `try_consensus_decision` : toutes les sources
+          disponibles s'accordent avec le top-1 de TTC et la confiance TTC est ≥ 0,90.
+          Aucun appel au juge, `llm_code` **est** `ttc_code_1`.
+        - **Arbitré** — le juge a été appelé et a choisi parmi les propositions (ou en
+          dehors).
 
-Sur les lignes de consensus, les colonnes LLM et TTC sont donc égales par construction : elles ne mesurent pas le juge, et comme ces lignes sont sélectionnées sur la confiance de TTC, elles tirent les deux chiffres vers le haut. Comparer LLM et TTC sur l'ensemble ne dit rien d'exploitable ; seule la colonne **Arbitré** compare le juge aux sources qu'il a effectivement arbitrées.
+        Sur les lignes de consensus, les colonnes LLM et TTC sont donc égales par
+        construction : elles ne mesurent pas le juge, et comme ces lignes sont
+        sélectionnées sur la confiance de TTC, elles tirent les deux chiffres vers le
+        haut. Comparer LLM et TTC sur l'ensemble ne dit rien d'exploitable ; seule la
+        colonne **Arbitré** compare le juge aux sources qu'il a effectivement arbitrées.
+        """
+    )
+else:
+    md = (
+        f"_Sans objet : la conciliation de ce run est **{FINAL_NAME}**, qui n'a pas "
+        "de régime de décision — tous les candidats sont scorés de la même façon, "
+        "sans raccourci consensus. Ce découpage est propre au juge LLM "
+        "(`decide-coicop`)._"
+    )
+Markdown(md)
+```
 
 ```{python}
-# | label: tbl-regime-accuracy
+# | label: md-regime-accuracy
 regime_tbl = regime_accuracy_table(scorable, REGIME_LEVEL, inclusive=True)
 if regime_tbl is None:
-    md = (
-        "_Colonne `llm_model` absente de ce run : impossible de distinguer les "
-        "décisions par consensus des arbitrages réels._"
-    )
+    md = ""  # l'explication est déjà donnée par le chunk d'introduction
 else:
     _masks = regime_masks(scorable)
     _n_cons = int(_masks[0][2].sum())
@@ -381,13 +425,14 @@ Markdown(md)
 ```
 
 ```{python}
-# | label: tbl-regime-judge-gap
+# | label: md-regime-judge-gap
 # Écart du juge à la meilleure source amont, par régime : c'est la seule lecture
 # qui dise si l'arbitrage apporte quelque chose.
 if regime_tbl is None:
     md = ""
 else:
-    sources = [name for name, _col in available_methods(scorable) if name != "LLM"]
+    # Sources amont = tout sauf la décision finale (cf. tbl-abstention-load).
+    sources = [name for name, col in available_methods(scorable) if col != FINAL_COL]
     rows = []
     for label, _suffix, mask in regime_masks(scorable):
         sub = regime_tbl[[c for c in regime_tbl.columns if c.startswith(label)]].iloc[:, 0]
@@ -396,9 +441,9 @@ else:
             {
                 "régime": label,
                 "n": int(mask.sum()),
-                "LLM": sub.get("LLM"),
+                FINAL_NAME: sub.get(FINAL_NAME),
                 "meilleure source": f"{best_src} ({sub[best_src]:.1%})",
-                "écart LLM − meilleure source": sub.get("LLM") - sub[best_src],
+                f"écart {FINAL_NAME} − meilleure source": sub.get(FINAL_NAME) - sub[best_src],
             }
         )
     gap_regime = pd.DataFrame(rows).set_index("régime")
@@ -549,9 +594,9 @@ Markdown(md)
 
 ## Analyse d'erreurs
 
-### Matrice de confusion — top 20 paires `code` vs `llm_code`
+### Matrice de confusion — top 20 paires vérité vs code final
 
-On liste les couples (code réel, code LLM) les plus fréquents **parmi les erreurs** au niveau 4 (le niveau typiquement visé par l'enquête).
+On liste les couples (code réel, code retenu par `{python} FINAL_COL`) les plus fréquents **parmi les erreurs** au niveau 4 (le niveau typiquement visé par l'enquête).
 
 ```{python}
 # | label: tbl-confusion
@@ -562,7 +607,7 @@ def at_level(s: pd.Series, k: int) -> pd.Series:
 k = 4
 df_k = scorable.assign(
     truth_k=at_level(scorable[TRUTH], k),
-    pred_k=at_level(scorable["llm_code"], k),
+    pred_k=at_level(scorable[FINAL_COL], k),
 )
 df_k = df_k.dropna(subset=["truth_k", "pred_k"])
 errors = df_k[df_k["truth_k"] != df_k["pred_k"]]
@@ -583,12 +628,42 @@ Markdown(md)
 
 ### Calibration du LLM : accuracy vs `llm_confiance`
 
-La commande `decide-coicop` retourne un score de confiance de 1 à 5. Une calibration saine montre une accuracy croissante avec la confiance.
+```{python}
+# | label: txt-calibration-llm-intro
+# Prose dans un chunk gardé plutôt qu'en Markdown brut : en mode SIRUS il n'y a
+# pas de score de confiance 1-5, et laisser cette introduction s'afficher
+# décrirait une sortie que le run ne contient pas.
+Markdown(
+    "La commande `decide-coicop` retourne un score de confiance de 1 à 5. Une "
+    "calibration saine montre une accuracy croissante avec la confiance."
+    if "llm_confiance" in scorable.columns
+    else (
+        f"_Sans objet : la conciliation de ce run est **{FINAL_NAME}**, qui ne "
+        "produit pas de score de confiance `llm_confiance`. La calibration de "
+        "SIRUS est traitée dans la section suivante._"
+    )
+)
+```
 
 ```{python}
 # | label: fig-calibration
-cal_df = scorable.dropna(subset=["llm_confiance"]).copy()
-if len(cal_df):
+# Section propre au juge LLM : le score de confiance entier 1-5 est une sortie
+# de `decide-coicop`. La conciliation SIRUS produit une probabilité continue,
+# traitée dans sa propre section ci-dessous — les deux échelles ne se comparent
+# pas et ne doivent pas être mélangées dans un même graphique.
+_has_llm_conf = "llm_confiance" in scorable.columns and "llm_code" in scorable.columns
+cal_df = (
+    scorable.dropna(subset=["llm_confiance"]).copy()
+    if _has_llm_conf
+    else pd.DataFrame()
+)
+if not _has_llm_conf:
+    Markdown(
+        f"_Sans objet : la conciliation de ce run est **{FINAL_NAME}**, qui ne "
+        "produit pas de score entier 1-5. Voir la calibration de SIRUS "
+        "ci-dessous._"
+    )
+elif len(cal_df):
     cal_df["acc_niv4"] = accuracy_series(cal_df[TRUTH], cal_df["llm_code"], 4)
     cal_df = cal_df.dropna(subset=["acc_niv4"])
     cal = (
@@ -616,13 +691,139 @@ else:
     Markdown("_Pas de valeur `llm_confiance` disponible._")
 ```
 
+### Calibration de SIRUS : accuracy vs `sirus_proba`
+
+```{python}
+# | label: txt-sirus-calib-intro
+if "sirus_proba" in scorable.columns:
+    md = dedent(
+        """
+        SIRUS ne renvoie pas une classe mais une **probabilité que le candidat
+        retenu soit le bon code**. L'étape `sirus-predict` s'arrête là : elle
+        livre un code et ce score, **sans verdict**. Elle n'applique aucun seuil
+        et ne dit pas si le code est exploitable sans relecture.
+
+        C'est ici, et seulement ici, que cette question s'instruit. Les deux
+        tableaux qui suivent disent ce qu'on gagne et ce qu'on perd à exiger un
+        score minimum : quelle part du volume reste codable, et avec quelle
+        fiabilité. À charge pour l'aval d'en tirer la règle d'exploitation qui
+        convient.
+
+        Deux propriétés du score, à garder en tête pour les lire :
+
+        - c'est une **moyenne non pondérée des sorties des règles** retenues.
+          Chaque règle contribue toujours une valeur (celle de sa branche « si
+          vérifiée » ou celle de sa branche « sinon »), toutes strictement entre
+          0 et 1. La moyenne est donc une combinaison convexe : elle **n'atteint
+          jamais 0 ni 1** et reste tirée vers le taux de base ;
+        - il s'ensuit qu'un seuil d'exploitation **ne se lit pas comme une
+          probabilité usuelle, et que 0,5 n'a rien de particulier**. La plage de
+          scores atteignable est une propriété du modèle ajusté, pas du
+          problème : un seuil lu sur un modèle ne se transpose pas au suivant,
+          il se relit sur ces tableaux à chaque réentraînement.
+        """
+    )
+else:
+    md = (
+        f"_Sans objet : la conciliation de ce run est **{FINAL_NAME}**, qui ne "
+        "produit pas de colonne `sirus_proba`._"
+    )
+Markdown(md)
+```
+
+```{python}
+# | label: md-sirus-calibration
+# Accuracy par tranche de probabilité : une calibration saine est monotone
+# croissante. Un décrochage sur une tranche haute est le signal le plus précoce
+# d'une dérive d'un classifieur amont (le modèle reste confiant alors que le
+# signal sur lequel il s'appuie a changé de sens).
+if "sirus_proba" not in scorable.columns:
+    md = ""
+else:
+    _sc = scorable.dropna(subset=["sirus_proba"]).copy()
+    if not len(_sc):
+        md = "_Aucune valeur `sirus_proba` exploitable._"
+    else:
+        _sc["_ok"] = (
+            accuracy_series(_sc[TRUTH], _sc[FINAL_COL], REGIME_LEVEL, inclusive=True)
+            == True  # noqa: E712
+        )
+        _sc["tranche"] = pd.cut(
+            _sc["sirus_proba"], bins=np.arange(0, 1.1, 0.1), include_lowest=True
+        )
+        calib_tbl = (
+            _sc.groupby("tranche", observed=True)
+            .agg(n=("_ok", "size"), accuracy=("_ok", "mean"))
+            .reset_index()
+        )
+        calib_tbl["part des observations"] = calib_tbl["n"] / len(_sc)
+        calib_tbl["tranche"] = calib_tbl["tranche"].astype(str)
+        md = (
+            f"**Accuracy au niveau {REGIME_LEVEL}** (convention inclusive) par tranche "
+            f"de `sirus_proba`, sur {len(_sc)} observations scorables. Probabilités "
+            f"observées : min {_sc['sirus_proba'].min():.3f}, "
+            f"médiane {_sc['sirus_proba'].median():.3f}, "
+            f"max {_sc['sirus_proba'].max():.3f}.\n\n"
+            + calib_tbl[["tranche", "n", "part des observations", "accuracy"]].to_markdown(
+                index=False, floatfmt=("", ".0f", ".1%", ".1%")
+            )
+        )
+Markdown(md)
+```
+
+```{python}
+# | label: md-sirus-threshold-sweep
+# LE tableau qui instruit la décision d'exploitation : pour chaque seuil de score
+# envisageable, quelle part du volume resterait codable et avec quelle fiabilité.
+# Le pipeline n'applique aucun seuil — `sirus-predict` livre un code et un score.
+# C'est ce tableau qui permet d'en choisir un en aval, en connaissance de cause.
+if "sirus_proba" not in scorable.columns:
+    md = ""
+else:
+    _sc = scorable.dropna(subset=["sirus_proba"]).copy()
+    if not len(_sc):
+        md = ""
+    else:
+        _sc["_ok"] = (
+            accuracy_series(_sc[TRUTH], _sc[FINAL_COL], REGIME_LEVEL, inclusive=True)
+            == True  # noqa: E712
+        )
+        rows = []
+        for seuil in np.round(np.arange(0.2, 0.81, 0.1), 2):
+            auto = _sc["sirus_proba"] >= seuil
+            n_auto = int(auto.sum())
+            rows.append(
+                {
+                    "seuil": seuil,
+                    "n auto-codé": n_auto,
+                    "volume auto-codé": n_auto / len(_sc),
+                    f"fiabilité niv{REGIME_LEVEL}": (
+                        float(_sc.loc[auto, "_ok"].mean()) if n_auto else np.nan
+                    ),
+                }
+            )
+        sweep = pd.DataFrame(rows)
+        md = (
+            "**Arbitrage volume / fiabilité selon le score exigé.** Exiger un "
+            "score plus élevé réduit le volume exploitable et augmente sa "
+            "fiabilité. Noter que le score maximum atteignable par ce modèle est "
+            f"**{_sc['sirus_proba'].max():.3f}** sur ce run : au-delà, l'exigence "
+            "écarterait **100 % du volume**. C'est pourquoi un seuil se lit sur ce "
+            "tableau et ne se transpose pas d'un modèle à l'autre.\n\n"
+            + sweep.to_markdown(
+                index=False, floatfmt=(".2f", ".0f", ".1%", ".1%"), missingval="—"
+            )
+        )
+Markdown(md)
+```
+
 ## Accord entre les classifieurs et valeur ajoutée de l'arbitrage
 
-On regarde la structure de l'accord entre les sources amont (LCS, RAG, RAG-annot, TTC top-1), tronquées au niveau 4. Pour chaque configuration (accord total, accords partiels, désaccord total) on confronte l'accuracy du juge LLM à ce que les sources permettaient d'atteindre. Les sources absentes du run sont ignorées ; les observations avec moins de deux sources exploitables ne sont pas évaluées.
+On regarde la structure de l'accord entre les sources amont (LCS, RAG, RAG-annot, TTC top-1), tronquées au niveau 4. Pour chaque configuration (accord total, accords partiels, désaccord total) on confronte l'accuracy de la conciliation (`{python} FINAL_COL`) à ce que les sources permettaient d'atteindre. Les sources absentes du run sont ignorées ; les observations avec moins de deux sources exploitables ne sont pas évaluées.
 
 ```{python}
 # | label: tbl-agreement
-# Sources amont présentes dans ce run (hors llm_code final).
+# Sources amont présentes dans ce run (hors colonne de décision finale).
 PREDICTORS = {
     name: col
     for name, col in (
@@ -644,10 +845,11 @@ def keyk(s: pd.Series, k: int = K_EVAL) -> pd.Series:
     return s.map(lambda x: ".".join(code_parts(x)[:k]) if len(code_parts(x)) >= k else None)
 
 
-work = scorable.assign(_truth=keyk(scorable[TRUTH]), _llm=keyk(scorable["llm_code"]))
+# `_final` : le code de la conciliation qui a tranché, tronqué au niveau cible.
+work = scorable.assign(_truth=keyk(scorable[TRUTH]), _final=keyk(scorable[FINAL_COL]))
 for col in PRED_COLS:
     work[f"_{col}"] = keyk(scorable[col])
-work = work.dropna(subset=["_truth", "_llm"])
+work = work.dropna(subset=["_truth", "_final"])
 pred_keys = [f"_{c}" for c in PRED_COLS]
 
 
@@ -674,7 +876,7 @@ def sig_label(sig):
 work["_sig"] = work.apply(agreement_signature, axis=1)
 evaluable = work[work["_sig"].notna()].copy()
 evaluable["Configuration"] = evaluable["_sig"].apply(sig_label)
-evaluable["_llm_ok"] = evaluable["_llm"] == evaluable["_truth"]
+evaluable["_final_ok"] = evaluable["_final"] == evaluable["_truth"]
 evaluable["_any_src_ok"] = evaluable.apply(
     lambda r: any(v == r["_truth"] for v in _src_vals(r)), axis=1
 )
@@ -682,12 +884,16 @@ evaluable["_plurality_ok"] = evaluable.apply(
     lambda r: Counter(_src_vals(r)).most_common(1)[0][0] == r["_truth"], axis=1
 )
 
+# Nom de la colonne d'accuracy de la conciliation, réutilisé par le graphique
+# ci-dessous : une seule définition pour que les deux ne divergent pas.
+ACC_FINAL_COL = f"accuracy {FINAL_NAME} (%)"
+
 n_eval = len(evaluable)
 summary = (
     evaluable.groupby("Configuration")
     .agg(
-        n=("_llm_ok", "size"),
-        acc_llm=("_llm_ok", "mean"),
+        n=("_final_ok", "size"),
+        acc_final=("_final_ok", "mean"),
         plurality=("_plurality_ok", "mean"),
         any_src=("_any_src_ok", "mean"),
     )
@@ -695,16 +901,16 @@ summary = (
     .sort_values("n", ascending=False)
 )
 summary["% éval."] = (100 * summary["n"] / n_eval).round(1) if n_eval else np.nan
-for c in ["acc_llm", "plurality", "any_src"]:
+for c in ["acc_final", "plurality", "any_src"]:
     summary[c] = (100 * summary[c]).round(1)
 summary = summary.rename(columns={
-    "acc_llm": "accuracy LLM (%)",
+    "acc_final": ACC_FINAL_COL,
     "plurality": "code majoritaire juste (%)",
     "any_src": "≥1 source juste (%)",
 })
 summary = summary[[
     "Configuration", "n", "% éval.",
-    "accuracy LLM (%)", "code majoritaire juste (%)", "≥1 source juste (%)",
+    ACC_FINAL_COL, "code majoritaire juste (%)", "≥1 source juste (%)",
 ]]
 Markdown(summary.to_markdown(index=False))
 ```
@@ -716,7 +922,7 @@ if len(summary):
     x = np.arange(len(order))
     w = 0.38
     fig, ax = plt.subplots(figsize=(9, 4))
-    ax.bar(x - w / 2, order["accuracy LLM (%)"], w, label="accuracy LLM", color="#4C72B0")
+    ax.bar(x - w / 2, order[ACC_FINAL_COL], w, label=f"accuracy {FINAL_NAME}", color="#4C72B0")
     ax.bar(x + w / 2, order["≥1 source juste (%)"], w, label="≥1 source juste", color="#DD8452")
     ax.set_xticks(x)
     ax.set_xticklabels(order["Configuration"], rotation=20, ha="right")
@@ -728,11 +934,11 @@ if len(summary):
     plt.show()
 ```
 
-**Lecture :** sur les cas d'accord total, l'accuracy LLM doit avoisiner celle des sources (le juge ne fait que confirmer, via le raccourci consensus de `decide-coicop`). Sur les configurations de désaccord, l'écart entre `accuracy LLM` et `≥1 source juste` mesure la capacité du juge à retrouver la bonne source quand elle existe ; l'écart avec `code majoritaire juste` indique s'il fait mieux qu'un simple vote majoritaire.
+**Lecture :** sur les cas d'accord total, l'accuracy de la conciliation doit avoisiner celle des sources (elle ne fait que confirmer — via le raccourci consensus pour le juge LLM, via des règles qui votent toutes dans le même sens pour SIRUS). Sur les configurations de désaccord, l'écart entre `{python} ACC_FINAL_COL` et `≥1 source juste` mesure la capacité de la conciliation à retrouver la bonne source quand elle existe ; l'écart avec `code majoritaire juste` indique si elle fait mieux qu'un simple vote majoritaire.
 
-## Accord de chaque classifieur avec le juge LLM
+## Accord de chaque classifieur avec la décision finale
 
-Dans quelle mesure chaque classifieur propose-t-il le même code (niveau 4) que la décision finale du juge LLM ? On compare aussi l'accuracy propre du classifieur, et l'accuracy du juge selon qu'il suit ou non ce classifieur — un classifieur « suivi avec profit » est celui dont l'accord avec le juge coïncide avec une bonne accuracy.
+Dans quelle mesure chaque classifieur propose-t-il le même code (niveau 4) que la conciliation (`{python} FINAL_COL`) ? On compare aussi l'accuracy propre du classifieur, et l'accuracy de la décision finale selon qu'elle suit ou non ce classifieur — un classifieur « suivi avec profit » est celui dont l'accord avec la décision finale coïncide avec une bonne accuracy.
 
 ```{python}
 # | label: tbl-classifier-vs-judge
@@ -743,13 +949,13 @@ else:
     for name, col in PREDICTORS.items():
         kcol = f"_{col}"
         sub = work.dropna(subset=[kcol])
-        same = sub[kcol] == sub["_llm"]
+        same = sub[kcol] == sub["_final"]
         rows.append({
             "Classifieur": name,
-            "Accord avec juge (%)": round(same.mean() * 100, 1) if len(sub) else None,
+            f"Accord avec {FINAL_NAME} (%)": round(same.mean() * 100, 1) if len(sub) else None,
             "Accuracy classifieur (%)": round((sub[kcol] == sub["_truth"]).mean() * 100, 1) if len(sub) else None,
-            "Acc. juge si accord (%)": round((sub.loc[same, "_llm"] == sub.loc[same, "_truth"]).mean() * 100, 1) if same.any() else None,
-            "Acc. juge si désaccord (%)": round((sub.loc[~same, "_llm"] == sub.loc[~same, "_truth"]).mean() * 100, 1) if (~same).any() else None,
+            f"Acc. {FINAL_NAME} si accord (%)": round((sub.loc[same, "_final"] == sub.loc[same, "_truth"]).mean() * 100, 1) if same.any() else None,
+            f"Acc. {FINAL_NAME} si désaccord (%)": round((sub.loc[~same, "_final"] == sub.loc[~same, "_truth"]).mean() * 100, 1) if (~same).any() else None,
         })
     Markdown(pd.DataFrame(rows).to_markdown(index=False))
 ```
@@ -761,33 +967,39 @@ if PREDICTORS:
     for name, col in PREDICTORS.items():
         ys = []
         for lvl in LEVELS:
-            tk = keyk(scorable["llm_code"], lvl)
+            tk = keyk(scorable[FINAL_COL], lvl)
             ck = keyk(scorable[col], lvl)
             m = tk.notna() & ck.notna()
             ys.append((tk[m] == ck[m]).mean() * 100 if m.any() else np.nan)
         ax.plot([f"niv{l}" for l in LEVELS], ys, marker="o", label=name)
-    ax.set_ylabel("Accord avec le juge (%)")
-    ax.set_title("Accord classifieur ↔ juge par niveau COICOP")
+    ax.set_ylabel(f"Accord avec {FINAL_NAME} (%)")
+    ax.set_title(f"Accord classifieur ↔ {FINAL_NAME} par niveau COICOP")
     ax.set_ylim(0, 100)
     ax.legend()
     plt.tight_layout()
     plt.show()
 ```
 
-## Décisions du juge hors des prédictions des classifieurs
+## Décisions de conciliation hors des prédictions des classifieurs
 
-Cas où le code final retenu par le juge ne figure dans aucune prédiction des classifieurs. On distingue les codes restés accessibles via le top-2/3 de TTC et les codes totalement inédits, et — grâce à la vérité terrain — on mesure si sortir du périmètre des classifieurs aide ou nuit (accuracy niveau 4). Analyse restreinte aux observations réellement arbitrées (les consensus retiennent par construction un code prédit).
+Cas où le code final retenu ne figure dans aucune prédiction des classifieurs. On distingue les codes restés accessibles via le top-2/3 de TTC et les codes totalement inédits, et — grâce à la vérité terrain — on mesure si sortir du périmètre des classifieurs aide ou nuit (accuracy niveau 4).
+
+En conciliation LLM, l'analyse est restreinte aux observations réellement arbitrées : les consensus retiennent par construction un code prédit. En conciliation SIRUS la question ne se pose pas — le modèle **choisit parmi les candidats proposés** et ne peut structurellement pas sortir du périmètre, ce que ce tableau doit confirmer.
 
 ```{python}
 # | label: tbl-judge-outside
 arb = scorable.copy()
+# Le régime consensus n'existe que pour le juge LLM : quand la colonne est là, on
+# écarte ces lignes ; sinon on garde toutes celles qui portent un code final.
 if "llm_model" in arb.columns:
-    arb = arb[(arb["llm_model"] != "consensus") & arb["llm_code"].notna()].copy()
+    arb = arb[(arb["llm_model"] != "consensus") & arb[FINAL_COL].notna()].copy()
 else:
-    arb = arb[arb["llm_code"].notna()].copy()
+    arb = arb[arb[FINAL_COL].notna()].copy()
 
 if not PREDICTORS or len(arb) == 0:
-    display(Markdown("_Pas d'observation arbitrée par le LLM, ou aucune source amont._"))
+    display(Markdown(
+        f"_Pas d'observation tranchée par {FINAL_NAME}, ou aucune source amont._"
+    ))
 else:
     extra_cols = [c for c in ["ttc_code_2", "ttc_code_3"] if c in arb.columns]
 
@@ -801,9 +1013,9 @@ else:
                 s.add(str(row[c]))
         return s
 
-    arb["_in_main"] = arb.apply(lambda r: str(r["llm_code"]) in main_set(r), axis=1)
-    arb["_in_avail"] = arb.apply(lambda r: str(r["llm_code"]) in avail_set(r), axis=1)
-    arb["_llm_ok"] = accuracy_series(arb[TRUTH], arb["llm_code"], 4) == True  # noqa: E712
+    arb["_in_main"] = arb.apply(lambda r: str(r[FINAL_COL]) in main_set(r), axis=1)
+    arb["_in_avail"] = arb.apply(lambda r: str(r[FINAL_COL]) in avail_set(r), axis=1)
+    arb["_final_ok"] = accuracy_series(arb[TRUTH], arb[FINAL_COL], 4) == True  # noqa: E712
     src_ok_cols = []
     for c in PRED_COLS:
         oc = f"_ok_{c}"
@@ -826,52 +1038,58 @@ else:
     order_p = ["Dans les prédictions", "Hors prédict., vu (TTC top2/3)", "Totalement inédit"]
     ptbl = (
         arb.groupby("Périmètre")
-        .agg(n=("_llm_ok", "size"), acc=("_llm_ok", "mean"), src=("_any_src_ok", "mean"))
+        .agg(n=("_final_ok", "size"), acc=("_final_ok", "mean"), src=("_any_src_ok", "mean"))
         .reindex(order_p)
         .dropna(how="all")
         .reset_index()
     )
+    acc_perim_col = f"accuracy {FINAL_NAME} (%)"
     ptbl["% arbitrées"] = (100 * ptbl["n"] / n_arb).round(1)
-    ptbl["accuracy juge (%)"] = (100 * ptbl["acc"]).round(1)
+    ptbl[acc_perim_col] = (100 * ptbl["acc"]).round(1)
     ptbl["≥1 source juste (%)"] = (100 * ptbl["src"]).round(1)
     ptbl["n"] = ptbl["n"].astype(int)
 
     display(Markdown(
-        f"Sur **{n_arb:,}** observations arbitrées (vérité terrain disponible) : "
+        f"Sur **{n_arb:,}** observations tranchées (vérité terrain disponible) : "
         f"**{n_out_main:,}** ({n_out_main / n_arb * 100:.1f} %) ont un code final hors des "
         f"{N_PRED} codes prédits, dont **{n_out_avail:,}** ({n_out_avail / n_arb * 100:.1f} %) "
         f"totalement inédits (hors même du top-2/3 de TTC).".replace(",", " ")
     ))
     display(Markdown(
-        ptbl[["Périmètre", "n", "% arbitrées", "accuracy juge (%)", "≥1 source juste (%)"]]
+        ptbl[["Périmètre", "n", "% arbitrées", acc_perim_col, "≥1 source juste (%)"]]
         .to_markdown(index=False)
     ))
 
     out = arb[~arb["_in_main"]]
     if len(out):
-        missed = out[out["_any_src_ok"] & ~out["_llm_ok"]]
+        missed = out[out["_any_src_ok"] & ~out["_final_ok"]]
         display(Markdown(
             f"**Opportunités manquées :** parmi les {len(out):,} décisions hors périmètre, "
             f"**{len(missed):,}** ({len(missed) / len(out) * 100:.1f} %) sont fausses au niveau 4 "
-            f"alors qu'au moins une source amont proposait le bon code — le juge a écarté une "
-            f"prédiction correcte.".replace(",", " ")
+            f"alors qu'au moins une source amont proposait le bon code — {FINAL_NAME} a écarté "
+            f"une prédiction correcte.".replace(",", " ")
         ))
 
-        labels = {"raw_product": "Produit", "llm_code": "LLM (juge)",
-                  "llm_confiance": "Confiance",
+        labels = {"raw_product": "Produit",
+                  FINAL_COL: f"{FINAL_NAME} (décision)",
                   "code": "Vérité (brute)", TRUTH: "Vérité (scorée)"}
+        if FINAL_CONF_COL:
+            labels[FINAL_CONF_COL] = "Confiance"
         labels.update({c: n for n, c in PREDICTORS.items()})
         labels.update({"ttc_code_2": "TTC top2", "ttc_code_3": "TTC top3"})
         # Les deux colonnes de vérité : la brute (telle qu'annotée) et celle
         # réellement comparée. Sans la seconde, un lecteur croit à une erreur
-        # quand le juge a répondu le code canonique d'une annotation niveau 5.
+        # quand la conciliation a répondu le code canonique d'une annotation
+        # niveau 5.
         truth_cols = ["code"] if TRUTH == "code" else ["code", TRUTH]
-        ex_cols = ["raw_product"] + PRED_COLS + extra_cols + truth_cols + ["llm_code"]
-        if "llm_confiance" in out.columns:
-            ex_cols.append("llm_confiance")
+        ex_cols = ["raw_product"] + PRED_COLS + extra_cols + truth_cols + [FINAL_COL]
+        if FINAL_CONF_COL:
+            ex_cols.append(FINAL_CONF_COL)
         ex_cols = [c for c in ex_cols if c in out.columns]
         ex = out[ex_cols].sample(min(10, len(out)), random_state=42).rename(columns=labels)
-        display(Markdown(f"\n**{min(10, len(out))} exemples (juge hors périmètre) :**"))
+        display(Markdown(
+            f"\n**{min(10, len(out))} exemples ({FINAL_NAME} hors périmètre) :**"
+        ))
         display(Markdown(ex.to_markdown(index=False)))
 ```
 

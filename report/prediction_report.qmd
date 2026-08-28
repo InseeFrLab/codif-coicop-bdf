@@ -29,6 +29,7 @@ import matplotlib.ticker as mticker
 import numpy as np
 import pandas as pd
 import seaborn as sns
+from coicop_metrics import final_decision
 from IPython.display import Markdown
 
 sns.set_theme(style="whitegrid")
@@ -124,21 +125,37 @@ COL_LABELS = {
     "llm_code": "LLM (juge)",
     "llm_confiance": "Confiance",
     "llm_explication": "Explication LLM",
+    "sirus_code": "SIRUS (règles)",
+    "sirus_proba": "Score SIRUS",
     "ttc_code_2": "TTC top2",
     "ttc_code_3": "TTC top3",
 }
 COL_LABELS.update({col: name for name, col in PREDICTORS.items()})
 
+# ── Conciliation effectivement utilisée ───────────────────────────────────────
+# Le pipeline propose deux conciliations exclusives (paramètre Argo
+# `conciliation`) : le juge LLM (`llm_code`) ou les règles SIRUS (`sirus_code`).
+# Un run ne porte donc qu'une des deux colonnes. Les sections propres au juge
+# (régime consensus, score de confiance 1-5) restent gardées par la présence de
+# `llm_code` et sont sautées en mode SIRUS.
+# strict=False : ce rapport sait déjà se dégrader section par section, mieux
+# vaut sauter les analyses concernées que faire échouer tout le rendu.
+CONCILIATION_NAME, CONCILIATION_COL = (
+    final_decision(df_decide, strict=False) if df_decide is not None else (None, None)
+)
+
 # Sous-ensembles utiles sur df_decide :
-#   _is_consensus  : décision prise sans appel LLM (les modèles s'accordaient déjà)
-#   _is_arbitrated : décision réellement arbitrée par le LLM (cas difficiles)
+#   _is_consensus  : décision prise sans appel LLM (les modèles s'accordaient
+#                    déjà). Propre à decide-coicop : SIRUS n'a pas de
+#                    court-circuit, tous ses codes sont « arbitrés ».
+#   _is_arbitrated : décision réellement tranchée par la conciliation
 if df_decide is not None:
     df_decide = df_decide.copy()
     df_decide["_is_consensus"] = (
         df_decide["llm_model"] == "consensus" if "llm_model" in df_decide.columns else False
     )
     df_decide["_is_decided"] = (
-        df_decide["llm_code"].notna() if "llm_code" in df_decide.columns else False
+        df_decide[CONCILIATION_COL].notna() if CONCILIATION_COL else False
     )
     df_decide["_is_arbitrated"] = df_decide["_is_decided"] & ~df_decide["_is_consensus"]
 ```
