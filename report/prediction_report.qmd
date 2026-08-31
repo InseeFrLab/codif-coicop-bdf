@@ -158,6 +158,24 @@ if df_decide is not None:
         df_decide[CONCILIATION_COL].notna() if CONCILIATION_COL else False
     )
     df_decide["_is_arbitrated"] = df_decide["_is_decided"] & ~df_decide["_is_consensus"]
+
+# ── Sections propres au juge LLM ──────────────────────────────────────────────
+# Elles n'ont pas d'équivalent en mode SIRUS (cf. sirus/README.md, « Limites
+# connues »). Un seul nom porte la condition, plutôt que la même expression
+# recopiée dans chaque section : c'est cette duplication qui avait laissé passer
+# une section non gardée. Distinguer le mode SIRUS d'une réelle absence de
+# données évite par ailleurs de faire passer un run SIRUS réussi pour un rapport
+# dégradé.
+HAS_JUDGE = df_decide is not None and "llm_code" in df_decide.columns
+
+
+def skip_judge_section():
+    if df_decide is not None and CONCILIATION_NAME and not HAS_JUDGE:
+        return Markdown(
+            f"*Conciliation **{CONCILIATION_NAME}** pour ce run : cette section "
+            "compare les classifieurs au juge LLM, elle est donc sans objet.*"
+        )
+    return Markdown("*Données de décision non disponibles.*")
 ```
 
 ## Métadonnées du run
@@ -366,8 +384,8 @@ if df_decide is not None and N_PRED >= 2 and n_complete > 0:
 *Dans quelle mesure chaque classifieur propose-t-il le même code que la décision finale du juge LLM ? La colonne « toutes décisions » inclut les cas de consensus (où, par construction, tous les classifieurs s'accordent avec le code retenu) et surestime donc l'accord ; la colonne « cas arbitrés » se restreint aux observations réellement tranchées par le LLM et reflète la qualité de chaque classifieur sur les cas difficiles.*
 
 ```{python}
-if df_decide is None or not PREDICTORS or "llm_code" not in df_decide.columns:
-    display(Markdown("*Données de décision non disponibles.*"))
+if df_decide is None or not PREDICTORS or not HAS_JUDGE:
+    display(skip_judge_section())
 else:
     decided = df_decide[df_decide["_is_decided"]]
     arb = df_decide[df_decide["_is_arbitrated"]]
@@ -407,7 +425,7 @@ else:
 ```
 
 ```{python}
-if df_decide is not None and PREDICTORS and "llm_code" in df_decide.columns:
+if df_decide is not None and PREDICTORS and HAS_JUDGE:
     arb = df_decide[df_decide["_is_arbitrated"]]
     if len(arb) > 0:
         fig, ax = plt.subplots(figsize=(8, 4))
@@ -432,8 +450,8 @@ if df_decide is not None and PREDICTORS and "llm_code" in df_decide.columns:
 *Pour chaque groupe COICOP de niveau L2, taux d'accord de chaque classifieur avec la décision LLM, sur les observations arbitrées (hors consensus et hors regex).*
 
 ```{python}
-if df_decide is None or not PREDICTORS:
-    display(Markdown("*Données de décision non disponibles.*"))
+if df_decide is None or not PREDICTORS or not HAS_JUDGE:
+    display(skip_judge_section())
 else:
     arb = df_decide[df_decide["_is_arbitrated"]].dropna(subset=["llm_code"]).copy()
     if len(arb) == 0:
@@ -488,8 +506,8 @@ else:
 *Cas où le code final retenu par le juge LLM ne figure dans aucune des prédictions des classifieurs. On distingue les cas où le code reste néanmoins disponible au juge via le top-2/3 du classifieur TTC, et ceux où le juge propose un code totalement inédit. Analyse restreinte aux observations réellement arbitrées (les cas de consensus retiennent par construction un code prédit).*
 
 ```{python}
-if df_decide is None or not PREDICTORS or "llm_code" not in df_decide.columns:
-    display(Markdown("*Données de décision non disponibles.*"))
+if df_decide is None or not PREDICTORS or not HAS_JUDGE:
+    display(skip_judge_section())
 else:
     arb = df_decide[df_decide["_is_arbitrated"]].dropna(subset=["llm_code"]).copy()
     n_arb = len(arb)
