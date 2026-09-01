@@ -18,7 +18,7 @@ subtitle: "Liens utiles, outils et contacts du projet"
 - [Métadonnées COICOP 2018 sur insee.fr](https://www.insee.fr/fr/metadonnees/coicop2018/division/01?champRecherche=true)
   — arborescence officielle, division par division
 - Export RMES utilisé par le pipeline : voir [Les données](donnees.qmd) et
-  [Troncature & élagage](pruning.qmd) pour la façon dont il est transformé
+  [Troncature & élagage](prune-codes.qmd) pour la façon dont il est transformé
 
 ## Application Copain (solution OJS pour faire de l'annotation)
 

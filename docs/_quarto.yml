@@ -20,25 +20,25 @@ website:
         menu:
           - href: 00-generalites.qmd
             text: Généralités
-          - href: 01-preprocessing.qmd
-            text: Le preprocessing
-          - href: 02-codif-regex.qmd
+          - href: 01-build-datasets.qmd
+            text: Le build-datasets
+          - href: 02-classify-regex.qmd
             text: La codification par regex
-          - href: pruning.qmd
-            text: Troncature & élagage (prune)
-          - href: 03-codif-lcs.qmd
+          - href: prune-codes.qmd
+            text: Troncature & élagage (prune-codes)
+          - href: 03-classify-lcs.qmd
             text: LCS
-          - href: 05-run-ttc.qmd
+          - href: 05-classify-ttc.qmd
             text: TTC
-          - href: 04-coicop-rag.qmd
+          - href: 04-rag-notices.qmd
             text: RAG sur COICOP
-          - href: 09-rag-annotation.qmd
+          - href: 09-rag-annotations.qmd
             text: RAG sur annotations
-          - href: 06-decide-coicop.qmd
+          - href: 06-reconcile-llm.qmd
             text: Arbitrage LLM-as-judge (decide)
-          - href: 06b-sirus.qmd
+          - href: 06b-reconcile-sirus.qmd
             text: Conciliation par règles (SIRUS)
-          - href: 07-final-output.qmd
+          - href: 07-export-results.qmd
             text: Final output
           - href: 08-report.qmd
             text: Report
@@ -63,16 +63,16 @@ website:
       - 00-generalites.qmd
       - section: "Étapes du pipeline"
         contents:
-          - 01-preprocessing.qmd
-          - 02-codif-regex.qmd
-          - pruning.qmd
-          - 03-codif-lcs.qmd
-          - 05-run-ttc.qmd
-          - 04-coicop-rag.qmd
-          - 09-rag-annotation.qmd
-          - 06-decide-coicop.qmd
-          - 06b-sirus.qmd
-          - 07-final-output.qmd
+          - 01-build-datasets.qmd
+          - 02-classify-regex.qmd
+          - prune-codes.qmd
+          - 03-classify-lcs.qmd
+          - 05-classify-ttc.qmd
+          - 04-rag-notices.qmd
+          - 09-rag-annotations.qmd
+          - 06-reconcile-llm.qmd
+          - 06b-reconcile-sirus.qmd
+          - 07-export-results.qmd
           - 08-report.qmd
       - section: "Guides"
         contents:

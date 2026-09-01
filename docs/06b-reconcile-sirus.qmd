@@ -1,0 +1,159 @@
+---
+title: "8bis. SIRUS — conciliation par règles interprétables"
+---
+
+## Rôle de l'étape
+
+SIRUS est une **alternative au [juge LLM](06-reconcile-llm.qmd)** pour choisir le code
+COICOP final parmi les candidats des 4 classifieurs. Il répond à la même question, mais en
+produisant une vingtaine de **règles à seuils lisibles** au lieu d'une décision opaque —
+des conditions du type « si tel classifieur tranche seul et sous tel seuil de confiance, on
+ne le suit pas », qu'un métier peut relire, valider et figer comme convention de codage.
+
+Il fournit en plus un **score** par produit. L'étape s'arrête là : elle livre un code et ce
+score, **sans verdict**. Décider à partir de quel score un code est exploitable sans relecture
+est une question métier, instruite par le [rapport d'évaluation](08-report.qmd) — pas figée
+dans le chemin de production.
+
+Les deux conciliations sont **exclusives** : le paramètre `reconciliation` (`llm` ou `sirus`)
+décide laquelle tourne, l'autre est skippée.
+
+- Code : [`reconcile-sirus/`](https://github.com/InseeFrLab/codif-coicop-bdf/tree/main/sirus)
+- Documentation opérationnelle détaillée : [`reconcile-sirus/README.md`](https://github.com/InseeFrLab/codif-coicop-bdf/blob/main/reconcile-sirus/README.md)
+
+## Deux étapes
+
+| Moment | Où | Rôle |
+|---|---|---|
+| Entraînement | **Hors pipeline** : `cd reconcile-sirus/ && ./train.sh <date>/<run_id>` | Ajuste le modèle sur un run d'évaluation passé, mesure accuracy et calibration, logue le tout dans MLflow |
+| `reconcile-sirus` | Étape Argo, quand `conciliation: sirus` | Applique un modèle déjà entraîné au run courant |
+
+**L'entraînement n'est pas une étape du pipeline, et c'est délibéré.** Il produit un modèle
+destiné à un run *futur* : placé dans le DAG, il ne servirait jamais le run dans lequel il
+tourne — `reconcile-sirus-model-uri` devant être connue au `argo submit`, on ne peut de toute façon pas
+entraîner puis prédire en une soumission. L'URI affichée en fin d'entraînement se recopie donc
+dans `argo/params.yaml`, exactement comme `classify-ttc-model-uri` pour [TTC](05-classify-ttc.qmd), dont
+l'entraînement se lance aussi à la main.
+
+Corollaire utile : prédire sur ses propres données d'entraînement devient impossible par
+construction, donc les chiffres du rapport ne peuvent pas être flattés par une fuite.
+
+## Entrées
+
+Les mêmes que `reconcile-llm`, et pour une bonne raison : la fusion des 4 classifieurs et
+la troncature niveau 4 sont **réutilisées telles quelles**
+(`reconcile_llm.load_all_observations`), sans réimplémentation. Les deux conciliations
+raisonnent donc exactement sur les mêmes candidats.
+
+| Source | Chemin S3 | Argument |
+|---|---|---|
+| LCS | `…/{run}/classify-lcs/raw_test_LCS.parquet` | `--lcs-file` |
+| RAG | `…/{run}/classify-rag-notices/predictions.parquet` | `--rag-file` |
+| RAG-Annotations | `…/{run}/classify-rag-annotations/predictions.parquet` | `--rag-annotations-file` |
+| TTC | `…/{run}/classify-ttc/predictions.parquet` | `--ttc-file` |
+| Mapping [prune-codes](prune-codes.qmd) | `…/{run}/prune-codes/mapping_lvl4.parquet` | `--mapping-file` |
+| Ensemble à coder | `…/{run}/classify-regex/raw_test_without_regex.parquet` | `--tocodify-file` |
+| Colonnes utilisateur | `observations.parquet` (prod) ou `raw_test.parquet` (éval) | `--extra-columns-file` |
+| Modèle | URI MLflow | `--model-uri` |
+
+`--tocodify-file` n'existe pas côté `reconcile-llm` : il sert à détecter les produits
+présents dans l'ensemble à coder mais absents de la sortie LCS, qui sinon s'évaporeraient
+sans apparaître ni dans les résultats ni dans le décompte des produits sans candidat.
+
+## Sortie
+
+`…/{run}/reconcile-sirus/predictions.parquet` : la table fusionnée complète (pour que le
+[report](08-report.qmd) puisse scorer les 4 classifieurs de base à l'identique), plus :
+
+| Colonne | Sens |
+|---|---|
+| `sirus_code` | Code retenu (argmax du score), `NA` si aucun candidat exploitable |
+| `sirus_proba` | Score du candidat retenu |
+| `sirus_n_candidats` | Nombre de candidats scorés pour ce produit |
+| `sirus_model_uri`, `sirus_timestamp` | Traçabilité |
+
+Les colonnes portent des noms honnêtes (`sirus_code`, pas `llm_code`) :
+[`export-results`](07-export-results.qmd) reçoit `--decision-source llm|sirus` et traduit, et le
+report résout la conciliation présente via `coicop_metrics.final_decision()`.
+
+## Comment se fait la prédiction
+
+Chaque règle retenue est une **question avec deux réponses pré-calculées** à
+l'entraînement :
+
+```
+Règle 1 : « nb_votants < 2 ? »      →  si OUI : 0.105    si NON : 0.933
+Règle 2 : « conf_ttc < 0.465 ? »    →  si OUI : 0.168    si NON : 0.793
+```
+
+Pour un candidat, on pose les questions, on récupère un nombre par règle, et on en fait la
+**moyenne**. C'est tout.
+
+Deux propriétés contre-intuitives, et qui expliquent pourquoi le score ne se lit pas comme
+une probabilité usuelle :
+
+- **Aucune règle ne se tait.** Répondre NON ne veut pas dire « cette règle ne s'applique
+  pas » : la règle donne quand même son nombre, celui de la colonne `si NON`. On divise
+  donc toujours par le nombre total de règles.
+- **La sortie ne peut jamais valoir 0 ni 1.** C'est une combinaison convexe de valeurs
+  toutes strictement entre 0 et 1, donc écrasée vers le taux de base. C'est pourquoi
+  0,5 n'a rien de particulier pour ce score.
+
+L'agrégation n'est **pas pondérée** en classification. Le champ `rule.weights` existe dans
+l'objet R mais `sirus.predict` ne le lit jamais ; la régression ridge à coefficients
+positifs est l'agrégation de la variante *régression*. C'est vérifié et documenté dans
+`reconcile-sirus/src/scorer.py` — ne pas « corriger » ce fichier en y ajoutant des poids.
+
+## Paramètres
+
+| Paramètre | Défaut | Rôle |
+|---|---|---|
+| `conciliation` | `llm` | `llm` ou `sirus` : qui tranche |
+| `reconcile-sirus-model-uri` | `""` | URI MLflow du modèle. Obligatoire si `conciliation: sirus` |
+
+Ce sont les **deux seuls** paramètres SIRUS du pipeline. Les hyperparamètres d'entraînement
+(`--num-rule`, `--max-depth`, `--seed`, `--experiment`) sont des arguments de `train.sh`, pas
+du workflow.
+
+### Choisir un seuil d'exploitation
+
+Le pipeline n'en applique aucun. Si l'aval souhaite n'exploiter automatiquement que les codes
+au-dessus d'un certain score, la section **« Calibration de SIRUS »** du
+[rapport d'évaluation](08-report.qmd) donne l'arbitrage : pour chaque seuil envisageable, la
+part du volume qui reste codable et la fiabilité obtenue.
+
+Deux propriétés du score à connaître : c'est une **moyenne non pondérée des sorties de
+règles**, donc une combinaison convexe qui n'atteint jamais 0 ni 1 (**0,5 n'a rien de
+particulier**) ; et **la plage atteignable est une propriété du modèle ajusté**, pas du
+problème — un seuil lu sur un modèle ne se transpose pas au suivant.
+
+## Entraînement en R, prédiction en Python
+
+L'entraînement ajuste le modèle avec le paquet R `sirus`, puis **exporte les règles en
+JSON**. `reconcile-sirus` est du Python pur qui relit ce JSON. Trois raisons, toutes portant
+sur le chemin de production, celui qu'on emprunte à chaque run :
+
+1. le paquet a été **archivé du CRAN** (2026-01-15) et doit être compilé depuis la source
+   d'archive avec un correctif maison ;
+2. il **abandonne sur tout `NA`** : une division COICOP inédite tuerait l'étape, là où le
+   scorer Python écarte le candidat et fait basculer le produit en reprise ;
+3. l'étape devient rapide et sans compilation.
+
+L'équivalence est **prouvée deux fois** : un test golden bit-exact contre une référence
+produite par R (sur un jeu construit pour poser une ligne exactement sur chaque seuil), et
+un auto-contrôle rejoué **à chaque entraînement** sur le modèle qui vient d'être ajusté —
+l'étape échoue en cas de divergence.
+
+## Limites
+
+- **Un changement de RAG-ANN invalide le modèle.** Sur le modèle expérimental, 13 des 20
+  règles portaient sur RAG-ANN. Un simple ajustement de prompt en amont repointe donc
+  l'essentiel du modèle, en silence. `reconcile-sirus` compare les distributions du run à
+  celles de l'entraînement et avertit, mais la seule vraie réponse est de réentraîner
+  (`./train.sh` sur un run récent).
+- **SIRUS ne crée pas de candidat.** Si le bon code n'est proposé par aucun classifieur,
+  aucun réglage ne le retrouvera : c'est la métrique `upper_bound`.
+- Le [rapport de production](08-report.qmd) saute ses sections d'accord avec le juge en
+  mode SIRUS ; le rapport d'évaluation est complet dans les deux modes.
+
+Voir aussi [Limites et points de vigilance](limites-vigilance.qmd).

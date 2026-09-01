@@ -8,17 +8,17 @@ resolution-markers = [
 
 [manifest]
 members = [
+    "build-datasets",
+    "classify-regex",
+    "classify-ttc",
     "codif-coicop-bdf",
-    "codif-ttc",
-    "coicop-final-output",
-    "coicop-rag",
-    "coicop-rag-annotations",
-    "coicop-report",
-    "construction-dataset",
-    "decide-coicop",
-    "prune",
-    "regex-codif",
-    "sirus-coicop",
+    "export-results",
+    "prune-codes",
+    "rag-annotations",
+    "rag-notices",
+    "reconcile-llm",
+    "reconcile-sirus",
+    "report",
 ]
 
 [[package]]
@@ -384,6 +384,41 @@ wheels = [
 ]
 
 [[package]]
+name = "build-datasets"
+version = "0.1.0"
+source = { virtual = "build-datasets" }
+dependencies = [
+    { name = "duckdb" },
+    { name = "loguru" },
+    { name = "pandas" },
+    { name = "pyarrow" },
+    { name = "pyyaml" },
+    { name = "s3fs" },
+    { name = "scikit-learn" },
+    { name = "unidecode" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "ruff" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "duckdb", specifier = ">=1.4.4" },
+    { name = "loguru", specifier = ">=0.7.3" },
+    { name = "pandas", specifier = ">=2.3" },
+    { name = "pyarrow", specifier = ">=23.0.0" },
+    { name = "pyyaml", specifier = ">=6.0.3" },
+    { name = "s3fs", specifier = ">=2026.1.0" },
+    { name = "scikit-learn", specifier = ">=1.8.0" },
+    { name = "unidecode", specifier = ">=1.4.0" },
+]
+
+[package.metadata.requires-dev]
+dev = [{ name = "ruff", specifier = ">=0.15.1" }]
+
+[[package]]
 name = "cachetools"
 version = "7.1.8"
 source = { registry = "https://pypi.org/simple" }
@@ -590,46 +625,30 @@ wheels = [
 ]
 
 [[package]]
-name = "click"
-version = "8.5.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/c7/0e/7fa0ef50764b67090eca4114772a2abf8b6148198475e54c660b97caeee6/click-8.5.0.tar.gz", hash = "sha256:ba0d2089de75ea0310e2dde03160e6ca10009947fb95a182f9b54021bb272e34", size = 382235, upload-time = "2026-08-26T13:33:14.56Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/58/50/6c0d534c5f134586a8e1ba4e330569e32f057e33372ae556463212fb4cd3/click-8.5.0-py3-none-any.whl", hash = "sha256:255bc9599cf7748b4b1a446ccc735421bd08a2ae529a8b88597d3de5664ee360", size = 125251, upload-time = "2026-08-26T13:33:12.928Z" },
-]
-
-[[package]]
-name = "cloudpickle"
-version = "3.1.2"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/27/fb/576f067976d320f5f0114a8d9fa1215425441bb35627b1993e5afd8111e5/cloudpickle-3.1.2.tar.gz", hash = "sha256:7fda9eb655c9c230dab534f1983763de5835249750e85fbcef43aaa30a9a2414", size = 22330, upload-time = "2025-11-03T09:25:26.604Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/88/39/799be3f2f0f38cc727ee3b4f1445fe6d5e4133064ec2e4115069418a5bb6/cloudpickle-3.1.2-py3-none-any.whl", hash = "sha256:9acb47f6afd73f60dc1df93bb801b472f05ff42fa6c84167d25cb206be1fbf4a", size = 22228, upload-time = "2025-11-03T09:25:25.534Z" },
-]
-
-[[package]]
-name = "codif-coicop-bdf"
+name = "classify-regex"
 version = "0.1.0"
-source = { virtual = "." }
-
-[package.dev-dependencies]
-dev = [
-    { name = "pytest" },
-    { name = "ruff" },
+source = { virtual = "classify-regex" }
+dependencies = [
+    { name = "duckdb" },
+    { name = "pandas" },
+    { name = "pyarrow" },
+    { name = "pyyaml" },
+    { name = "s3fs" },
 ]
 
 [package.metadata]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "pytest", specifier = ">=9.0.2" },
-    { name = "ruff", specifier = ">=0.15.1" },
+requires-dist = [
+    { name = "duckdb", specifier = ">=1.5.1" },
+    { name = "pandas", specifier = ">=2.3" },
+    { name = "pyarrow", specifier = ">=23.0.1" },
+    { name = "pyyaml", specifier = ">=6.0.3" },
+    { name = "s3fs", specifier = ">=2026.3.0" },
 ]
 
 [[package]]
-name = "codif-ttc"
+name = "classify-ttc"
 version = "0.1.0"
-source = { virtual = "codif-ttc" }
+source = { virtual = "classify-ttc" }
 dependencies = [
     { name = "beautifulsoup4" },
     { name = "duckdb" },
@@ -683,148 +702,41 @@ provides-extras = ["synth"]
 dev = [{ name = "pytest", specifier = ">=9.0.2" }]
 
 [[package]]
-name = "coicop-final-output"
-version = "0.1.0"
-source = { virtual = "final-output" }
-dependencies = [
-    { name = "boto3" },
-    { name = "duckdb" },
-    { name = "pandas" },
-    { name = "prune" },
-    { name = "pyarrow" },
-    { name = "s3fs" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "boto3", specifier = ">=1.35" },
-    { name = "duckdb", specifier = ">=1.4.4" },
-    { name = "pandas", specifier = ">=2.2" },
-    { name = "prune", editable = "prune" },
-    { name = "pyarrow", specifier = ">=16" },
-    { name = "s3fs", specifier = ">=2024" },
+name = "click"
+version = "8.5.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/c7/0e/7fa0ef50764b67090eca4114772a2abf8b6148198475e54c660b97caeee6/click-8.5.0.tar.gz", hash = "sha256:ba0d2089de75ea0310e2dde03160e6ca10009947fb95a182f9b54021bb272e34", size = 382235, upload-time = "2026-08-26T13:33:14.56Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/58/50/6c0d534c5f134586a8e1ba4e330569e32f057e33372ae556463212fb4cd3/click-8.5.0-py3-none-any.whl", hash = "sha256:255bc9599cf7748b4b1a446ccc735421bd08a2ae529a8b88597d3de5664ee360", size = 125251, upload-time = "2026-08-26T13:33:12.928Z" },
 ]
 
 [[package]]
-name = "coicop-rag"
-version = "0.1.0"
-source = { editable = "coicop-rag" }
-dependencies = [
-    { name = "duckdb" },
-    { name = "langfuse" },
-    { name = "mlflow" },
-    { name = "openai" },
-    { name = "pandas" },
-    { name = "pydantic" },
-    { name = "qdrant-client" },
-    { name = "s3fs" },
-    { name = "tenacity" },
+name = "cloudpickle"
+version = "3.1.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/27/fb/576f067976d320f5f0114a8d9fa1215425441bb35627b1993e5afd8111e5/cloudpickle-3.1.2.tar.gz", hash = "sha256:7fda9eb655c9c230dab534f1983763de5835249750e85fbcef43aaa30a9a2414", size = 22330, upload-time = "2025-11-03T09:25:26.604Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/88/39/799be3f2f0f38cc727ee3b4f1445fe6d5e4133064ec2e4115069418a5bb6/cloudpickle-3.1.2-py3-none-any.whl", hash = "sha256:9acb47f6afd73f60dc1df93bb801b472f05ff42fa6c84167d25cb206be1fbf4a", size = 22228, upload-time = "2025-11-03T09:25:25.534Z" },
 ]
+
+[[package]]
+name = "codif-coicop-bdf"
+version = "0.1.0"
+source = { virtual = "." }
 
 [package.dev-dependencies]
 dev = [
     { name = "pytest" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "duckdb", specifier = ">=1.4.3" },
-    { name = "langfuse", specifier = ">=3.11.1" },
-    { name = "mlflow", specifier = ">=3.8.1" },
-    { name = "openai", specifier = ">=2.14.0" },
-    { name = "pandas", specifier = ">=2.3.3" },
-    { name = "pydantic", specifier = ">=2.12.5" },
-    { name = "qdrant-client", specifier = ">=1.16.2" },
-    { name = "s3fs", specifier = ">=2025.12.0" },
-    { name = "tenacity", specifier = ">=9.1.4" },
-]
-
-[package.metadata.requires-dev]
-dev = [{ name = "pytest", specifier = ">=9.0.2" }]
-
-[[package]]
-name = "coicop-rag-annotations"
-version = "0.1.0"
-source = { editable = "coicop-rag-annotations" }
-dependencies = [
-    { name = "duckdb" },
-    { name = "langfuse" },
-    { name = "mlflow" },
-    { name = "numpy" },
-    { name = "openai" },
-    { name = "pandas" },
-    { name = "pydantic" },
-    { name = "qdrant-client" },
-    { name = "s3fs" },
-    { name = "tenacity" },
-    { name = "tqdm" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "pytest" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "duckdb", specifier = ">=1.4.3" },
-    { name = "langfuse", specifier = ">=3.11.1" },
-    { name = "mlflow", specifier = ">=3.8.1" },
-    { name = "numpy", specifier = ">=2.0.0" },
-    { name = "openai", specifier = ">=2.14.0" },
-    { name = "pandas", specifier = ">=2.3.3" },
-    { name = "pydantic", specifier = ">=2.12.5" },
-    { name = "qdrant-client", specifier = ">=1.16.2" },
-    { name = "s3fs", specifier = ">=2025.12.0" },
-    { name = "tenacity", specifier = ">=9.1.4" },
-    { name = "tqdm", specifier = ">=4.67.1" },
-]
-
-[package.metadata.requires-dev]
-dev = [{ name = "pytest", specifier = ">=9.0.2" }]
-
-[[package]]
-name = "coicop-report"
-version = "0.1.0"
-source = { virtual = "report" }
-dependencies = [
-    { name = "boto3" },
-    { name = "duckdb" },
-    { name = "ipykernel" },
-    { name = "jupyter" },
-    { name = "matplotlib" },
-    { name = "mlflow" },
-    { name = "nbformat" },
-    { name = "pandas" },
-    { name = "prune" },
-    { name = "pyarrow" },
-    { name = "seaborn" },
-    { name = "tabulate" },
-]
-
-[package.dev-dependencies]
-dev = [
     { name = "ruff" },
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "boto3", specifier = ">=1.35" },
-    { name = "duckdb", specifier = ">=1.4.4" },
-    { name = "ipykernel", specifier = ">=6.29" },
-    { name = "jupyter", specifier = ">=1.1" },
-    { name = "matplotlib", specifier = ">=3.9" },
-    { name = "mlflow", specifier = ">=3.9.0" },
-    { name = "nbformat", specifier = ">=5.10" },
-    { name = "pandas", specifier = ">=2.2" },
-    { name = "prune", editable = "prune" },
-    { name = "pyarrow", specifier = ">=16" },
-    { name = "seaborn", specifier = ">=0.13" },
-    { name = "tabulate", specifier = ">=0.9" },
-]
 
 [package.metadata.requires-dev]
-dev = [{ name = "ruff", specifier = ">=0.6" }]
+dev = [
+    { name = "pytest", specifier = ">=9.0.2" },
+    { name = "ruff", specifier = ">=0.15.1" },
+]
 
 [[package]]
 name = "colorama"
@@ -843,41 +755,6 @@ sdist = { url = "https://files.pythonhosted.org/packages/4c/13/7d740c5849255756b
 wheels = [
     { url = "https://files.pythonhosted.org/packages/60/97/891a0971e1e4a8c5d2b20bbe0e524dc04548d2307fee33cdeba148fd4fc7/comm-0.2.3-py3-none-any.whl", hash = "sha256:c615d91d75f7f04f095b30d1c1711babd43bdc6419c1be9886a85f2f4e489417", size = 7294, upload-time = "2025-07-25T14:02:02.896Z" },
 ]
-
-[[package]]
-name = "construction-dataset"
-version = "0.1.0"
-source = { virtual = "preprocessing" }
-dependencies = [
-    { name = "duckdb" },
-    { name = "loguru" },
-    { name = "pandas" },
-    { name = "pyarrow" },
-    { name = "pyyaml" },
-    { name = "s3fs" },
-    { name = "scikit-learn" },
-    { name = "unidecode" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "ruff" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "duckdb", specifier = ">=1.4.4" },
-    { name = "loguru", specifier = ">=0.7.3" },
-    { name = "pandas", specifier = ">=2.3" },
-    { name = "pyarrow", specifier = ">=23.0.0" },
-    { name = "pyyaml", specifier = ">=6.0.3" },
-    { name = "s3fs", specifier = ">=2026.1.0" },
-    { name = "scikit-learn", specifier = ">=1.8.0" },
-    { name = "unidecode", specifier = ">=1.4.0" },
-]
-
-[package.metadata.requires-dev]
-dev = [{ name = "ruff", specifier = ">=0.15.1" }]
 
 [[package]]
 name = "contourpy"
@@ -1099,29 +976,6 @@ wheels = [
 ]
 
 [[package]]
-name = "decide-coicop"
-version = "0.1.0"
-source = { editable = "decide-coicop" }
-dependencies = [
-    { name = "duckdb" },
-    { name = "openai" },
-    { name = "pandas" },
-    { name = "prune" },
-    { name = "pyarrow" },
-    { name = "pydantic" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "duckdb", specifier = ">=1.4.4" },
-    { name = "openai", specifier = ">=2.16.0" },
-    { name = "pandas", specifier = ">=2.2" },
-    { name = "prune", editable = "prune" },
-    { name = "pyarrow", specifier = ">=16" },
-    { name = "pydantic", specifier = ">=2.9" },
-]
-
-[[package]]
 name = "defusedxml"
 version = "0.7.1"
 source = { registry = "https://pypi.org/simple" }
@@ -1182,6 +1036,29 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/cc/28/c14e053b6762b1044f34a13aab6859bbf40456d37d23aa286ac24cfd9a5d/executing-2.2.1.tar.gz", hash = "sha256:3632cc370565f6648cc328b32435bd120a1e4ebb20c77e3fdde9a13cd1e533c4", size = 1129488, upload-time = "2025-09-01T09:48:10.866Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/c1/ea/53f2148663b321f21b5a606bd5f191517cf40b7072c0497d3c92c4a13b1e/executing-2.2.1-py2.py3-none-any.whl", hash = "sha256:760643d3452b4d777d295bb167ccc74c64a81df23fb5e08eff250c425a4b2017", size = 28317, upload-time = "2025-09-01T09:48:08.5Z" },
+]
+
+[[package]]
+name = "export-results"
+version = "0.1.0"
+source = { virtual = "export-results" }
+dependencies = [
+    { name = "boto3" },
+    { name = "duckdb" },
+    { name = "pandas" },
+    { name = "prune-codes" },
+    { name = "pyarrow" },
+    { name = "s3fs" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "boto3", specifier = ">=1.35" },
+    { name = "duckdb", specifier = ">=1.4.4" },
+    { name = "pandas", specifier = ">=2.2" },
+    { name = "prune-codes", editable = "prune-codes" },
+    { name = "pyarrow", specifier = ">=16" },
+    { name = "s3fs", specifier = ">=2024" },
 ]
 
 [[package]]
@@ -3738,9 +3615,9 @@ wheels = [
 ]
 
 [[package]]
-name = "prune"
+name = "prune-codes"
 version = "0.1.0"
-source = { editable = "prune" }
+source = { editable = "prune-codes" }
 dependencies = [
     { name = "duckdb" },
     { name = "pandas" },
@@ -4179,6 +4056,138 @@ wheels = [
 ]
 
 [[package]]
+name = "rag-annotations"
+version = "0.1.0"
+source = { editable = "rag-annotations" }
+dependencies = [
+    { name = "duckdb" },
+    { name = "langfuse" },
+    { name = "mlflow" },
+    { name = "numpy" },
+    { name = "openai" },
+    { name = "pandas" },
+    { name = "pydantic" },
+    { name = "qdrant-client" },
+    { name = "s3fs" },
+    { name = "tenacity" },
+    { name = "tqdm" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "duckdb", specifier = ">=1.4.3" },
+    { name = "langfuse", specifier = ">=3.11.1" },
+    { name = "mlflow", specifier = ">=3.8.1" },
+    { name = "numpy", specifier = ">=2.0.0" },
+    { name = "openai", specifier = ">=2.14.0" },
+    { name = "pandas", specifier = ">=2.3.3" },
+    { name = "pydantic", specifier = ">=2.12.5" },
+    { name = "qdrant-client", specifier = ">=1.16.2" },
+    { name = "s3fs", specifier = ">=2025.12.0" },
+    { name = "tenacity", specifier = ">=9.1.4" },
+    { name = "tqdm", specifier = ">=4.67.1" },
+]
+
+[package.metadata.requires-dev]
+dev = [{ name = "pytest", specifier = ">=9.0.2" }]
+
+[[package]]
+name = "rag-notices"
+version = "0.1.0"
+source = { editable = "rag-notices" }
+dependencies = [
+    { name = "duckdb" },
+    { name = "langfuse" },
+    { name = "mlflow" },
+    { name = "openai" },
+    { name = "pandas" },
+    { name = "pydantic" },
+    { name = "qdrant-client" },
+    { name = "s3fs" },
+    { name = "tenacity" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "duckdb", specifier = ">=1.4.3" },
+    { name = "langfuse", specifier = ">=3.11.1" },
+    { name = "mlflow", specifier = ">=3.8.1" },
+    { name = "openai", specifier = ">=2.14.0" },
+    { name = "pandas", specifier = ">=2.3.3" },
+    { name = "pydantic", specifier = ">=2.12.5" },
+    { name = "qdrant-client", specifier = ">=1.16.2" },
+    { name = "s3fs", specifier = ">=2025.12.0" },
+    { name = "tenacity", specifier = ">=9.1.4" },
+]
+
+[package.metadata.requires-dev]
+dev = [{ name = "pytest", specifier = ">=9.0.2" }]
+
+[[package]]
+name = "reconcile-llm"
+version = "0.1.0"
+source = { editable = "reconcile-llm" }
+dependencies = [
+    { name = "duckdb" },
+    { name = "openai" },
+    { name = "pandas" },
+    { name = "prune-codes" },
+    { name = "pyarrow" },
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "duckdb", specifier = ">=1.4.4" },
+    { name = "openai", specifier = ">=2.16.0" },
+    { name = "pandas", specifier = ">=2.2" },
+    { name = "prune-codes", editable = "prune-codes" },
+    { name = "pyarrow", specifier = ">=16" },
+    { name = "pydantic", specifier = ">=2.9" },
+]
+
+[[package]]
+name = "reconcile-sirus"
+version = "0.1.0"
+source = { virtual = "reconcile-sirus" }
+dependencies = [
+    { name = "duckdb" },
+    { name = "mlflow" },
+    { name = "numpy" },
+    { name = "pandas" },
+    { name = "pyarrow" },
+    { name = "reconcile-llm" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "duckdb", specifier = ">=1.4.4" },
+    { name = "mlflow", specifier = ">=3.9.0" },
+    { name = "numpy", specifier = ">=2" },
+    { name = "pandas", specifier = ">=2.2" },
+    { name = "pyarrow", specifier = ">=16" },
+    { name = "reconcile-llm", editable = "reconcile-llm" },
+]
+
+[package.metadata.requires-dev]
+dev = [{ name = "pytest", specifier = ">=9.0.2" }]
+
+[[package]]
 name = "referencing"
 version = "0.37.0"
 source = { registry = "https://pypi.org/simple" }
@@ -4280,25 +4289,47 @@ wheels = [
 ]
 
 [[package]]
-name = "regex-codif"
+name = "report"
 version = "0.1.0"
-source = { virtual = "regex-codif" }
+source = { virtual = "report" }
 dependencies = [
+    { name = "boto3" },
     { name = "duckdb" },
+    { name = "ipykernel" },
+    { name = "jupyter" },
+    { name = "matplotlib" },
+    { name = "mlflow" },
+    { name = "nbformat" },
     { name = "pandas" },
+    { name = "prune-codes" },
     { name = "pyarrow" },
-    { name = "pyyaml" },
-    { name = "s3fs" },
+    { name = "seaborn" },
+    { name = "tabulate" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "ruff" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "duckdb", specifier = ">=1.5.1" },
-    { name = "pandas", specifier = ">=2.3" },
-    { name = "pyarrow", specifier = ">=23.0.1" },
-    { name = "pyyaml", specifier = ">=6.0.3" },
-    { name = "s3fs", specifier = ">=2026.3.0" },
+    { name = "boto3", specifier = ">=1.35" },
+    { name = "duckdb", specifier = ">=1.4.4" },
+    { name = "ipykernel", specifier = ">=6.29" },
+    { name = "jupyter", specifier = ">=1.1" },
+    { name = "matplotlib", specifier = ">=3.9" },
+    { name = "mlflow", specifier = ">=3.9.0" },
+    { name = "nbformat", specifier = ">=5.10" },
+    { name = "pandas", specifier = ">=2.2" },
+    { name = "prune-codes", editable = "prune-codes" },
+    { name = "pyarrow", specifier = ">=16" },
+    { name = "seaborn", specifier = ">=0.13" },
+    { name = "tabulate", specifier = ">=0.9" },
 ]
+
+[package.metadata.requires-dev]
+dev = [{ name = "ruff", specifier = ">=0.6" }]
 
 [[package]]
 name = "requests"
@@ -4663,37 +4694,6 @@ sdist = { url = "https://files.pythonhosted.org/packages/58/15/8b3609fd3830ef7b2
 wheels = [
     { url = "https://files.pythonhosted.org/packages/e0/f9/0595336914c5619e5f28a1fb793285925a8cd4b432c9da0a987836c7f822/shellingham-1.5.4-py2.py3-none-any.whl", hash = "sha256:7ecfff8f2fd72616f7481040475a65b2bf8af90a56c89140852d1120324e8686", size = 9755, upload-time = "2023-10-24T04:13:38.866Z" },
 ]
-
-[[package]]
-name = "sirus-coicop"
-version = "0.1.0"
-source = { virtual = "sirus" }
-dependencies = [
-    { name = "decide-coicop" },
-    { name = "duckdb" },
-    { name = "mlflow" },
-    { name = "numpy" },
-    { name = "pandas" },
-    { name = "pyarrow" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "pytest" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "decide-coicop", editable = "decide-coicop" },
-    { name = "duckdb", specifier = ">=1.4.4" },
-    { name = "mlflow", specifier = ">=3.9.0" },
-    { name = "numpy", specifier = ">=2" },
-    { name = "pandas", specifier = ">=2.2" },
-    { name = "pyarrow", specifier = ">=16" },
-]
-
-[package.metadata.requires-dev]
-dev = [{ name = "pytest", specifier = ">=9.0.2" }]
 
 [[package]]
 name = "six"

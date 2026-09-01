@@ -40,9 +40,9 @@ spec:
         value: ""
       - name: sample-observations
         value: ""
-      - name: model-name
+      - name: classify-rag-model
         value: "gemma4-26b-moe"
-      - name: skip-vector-db
+      - name: skip-index
         value: "true"
       - name: run_id
         value: "{{workflow.name}}"
@@ -50,11 +50,11 @@ spec:
         value:
           "{{workflow.creationTimestamp.Y}}-{{workflow.creationTimestamp.m}}-{{wor\
           kflow.creationTimestamp.d}}"
-      - name: decide-model
+      - name: reconcile-llm-model
         value: "gemma4-26b-moe"
-      - name: decide-concurrency
+      - name: reconcile-llm-concurrency
         value: "5"
-      - name: ttc-model-uri
+      - name: classify-ttc-model-uri
         value: "mlflow-artifacts:/10/cacf2603514b4887bbfb77e2654c9bc1/artifacts/model"
       - name: skip-report
         value: "false"
@@ -62,41 +62,45 @@ spec:
         value: "codif-coicop-eval"
 
       # --- Conciliation : EXCLUSIVE ------------------------------------------
-      # `llm`   → decide-coicop (juge LLM), comportement historique
-      # `sirus` → sirus-predict (re-ranking par règles interprétables)
-      # L'étape non retenue est skippée ; final-output et report dépendent des
+      # `llm`   → reconcile-llm (juge LLM), comportement historique
+      # `sirus` → reconcile-sirus (re-ranking par règles interprétables)
+      # L'étape non retenue est skippée ; export-results et report dépendent des
       # deux et tolèrent qu'une soit Skipped. Les deux ne tournent jamais
       # ensemble, par choix : un seul code final par produit, sans ambiguïté.
-      - name: conciliation
+      - name: reconciliation
         value: llm
         enum: [llm, sirus]
 
-      # Modèle SIRUS chargé par sirus-predict. Obligatoire quand
-      # conciliation: sirus. L'entraînement se fait HORS pipeline
-      # (`sirus/train.sh`, cf. sirus/README.md) et logue le modèle dans MLflow ;
-      # on recopie ici l'URI qu'il affiche — même pratique que ttc-model-uri.
-      - name: sirus-model-uri
+      # Modèle SIRUS chargé par reconcile-sirus. Obligatoire quand
+      # reconciliation: sirus. L'entraînement se fait HORS pipeline
+      # (`reconcile-sirus/train.sh`, cf. reconcile-sirus/README.md) et logue le modèle dans MLflow ;
+      # on recopie ici l'URI qu'il affiche — même pratique que classify-ttc-model-uri.
+      - name: reconcile-sirus-model-uri
         value: ""
 
   templates:
     # -----------------------------------------------------------------------
     # Main pipeline: DAG with parallelism
     #
-    # 4 classifieurs tournent en parallèle puis sont conciliés par decide-coicop.
-    # L'étape `prune` (post codif-regex) produit TOUS les artefacts prunés
+    # Les 4 classifieurs tournent en parallèle, puis une conciliation tranche.
+    # `prune-codes` (post classify-regex) produit TOUS les artefacts prunés
     # (nomenclature, mapping, annotations train/test, suggester) ; l'aval ne fait que lire.
+    # Les 2 `index-*` sont skippables (paramètre skip-index).
     #
-    #                                       ┌──→ create-vector-db ──────────────→ run-rag ──────────────┐  (les 2 vector DB
-    #                    ┌──→ prune ────────┤                                                           │   sont skippables :
-    #   preprocessing ──┤                   └──→ create-vector-db-annotations ──→ run-rag-annotations ──┤   skip-vector-db)
-    #                    └──→ codif-regex ──┼──→ codif-lcs ──────────────────────────────────────────────┼──→ decide-coicop ──→ final-output
-    #                          (→ prune)    └──→ run-ttc ───────────────────────────────────────────────┘          └──→ report  (opt-in)
+    #   build-datasets ──→ classify-regex ─┬─→ classify-lcs ─────────────────────────────────────────────────────┐
+    #                       (→ prune-codes)├─→ classify-ttc ─────────────────────────────────────────────────────┤
+    #                                      └─→ prune-codes ─┬─→ index-notices ─────→ classify-rag-notices ───────┤
+    #                                                        └─→ index-annotations ─→ classify-rag-annotations ──┘
+    #                                                                                                            │
+    #                                                       ┌────────────────────────────────────────────────────┘
+    #                                                       └─→ reconcile-llm  OU  reconcile-sirus   (exclusifs : paramètre conciliation)
+    #                                                               └─→ export-results ─→ report  (opt-in)
     # -----------------------------------------------------------------------
     - name: pipeline
       dag:
         tasks:
-          - name: preprocessing
-            template: preprocessing
+          - name: build-datasets
+            template: build-datasets
             arguments:
               parameters:
                 - name: run_id
@@ -116,9 +120,9 @@ spec:
                 - name: source_column
                   value: "{{workflow.parameters.source_column}}"
 
-          - name: codif-regex
-            dependencies: [preprocessing]
-            template: codif-regex
+          - name: classify-regex
+            dependencies: [build-datasets]
+            template: classify-regex
             arguments:
               parameters:
                 - name: run_id
@@ -128,9 +132,9 @@ spec:
 
           # Étape unifiée : produit tous les artefacts prunés (nomenclature, mapping,
           # annotations train/test, suggester). Non gated : nécessaire même sans vector DB.
-          - name: prune
-            dependencies: [codif-regex]
-            template: prune
+          - name: prune-codes
+            dependencies: [classify-regex]
+            template: prune-codes
             arguments:
               parameters:
                 - name: run_id
@@ -138,9 +142,9 @@ spec:
                 - name: run_date
                   value: "{{workflow.parameters.run_date}}"
 
-          - name: codif-lcs
-            dependencies: [codif-regex]
-            template: codif-lcs
+          - name: classify-lcs
+            dependencies: [classify-regex]
+            template: classify-lcs
             arguments:
               parameters:
                 - name: run_id
@@ -148,10 +152,10 @@ spec:
                 - name: run_date
                   value: "{{workflow.parameters.run_date}}"
 
-          - name: create-vector-db
-            dependencies: [prune]
-            template: create-vector-db
-            when: '"{{workflow.parameters.skip-vector-db}}" != "true"'
+          - name: index-notices
+            dependencies: [prune-codes]
+            template: index-notices
+            when: '"{{workflow.parameters.skip-index}}" != "true"'
             arguments:
               parameters:
                 - name: run_id
@@ -159,10 +163,10 @@ spec:
                 - name: run_date
                   value: "{{workflow.parameters.run_date}}"
 
-          - name: create-vector-db-annotations
-            dependencies: [prune]
-            template: create-vector-db-annotations
-            when: '"{{workflow.parameters.skip-vector-db}}" != "true"'
+          - name: index-annotations
+            dependencies: [prune-codes]
+            template: index-annotations
+            when: '"{{workflow.parameters.skip-index}}" != "true"'
             arguments:
               parameters:
                 - name: run_id
@@ -170,25 +174,25 @@ spec:
                 - name: run_date
                   value: "{{workflow.parameters.run_date}}"
 
-          - name: run-rag
-            dependencies: [create-vector-db, prune]
-            template: run-rag
+          - name: classify-rag-notices
+            dependencies: [index-notices, prune-codes]
+            template: classify-rag-notices
             arguments:
               parameters:
-                - name: model-name
-                  value: "{{workflow.parameters.model-name}}"
+                - name: classify-rag-model
+                  value: "{{workflow.parameters.classify-rag-model}}"
                 - name: run_id
                   value: "{{workflow.parameters.run_id}}"
                 - name: run_date
                   value: "{{workflow.parameters.run_date}}"
 
-          - name: run-rag-annotations
-            dependencies: [create-vector-db-annotations, prune]
-            template: run-rag-annotations
+          - name: classify-rag-annotations
+            dependencies: [index-annotations, prune-codes]
+            template: classify-rag-annotations
             arguments:
               parameters:
-                - name: model-name
-                  value: "{{workflow.parameters.model-name}}"
+                - name: classify-rag-model
+                  value: "{{workflow.parameters.classify-rag-model}}"
                 - name: sample-annotations
                   value: "{{workflow.parameters.sample-annotations}}"
                 - name: run_id
@@ -196,73 +200,73 @@ spec:
                 - name: run_date
                   value: "{{workflow.parameters.run_date}}"
 
-          - name: run-ttc
-            dependencies: [codif-regex]
-            template: run-ttc
+          - name: classify-ttc
+            dependencies: [classify-regex]
+            template: classify-ttc
             arguments:
               parameters:
                 - name: run_id
                   value: "{{workflow.parameters.run_id}}"
                 - name: run_date
                   value: "{{workflow.parameters.run_date}}"
-                - name: ttc-model-uri
-                  value: "{{workflow.parameters.ttc-model-uri}}"
+                - name: classify-ttc-model-uri
+                  value: "{{workflow.parameters.classify-ttc-model-uri}}"
 
           # Conciliation, variante 1 : le juge LLM. Skippée quand
-          # conciliation=sirus. Testée sur `!= "sirus"` et non `== "llm"` :
+          # reconciliation=sirus. Testée sur `!= "sirus"` et non `== "llm"` :
           # si `enum` n'était pas honoré et qu'on soumettait une valeur
           # inattendue, on dégrade vers le comportement historique (LLM seul)
-          # plutôt que vers « aucune des deux », qui laisserait final-output
+          # plutôt que vers « aucune des deux », qui laisserait export-results
           # lire un parquet inexistant.
-          - name: decide-coicop
-            dependencies: [codif-lcs, run-rag, run-rag-annotations, run-ttc]
-            template: decide-coicop
-            when: '"{{workflow.parameters.conciliation}}" != "sirus"'
+          - name: reconcile-llm
+            dependencies: [classify-lcs, classify-rag-notices, classify-rag-annotations, classify-ttc]
+            template: reconcile-llm
+            when: '"{{workflow.parameters.reconciliation}}" != "sirus"'
             arguments:
               parameters:
-                - name: model
-                  value: "{{workflow.parameters.decide-model}}"
-                - name: concurrency
-                  value: "{{workflow.parameters.decide-concurrency}}"
+                - name: reconcile-llm-model
+                  value: "{{workflow.parameters.reconcile-llm-model}}"
+                - name: reconcile-llm-concurrency
+                  value: "{{workflow.parameters.reconcile-llm-concurrency}}"
                 - name: run_id
                   value: "{{workflow.parameters.run_id}}"
                 - name: run_date
                   value: "{{workflow.parameters.run_date}}"
 
-          # Conciliation, variante 2 : les règles SIRUS. `prune` est dans les
-          # dépendances parce que l'étape lit prune/mapping_lvl4.parquet.
+          # Conciliation, variante 2 : les règles SIRUS. `prune-codes` est dans les
+          # dépendances parce que l'étape lit prune-codes/mapping_lvl4.parquet.
           # Le modèle vient de MLflow, jamais du run courant : l'entraînement
           # est hors pipeline, donc prédire sur ses propres données
           # d'entraînement est impossible par construction.
-          - name: sirus-predict
-            dependencies: [codif-lcs, run-rag, run-rag-annotations, run-ttc, prune]
-            template: sirus-predict
-            when: '"{{workflow.parameters.conciliation}}" == "sirus"'
+          - name: reconcile-sirus
+            dependencies: [classify-lcs, classify-rag-notices, classify-rag-annotations, classify-ttc, prune-codes]
+            template: reconcile-sirus
+            when: '"{{workflow.parameters.reconciliation}}" == "sirus"'
             arguments:
               parameters:
                 - name: run_id
                   value: "{{workflow.parameters.run_id}}"
                 - name: run_date
                   value: "{{workflow.parameters.run_date}}"
-                - name: sirus-model-uri
-                  value: "{{workflow.parameters.sirus-model-uri}}"
+                - name: reconcile-sirus-model-uri
+                  value: "{{workflow.parameters.reconcile-sirus-model-uri}}"
 
           # Dépend des DEUX conciliations : la forme historique `dependencies:`
           # se développe en `Succeeded || Skipped || Daemoned`, donc l'étape
-          # skippée satisfait sa clause. Même mécanisme que create-vector-db →
-          # run-rag. Ne pas passer à `depends:` : le dépôt n'en utilise nulle
+          # skippée satisfait sa clause. Même mécanisme que index-notices →
+          # classify-rag-notices. Ne pas passer à `depends:` : le dépôt n'en utilise nulle
           # part et mélanger les deux formes est un piège de maintenance.
-          - name: final-output
-            dependencies: [decide-coicop, sirus-predict]
-            template: final-output
+          - name: export-results
+            dependencies: [reconcile-llm, reconcile-sirus]
+            template: export-results
             arguments:
               parameters:
                 - name: run_id
                   value: "{{workflow.parameters.run_id}}"
                 - name: run_date
                   value: "{{workflow.parameters.run_date}}"
-                - name: conciliation
-                  value: "{{workflow.parameters.conciliation}}"
+                - name: reconciliation
+                  value: "{{workflow.parameters.reconciliation}}"
                 - name: text_column
                   value: "{{workflow.parameters.text_column}}"
                 - name: shop_column
@@ -273,7 +277,7 @@ spec:
                   value: "{{workflow.parameters.annee_column}}"
 
           - name: report
-            dependencies: [preprocessing, codif-regex, codif-lcs, run-rag, run-rag-annotations, run-ttc, decide-coicop, sirus-predict, final-output]
+            dependencies: [build-datasets, classify-regex, classify-lcs, classify-rag-notices, classify-rag-annotations, classify-ttc, reconcile-llm, reconcile-sirus, export-results]
             template: report
             when: '"{{workflow.parameters.skip-report}}" != "true"'
             arguments:
@@ -282,41 +286,41 @@ spec:
                   value: "{{workflow.parameters.run_id}}"
                 - name: run_date
                   value: "{{workflow.parameters.run_date}}"
-                - name: conciliation
-                  value: "{{workflow.parameters.conciliation}}"
-                - name: sirus-model-uri
-                  value: "{{workflow.parameters.sirus-model-uri}}"
+                - name: reconciliation
+                  value: "{{workflow.parameters.reconciliation}}"
+                - name: reconcile-sirus-model-uri
+                  value: "{{workflow.parameters.reconcile-sirus-model-uri}}"
                 - name: input_file
                   value: "{{workflow.parameters.input_file}}"
-                - name: experiment-name
+                - name: report-experiment
                   value: "{{workflow.parameters.report-experiment}}"
-                - name: model-name
-                  value: "{{workflow.parameters.model-name}}"
-                - name: decide-model
-                  value: "{{workflow.parameters.decide-model}}"
-                - name: decide-concurrency
-                  value: "{{workflow.parameters.decide-concurrency}}"
-                - name: ttc-model-uri
-                  value: "{{workflow.parameters.ttc-model-uri}}"
-                - name: skip-vector-db
-                  value: "{{workflow.parameters.skip-vector-db}}"
+                - name: classify-rag-model
+                  value: "{{workflow.parameters.classify-rag-model}}"
+                - name: reconcile-llm-model
+                  value: "{{workflow.parameters.reconcile-llm-model}}"
+                - name: reconcile-llm-concurrency
+                  value: "{{workflow.parameters.reconcile-llm-concurrency}}"
+                - name: classify-ttc-model-uri
+                  value: "{{workflow.parameters.classify-ttc-model-uri}}"
+                - name: skip-index
+                  value: "{{workflow.parameters.skip-index}}"
                 - name: skip-report
                   value: "{{workflow.parameters.skip-report}}"
                 - name: step-timings
                   value: |
-                    {"preprocessing":["{{tasks.preprocessing.startedAt}}","{{tasks.preprocessing.finishedAt}}"],
-                     "codif-regex":["{{tasks.codif-regex.startedAt}}","{{tasks.codif-regex.finishedAt}}"],
-                     "codif-lcs":["{{tasks.codif-lcs.startedAt}}","{{tasks.codif-lcs.finishedAt}}"],
-                     "run-rag":["{{tasks.run-rag.startedAt}}","{{tasks.run-rag.finishedAt}}"],
-                     "run-rag-annotations":["{{tasks.run-rag-annotations.startedAt}}","{{tasks.run-rag-annotations.finishedAt}}"],
-                     "run-ttc":["{{tasks.run-ttc.startedAt}}","{{tasks.run-ttc.finishedAt}}"],
-                     "decide-coicop":["{{tasks.decide-coicop.startedAt}}","{{tasks.decide-coicop.finishedAt}}"],
-                     "sirus-predict":["{{tasks.sirus-predict.startedAt}}","{{tasks.sirus-predict.finishedAt}}"]}
+                    {"build-datasets":["{{tasks.build-datasets.startedAt}}","{{tasks.build-datasets.finishedAt}}"],
+                     "classify-regex":["{{tasks.classify-regex.startedAt}}","{{tasks.classify-regex.finishedAt}}"],
+                     "classify-lcs":["{{tasks.classify-lcs.startedAt}}","{{tasks.classify-lcs.finishedAt}}"],
+                     "classify-rag-notices":["{{tasks.classify-rag-notices.startedAt}}","{{tasks.classify-rag-notices.finishedAt}}"],
+                     "classify-rag-annotations":["{{tasks.classify-rag-annotations.startedAt}}","{{tasks.classify-rag-annotations.finishedAt}}"],
+                     "classify-ttc":["{{tasks.classify-ttc.startedAt}}","{{tasks.classify-ttc.finishedAt}}"],
+                     "reconcile-llm":["{{tasks.reconcile-llm.startedAt}}","{{tasks.reconcile-llm.finishedAt}}"],
+                     "reconcile-sirus":["{{tasks.reconcile-sirus.startedAt}}","{{tasks.reconcile-sirus.finishedAt}}"]}
 
     # -----------------------------------------------------------------------
     # Step 0: Preprocessing — construction du dataset
     # -----------------------------------------------------------------------
-    - name: preprocessing
+    - name: build-datasets
       inputs:
         parameters:
           - name: run_id
@@ -333,7 +337,7 @@ spec:
         args:
           - |
             set -e
-            git clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/preprocessing
+            git clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/build-datasets
             uv sync --locked --no-dev
             ARGS="--run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}"
             # input_file vide => mode évaluation : ne pas passer --input-file ni les colonnes (sens uniquement en prédiction)
@@ -382,7 +386,7 @@ spec:
     # -----------------------------------------------------------------------
     # Step 0b: Codification par regex
     # -----------------------------------------------------------------------
-    - name: codif-regex
+    - name: classify-regex
       inputs:
         parameters:
           - name: run_id
@@ -393,7 +397,7 @@ spec:
         args:
           - |
             set -e
-            git clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/regex-codif
+            git clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/classify-regex
             uv sync --locked --no-dev
             ARGS="--run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}"
             # input_file non vide => mode production (train=annotations_full, test=observations)
@@ -441,7 +445,7 @@ spec:
     # -----------------------------------------------------------------------
     # Step 0c: Codification par LCS
     # -----------------------------------------------------------------------
-    - name: codif-lcs
+    - name: classify-lcs
       inputs:
         parameters:
           - name: run_id
@@ -452,8 +456,8 @@ spec:
         args:
           - |
             set -e
-            git clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/stats-annotations
-            # Échantillonnage centralisé en amont (codif-regex) → pas de sampling ici.
+            git clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/classify-lcs
+            # Échantillonnage centralisé en amont (classify-regex) → pas de sampling ici.
             ARGS="--run-id={{inputs.parameters.run_id}} --run-date={{inputs.parameters.run_date}}"
             Rscript R/main.R $ARGS
         env:
@@ -493,7 +497,7 @@ spec:
     # -----------------------------------------------------------------------
     # Step 1: Pruning unifié — nomenclature + mapping + annotations train/test + suggester
     # -----------------------------------------------------------------------
-    - name: prune
+    - name: prune-codes
       inputs:
         parameters:
           - name: config
@@ -506,7 +510,7 @@ spec:
         args:
           - |
             set -e
-            git clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/prune
+            git clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/prune-codes
             uv sync --locked --no-dev
             uv run --locked --no-dev scripts/main.py --config {{inputs.parameters.config}} --run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}
         env:
@@ -541,7 +545,7 @@ spec:
     # -----------------------------------------------------------------------
     # Step 2b: Create vector database
     # -----------------------------------------------------------------------
-    - name: create-vector-db
+    - name: index-notices
       inputs:
         parameters:
           - name: config
@@ -554,7 +558,7 @@ spec:
         args:
           - |
             set -e
-            git clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/coicop-rag
+            git clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/rag-notices
             uv run --locked --no-dev scripts/0_create_vector_db.py --config {{inputs.parameters.config}} --run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}
         env:
           - name: AWS_ACCESS_KEY_ID
@@ -613,12 +617,12 @@ spec:
     # -----------------------------------------------------------------------
     # Step 3: Run RAG pipeline
     # -----------------------------------------------------------------------
-    - name: run-rag
+    - name: classify-rag-notices
       inputs:
         parameters:
           - name: config
             value: config/config.yaml
-          - name: model-name
+          - name: classify-rag-model
           - name: run_id
           - name: run_date
       container:
@@ -627,14 +631,14 @@ spec:
         args:
           - |
             set -e
-            git clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/coicop-rag
+            git clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/rag-notices
             mkdir -p logs prompts
 
             ARGS="--config {{inputs.parameters.config}} --run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}"
 
-            # Échantillonnage centralisé en amont (codif-regex) → pas de sampling ici.
-            if [ -n "{{inputs.parameters.model-name}}" ]; then
-              ARGS="$ARGS --model_name {{inputs.parameters.model-name}}"
+            # Échantillonnage centralisé en amont (classify-regex) → pas de sampling ici.
+            if [ -n "{{inputs.parameters.classify-rag-model}}" ]; then
+              ARGS="$ARGS --model_name {{inputs.parameters.classify-rag-model}}"
             fi
 
             uv run --locked --no-dev scripts/2_run_rag.py $ARGS
@@ -725,7 +729,7 @@ spec:
     # -----------------------------------------------------------------------
     # Step 2bis: Build the annotation vector DB (RAG on annotated examples)
     # -----------------------------------------------------------------------
-    - name: create-vector-db-annotations
+    - name: index-annotations
       inputs:
         parameters:
           - name: config
@@ -738,7 +742,7 @@ spec:
         args:
           - |
             set -e
-            git clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/coicop-rag-annotations
+            git clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/rag-annotations
             # input_file vide => évaluation (skip-eval=false) ; non vide => production (skip-eval=true)
             SKIP_EVAL=true
             [ -z "{{workflow.parameters.input_file}}" ] && SKIP_EVAL=false
@@ -803,12 +807,12 @@ spec:
     # -----------------------------------------------------------------------
     # Step 3bis: Run the annotation-RAG (production mode — predictions only)
     # -----------------------------------------------------------------------
-    - name: run-rag-annotations
+    - name: classify-rag-annotations
       inputs:
         parameters:
           - name: config
             value: config/config.yaml
-          - name: model-name
+          - name: classify-rag-model
           - name: sample-annotations
           - name: run_id
           - name: run_date
@@ -818,7 +822,7 @@ spec:
         args:
           - |
             set -e
-            git clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/coicop-rag-annotations
+            git clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/rag-annotations
             mkdir -p logs
 
             ARGS="--config {{inputs.parameters.config}} --run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}"
@@ -829,9 +833,9 @@ spec:
             [ -z "{{workflow.parameters.input_file}}" ] && SKIP_EVAL=false
             ARGS="$ARGS --skip-eval $SKIP_EVAL"
 
-            # Échantillonnage centralisé en amont (codif-regex) → pas de sampling ici.
-            if [ -n "{{inputs.parameters.model-name}}" ]; then
-              ARGS="$ARGS --model_name {{inputs.parameters.model-name}}"
+            # Échantillonnage centralisé en amont (classify-regex) → pas de sampling ici.
+            if [ -n "{{inputs.parameters.classify-rag-model}}" ]; then
+              ARGS="$ARGS --model_name {{inputs.parameters.classify-rag-model}}"
             fi
             # sample-annotations non vide → collection Qdrant de test (suffix _test).
             [ -n "{{inputs.parameters.sample-annotations}}" ] && ARGS="$ARGS --sample-annotations {{inputs.parameters.sample-annotations}}"
@@ -924,27 +928,27 @@ spec:
     # -----------------------------------------------------------------------
     # Step 4: Run TTC predictions
     # -----------------------------------------------------------------------
-    - name: run-ttc
+    - name: classify-ttc
       inputs:
         parameters:
           - name: run_id
           - name: run_date
-          - name: ttc-model-uri
+          - name: classify-ttc-model-uri
       container:
         image: inseefrlab/onyxia-vscode-python:py3.13.12
         command: [ sh, -c ]
         args:
           - |
             set -e
-            git clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/codif-ttc
+            git clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/classify-ttc
             uv sync --locked --no-dev
 
             RUN_ROOT="s3://projet-budget-famille/data/workflow_runs/{{inputs.parameters.run_date}}/{{inputs.parameters.run_id}}"
-            # Échantillonnage centralisé en amont (codif-regex) → pas de sampling ici.
+            # Échantillonnage centralisé en amont (classify-regex) → pas de sampling ici.
             uv run --locked --no-dev main.py predict-basic \
-              --model "{{inputs.parameters.ttc-model-uri}}" \
-              --file "$RUN_ROOT/codif-regex/raw_test_without_regex.parquet" \
-              --output "$RUN_ROOT/run-ttc/predictions.parquet" \
+              --model "{{inputs.parameters.classify-ttc-model-uri}}" \
+              --file "$RUN_ROOT/classify-regex/raw_test_without_regex.parquet" \
+              --output "$RUN_ROOT/classify-ttc/predictions.parquet" \
               --text-column l_pr_product \
               --top-k 10
         env:
@@ -991,11 +995,11 @@ spec:
     # -----------------------------------------------------------------------
     # Step 5: LLM-as-judge reconciliation of LCS / RAG / TTC predictions
     # -----------------------------------------------------------------------
-    - name: decide-coicop
+    - name: reconcile-llm
       inputs:
         parameters:
-          - name: model
-          - name: concurrency
+          - name: reconcile-llm-model
+          - name: reconcile-llm-concurrency
           - name: run_id
           - name: run_date
       container:
@@ -1004,27 +1008,27 @@ spec:
         args:
           - |
             set -e
-            git clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/decide-coicop
+            git clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/reconcile-llm
             uv sync --locked --no-dev
 
             RUN_ROOT="s3://projet-budget-famille/data/workflow_runs/{{inputs.parameters.run_date}}/{{inputs.parameters.run_id}}"
             # Colonnes utilisateur : observations en production, split test des annotations en évaluation.
-            EXTRA_COLUMNS_FILE="$RUN_ROOT/preprocessing/raw_test.parquet"
-            [ -n "{{workflow.parameters.input_file}}" ] && EXTRA_COLUMNS_FILE="$RUN_ROOT/preprocessing/observations.parquet"
-            ARGS="--lcs-file $RUN_ROOT/codif-lcs/raw_test_LCS.parquet \
-                  --rag-file $RUN_ROOT/run-rag/predictions.parquet \
-                  --rag-annotations-file $RUN_ROOT/rag-annotation/predictions.parquet \
-                  --ttc-file $RUN_ROOT/run-ttc/predictions.parquet \
-                  --mapping-file $RUN_ROOT/prune/mapping_lvl4.parquet \
-                  --output-file $RUN_ROOT/decide-coicop/predictions.parquet \
+            EXTRA_COLUMNS_FILE="$RUN_ROOT/build-datasets/raw_test.parquet"
+            [ -n "{{workflow.parameters.input_file}}" ] && EXTRA_COLUMNS_FILE="$RUN_ROOT/build-datasets/observations.parquet"
+            ARGS="--lcs-file $RUN_ROOT/classify-lcs/raw_test_LCS.parquet \
+                  --rag-file $RUN_ROOT/classify-rag-notices/predictions.parquet \
+                  --rag-annotations-file $RUN_ROOT/classify-rag-annotations/predictions.parquet \
+                  --ttc-file $RUN_ROOT/classify-ttc/predictions.parquet \
+                  --mapping-file $RUN_ROOT/prune-codes/mapping_lvl4.parquet \
+                  --output-file $RUN_ROOT/reconcile-llm/predictions.parquet \
                   --extra-columns-file $EXTRA_COLUMNS_FILE \
-                  --concurrency {{inputs.parameters.concurrency}}"
+                  --concurrency {{inputs.parameters.reconcile-llm-concurrency}}"
 
-            if [ -n "{{inputs.parameters.model}}" ]; then
-              ARGS="$ARGS --model {{inputs.parameters.model}}"
+            if [ -n "{{inputs.parameters.reconcile-llm-model}}" ]; then
+              ARGS="$ARGS --model {{inputs.parameters.reconcile-llm-model}}"
             fi
 
-            uv run --locked --no-dev main.py decide-coicop $ARGS
+            uv run --locked --no-dev main.py reconcile-llm $ARGS
         env:
           - name: LLMLAB_API_KEY
             valueFrom:
@@ -1075,44 +1079,44 @@ spec:
     # Python pur : le modèle est une liste de règles en JSON, et le scoring une
     # moyenne. Aucune étape du pipeline n'installe ni ne compile le paquet R
     # `sirus` — seul l'entraînement en a besoin, et il se fait hors pipeline
-    # (`sirus/train.sh`, cf. sirus/README.md).
+    # (`reconcile-sirus/train.sh`, cf. reconcile-sirus/README.md).
     # -----------------------------------------------------------------------
-    - name: sirus-predict
+    - name: reconcile-sirus
       inputs:
         parameters:
           - name: run_id
           - name: run_date
-          - name: sirus-model-uri
+          - name: reconcile-sirus-model-uri
       container:
         image: inseefrlab/onyxia-vscode-python:py3.13.12
         command: [sh, -c]
         args:
           - |
             set -e
-            git clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/sirus
+            git clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/reconcile-sirus
             uv sync --locked --no-dev
 
             RUN_ROOT="s3://projet-budget-famille/data/workflow_runs/{{inputs.parameters.run_date}}/{{inputs.parameters.run_id}}"
             # Colonnes utilisateur : observations en production, split test des
-            # annotations en évaluation (même règle que decide-coicop).
-            EXTRA_COLUMNS_FILE="$RUN_ROOT/preprocessing/raw_test.parquet"
-            [ -n "{{workflow.parameters.input_file}}" ] && EXTRA_COLUMNS_FILE="$RUN_ROOT/preprocessing/observations.parquet"
+            # annotations en évaluation (même règle que reconcile-llm).
+            EXTRA_COLUMNS_FILE="$RUN_ROOT/build-datasets/raw_test.parquet"
+            [ -n "{{workflow.parameters.input_file}}" ] && EXTRA_COLUMNS_FILE="$RUN_ROOT/build-datasets/observations.parquet"
 
-            # Attention : le dossier de RAG-annotations est `rag-annotation`
+            # Attention : le dossier de RAG-annotations est `classify-rag-annotations`
             # (singulier), contrairement au nom de l'étape.
-            ARGS="--lcs-file $RUN_ROOT/codif-lcs/raw_test_LCS.parquet \
-                  --rag-file $RUN_ROOT/run-rag/predictions.parquet \
-                  --rag-annotations-file $RUN_ROOT/rag-annotation/predictions.parquet \
-                  --ttc-file $RUN_ROOT/run-ttc/predictions.parquet \
-                  --mapping-file $RUN_ROOT/prune/mapping_lvl4.parquet \
-                  --tocodify-file $RUN_ROOT/codif-regex/raw_test_without_regex.parquet \
+            ARGS="--lcs-file $RUN_ROOT/classify-lcs/raw_test_LCS.parquet \
+                  --rag-file $RUN_ROOT/classify-rag-notices/predictions.parquet \
+                  --rag-annotations-file $RUN_ROOT/classify-rag-annotations/predictions.parquet \
+                  --ttc-file $RUN_ROOT/classify-ttc/predictions.parquet \
+                  --mapping-file $RUN_ROOT/prune-codes/mapping_lvl4.parquet \
+                  --tocodify-file $RUN_ROOT/classify-regex/raw_test_without_regex.parquet \
                   --extra-columns-file $EXTRA_COLUMNS_FILE \
-                  --model-uri {{inputs.parameters.sirus-model-uri}} \
-                  --output-file $RUN_ROOT/sirus-predict/predictions.parquet"
+                  --model-uri {{inputs.parameters.reconcile-sirus-model-uri}} \
+                  --output-file $RUN_ROOT/reconcile-sirus/predictions.parquet"
 
             uv run --locked --no-dev main.py predict $ARGS
         env:
-          # MLFLOW_* : nécessaires pour résoudre sirus-model-uri.
+          # MLFLOW_* : nécessaires pour résoudre reconcile-sirus-model-uri.
           - name: MLFLOW_TRACKING_URI
             valueFrom:
               secretKeyRef:
@@ -1164,12 +1168,12 @@ spec:
     # -----------------------------------------------------------------------
     # Step 6: Final user-facing output (regex + conciliation merged)
     # -----------------------------------------------------------------------
-    - name: final-output
+    - name: export-results
       inputs:
         parameters:
           - name: run_id
           - name: run_date
-          - name: conciliation
+          - name: reconciliation
           - name: text_column
           - name: shop_column
           - name: budget_column
@@ -1180,12 +1184,12 @@ spec:
         args:
           - |
             set -e
-            git clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/final-output
+            git clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/export-results
             uv sync --locked --no-dev
             ARGS="--run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}"
             # Quelle conciliation a produit le code final. Le chemin du parquet
             # en est déduit côté Python : une seule source de vérité.
-            ARGS="$ARGS --decision-source {{inputs.parameters.conciliation}}"
+            ARGS="$ARGS --decision-source {{inputs.parameters.reconciliation}}"
             [ -n "{{inputs.parameters.text_column}}" ]   && ARGS="$ARGS --text-column {{inputs.parameters.text_column}}"
             [ -n "{{inputs.parameters.shop_column}}" ]   && ARGS="$ARGS --shop-column {{inputs.parameters.shop_column}}"
             [ -n "{{inputs.parameters.budget_column}}" ] && ARGS="$ARGS --budget-column {{inputs.parameters.budget_column}}"
@@ -1236,15 +1240,15 @@ spec:
           - name: run_id
           - name: run_date
           - name: input_file
-          - name: experiment-name
-          - name: model-name
-          - name: decide-model
-          - name: decide-concurrency
-          - name: ttc-model-uri
-          - name: skip-vector-db
+          - name: report-experiment
+          - name: classify-rag-model
+          - name: reconcile-llm-model
+          - name: reconcile-llm-concurrency
+          - name: classify-ttc-model-uri
+          - name: skip-index
           - name: skip-report
-          - name: conciliation
-          - name: sirus-model-uri
+          - name: reconciliation
+          - name: reconcile-sirus-model-uri
           - name: step-timings
       container:
         image: inseefrlab/onyxia-vscode-python:py3.13.12
@@ -1256,10 +1260,10 @@ spec:
             uv sync --locked --no-dev
 
             ARGS="--run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}} \
-                  --experiment-name {{inputs.parameters.experiment-name}} \
-                  --decide-model {{inputs.parameters.decide-model}} \
-                  --decide-concurrency {{inputs.parameters.decide-concurrency}} \
-                  --skip-vector-db {{inputs.parameters.skip-vector-db}} \
+                  --experiment-name {{inputs.parameters.report-experiment}} \
+                  --reconcile-llm-model {{inputs.parameters.reconcile-llm-model}} \
+                  --reconcile-llm-concurrency {{inputs.parameters.reconcile-llm-concurrency}} \
+                  --skip-index {{inputs.parameters.skip-index}} \
                   --skip-report {{inputs.parameters.skip-report}}"
 
             [ -n "{{inputs.parameters.input_file}}" ]    && ARGS="$ARGS --input-file {{inputs.parameters.input_file}}"
@@ -1267,11 +1271,11 @@ spec:
             SAMPLE_OBS="{{workflow.parameters.sample-observations}}"
             [ -z "{{workflow.parameters.input_file}}" ] && SAMPLE_OBS="{{workflow.parameters.sample-annotations}}"
             [ -n "$SAMPLE_OBS" ]                         && ARGS="$ARGS --sample-size $SAMPLE_OBS"
-            [ -n "{{inputs.parameters.model-name}}" ]    && ARGS="$ARGS --model-name {{inputs.parameters.model-name}}"
-            [ -n "{{inputs.parameters.ttc-model-uri}}" ] && ARGS="$ARGS --ttc-model-uri {{inputs.parameters.ttc-model-uri}}"
+            [ -n "{{inputs.parameters.classify-rag-model}}" ]    && ARGS="$ARGS --classify-rag-model {{inputs.parameters.classify-rag-model}}"
+            [ -n "{{inputs.parameters.classify-ttc-model-uri}}" ] && ARGS="$ARGS --classify-ttc-model-uri {{inputs.parameters.classify-ttc-model-uri}}"
             # Détermine quel parquet de conciliation le rapport lit.
-            ARGS="$ARGS --conciliation {{inputs.parameters.conciliation}}"
-            [ -n "{{inputs.parameters.sirus-model-uri}}" ] && ARGS="$ARGS --sirus-model-uri {{inputs.parameters.sirus-model-uri}}"
+            ARGS="$ARGS --reconciliation {{inputs.parameters.reconciliation}}"
+            [ -n "{{inputs.parameters.reconcile-sirus-model-uri}}" ] && ARGS="$ARGS --reconcile-sirus-model-uri {{inputs.parameters.reconcile-sirus-model-uri}}"
 
             # step-timings is JSON (spaces/newlines): pass it directly with literal
             # single quotes so it stays one argument (it must NOT go through $ARGS,

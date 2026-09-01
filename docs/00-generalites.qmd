@@ -15,21 +15,25 @@ arbitrant via un LLM (*LLM-as-judge*). Il est orchestré par **Argo Workflows**
 Schéma Excalidraw du [pipeline](https://link.excalidraw.com/l/9vLymO4fSxN/3JjfZov3UgX).
 
 ```text
-                                             ┌──→ create-vector-db ─────────→ run-rag ──────────┐
-   preprocessing ──→ codif-regex ──→ prune ──┤                                                  │
-                          │                  └──→ create-vector-db-annotations ─→ run-rag-ann ──┤
-                          │                                                                    ├──→ decide-coicop ──→ final-output ──→ report
-                          ├──→ codif-lcs ────────────────────────────────────────────────────── ┤
-                          └──→ run-ttc ─────────────────────────────────────────────────────────┘
+build-datasets  (input_file : production / évaluation)
+  └─→ classify-regex ─┬─→ classify-lcs ────────────────────────────────────────────────────┐
+                      ├─→ classify-ttc ────────────────────────────────────────────────────┤
+                      └─→ prune-codes ─┬─→ index-notices ─────→ classify-rag-notices ──────┤
+                                       └─→ index-annotations ─→ classify-rag-annotations ──┘
+                                                                                           │
+                                                       ┌───────────────────────────────────┘
+                                                       │  les 4 classifieurs convergent
+                                                       └─→ reconcile-llm  OU  reconcile-sirus   (exclusifs : paramètre `reconciliation`)
+                                                               └─→ export-results ─→ report  (opt-in)
 ```
 
 Points à retenir sur cette topologie :
 
-- **`prune` dépend de `codif-regex`** (et non de `preprocessing`) : il a besoin du jeu à coder
+- **`prune-codes` dépend de `classify-regex`** (et non de `build-datasets`) : il a besoin du jeu à coder
   déjà débarrassé des lignes captées par les regex. Cette étape n'est **jamais** sautée.
-- Seules les deux étapes `create-vector-db*` sont **skippables** (`-p skip-vector-db=true`) :
+- Seules les deux étapes `index-notices*` sont **skippables** (`-p skip-index=true`) :
   les collections Qdrant survivent d'un run à l'autre.
-- `decide-coicop` attend les quatre classifieurs ; `report` dépend de toutes les étapes
+- `reconcile-llm` attend les quatre classifieurs ; `report` dépend de toutes les étapes
   précédentes (il en loggue les durées).
 
 Chaque étape lit et écrit sur S3 dans un dossier propre au run :
@@ -37,19 +41,19 @@ Chaque étape lit et écrit sur S3 dans un dossier propre au run :
 
 ## Les classifieurs
 
-Cinq briques de codification tournent en parallèle, puis sont conciliées par `decide-coicop` :
+Cinq briques de codification tournent en parallèle, puis sont conciliées par `reconcile-llm` :
 
 | Brique | Approche | Page |
 |---|---|---|
-| Regex | Règles déterministes ancrées | [La codification par regex](02-codif-regex.qmd) |
-| LCS | Similarité de chaînes (plus longue sous-chaîne commune) | [LCS](03-codif-lcs.qmd) |
-| TTC | Classifieur neuronal (n-grammes de caractères) | [TTC](05-run-ttc.qmd) |
-| RAG COICOP | RAG sur les notices de la nomenclature | [RAG sur COICOP](04-coicop-rag.qmd) |
-| RAG annotations | RAG sur exemples déjà codifiés (few-shot) | [RAG sur annotation](09-rag-annotation.qmd) |
+| Regex | Règles déterministes ancrées | [La codification par regex](02-classify-regex.qmd) |
+| LCS | Similarité de chaînes (plus longue sous-chaîne commune) | [LCS](03-classify-lcs.qmd) |
+| TTC | Classifieur neuronal (n-grammes de caractères) | [TTC](05-classify-ttc.qmd) |
+| RAG COICOP | RAG sur les notices de la nomenclature | [RAG sur COICOP](04-rag-notices.qmd) |
+| RAG annotations | RAG sur exemples déjà codifiés (few-shot) | [RAG sur annotation](09-rag-annotations.qmd) |
 
 Le **regex** est à part : il tranche en amont et retire ses lignes du flux. Les **quatre
 autres** produisent chacun une prédiction candidate sur les mêmes observations, que
-[`decide-coicop`](06-decide-coicop.qmd) arbitre.
+[`reconcile-llm`](06-reconcile-llm.qmd) arbitre.
 
 ## Modes prod / éval
 
@@ -61,22 +65,22 @@ paramètre **`input_file`** :
 | `input_file` | non vide (CSV/parquet à codifier) | vide (`""`) |
 | Ce qui est codifié | les observations du fichier fourni | le split **test** des annotations manuelles |
 | Vérité terrain | absente (`code` à `NA`) | présente (code annoté) |
-| Livrable | fichier d'entrée enrichi (`final-output`) | rapport d'exactitude |
+| Livrable | fichier d'entrée enrichi (`export-results`) | rapport d'exactitude |
 
 Le mode se propage étape par étape :
 
 | Étape | En production | En évaluation |
 |---|---|---|
-| `preprocessing` | reçoit `--input-file` + le mappage de colonnes, produit **`observations.parquet`** en plus des annotations | produit seulement les annotations (`annotations_full`, `raw_train`, `raw_test`) |
-| `codif-regex` | lit `test_set_prod` = `observations.parquet` et `train_set_prod` = `annotations_full.parquet` | lit `test_set` = `raw_test.parquet` et `train_set` = `raw_train.parquet` |
-| `run-rag-annotations` | `--skip-eval true` (prédictions seules) | `--skip-eval false` (calcule les métriques) |
-| `decide-coicop` | `--extra-columns-file` = `observations.parquet` | `--extra-columns-file` = `raw_test.parquet` |
-| `final-output` | repart de `observations.parquet` et restaure le nom du fichier d'entrée | repart de `raw_test.parquet` |
+| `build-datasets` | reçoit `--input-file` + le mappage de colonnes, produit **`observations.parquet`** en plus des annotations | produit seulement les annotations (`annotations_full`, `raw_train`, `raw_test`) |
+| `classify-regex` | lit `test_set_prod` = `observations.parquet` et `train_set_prod` = `annotations_full.parquet` | lit `test_set` = `raw_test.parquet` et `train_set` = `raw_train.parquet` |
+| `classify-rag-annotations` | `--skip-eval true` (prédictions seules) | `--skip-eval false` (calcule les métriques) |
+| `reconcile-llm` | `--extra-columns-file` = `observations.parquet` | `--extra-columns-file` = `raw_test.parquet` |
+| `export-results` | repart de `observations.parquet` et restaure le nom du fichier d'entrée | repart de `raw_test.parquet` |
 | `report` | détecte l'absence de vérité terrain → `prediction_report.qmd` | → `report.qmd` (accuracy par niveau) |
 
 ::: {.callout-note}
 La détection du mode par `report` est **automatique** : il teste `bool_and(code IS NULL)` sur
-la sortie de `decide-coicop`. Un seul code non nul dans un fichier de production suffit donc à
+la sortie de `reconcile-llm`. Un seul code non nul dans un fichier de production suffit donc à
 faire basculer le rapport en mode évaluation.
 :::
 
@@ -94,17 +98,17 @@ aucun nom de colonne en entrée :
 ## Échantillonnage
 
 Pour tester le pipeline sans le payer en entier, l'échantillonnage est **centralisé en un
-point unique : `codif-regex`**. Le jeu à coder y est échantillonné une seule fois
+point unique : `classify-regex`**. Le jeu à coder y est échantillonné une seule fois
 (`random_state=42`), et tous les classifieurs aval héritent des mêmes lignes via
 `raw_test_without_regex.parquet` — les prédictions restent donc comparables entre elles.
 
 | Paramètre | Mode | Effet |
 |---|---|---|
 | `sample-observations` | production | limite le nombre d'observations à codifier |
-| `sample-annotations` | évaluation | limite le jeu à codifier **et** la taille de la KB d'annotations indexée par `create-vector-db-annotations` |
+| `sample-annotations` | évaluation | limite le jeu à codifier **et** la taille de la KB d'annotations indexée par `index-annotations` |
 
 ::: {.callout-important}
-En évaluation, `sample-annotations` fait aussi basculer `run-rag-annotations` sur une
+En évaluation, `sample-annotations` fait aussi basculer `classify-rag-annotations` sur une
 collection Qdrant **suffixée `_test`**, pour ne pas écraser la collection de production avec
 une base vectorielle partielle.
 :::
@@ -136,8 +140,8 @@ Les colonnes non mappées sont conservées telles quelles et restituées dans le
 
 ## Où aller ensuite
 
-- le détail étape par étape : [Preprocessing](01-preprocessing.qmd) puis la suite de la barre
+- le détail étape par étape : [Preprocessing](01-build-datasets.qmd) puis la suite de la barre
   latérale ;
-- l'espace de codes commun à tout le pipeline : [Prune — troncature & élagage](pruning.qmd) ;
+- l'espace de codes commun à tout le pipeline : [Prune — troncature & élagage](prune-codes.qmd) ;
 - les fragilités connues : [Limites et points de vigilance](limites-vigilance.qmd) ;
 - pour relancer une brique isolée : [Lancer une étape](09-lancer-une-etape.qmd).

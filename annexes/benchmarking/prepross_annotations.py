@@ -201,7 +201,7 @@ import re
 S3_WORKFLOW_INPUTS = "s3://projet-budget-famille/data/workflow_inputs"
 EXPORT_PATH = f"{S3_PREFIX}/as_new_input/annotations_vague1_2026_a_codif.parquet"
 
-# Canonical names preprocessing/main.py creates or overwrites in prediction mode.
+# Canonical names build-datasets/main.py creates or overwrites in prediction mode.
 # Any of these left in the input file would be read as ground truth (`code`,
 # `coicop` are only defaulted when absent) or silently clobbered (`id`).
 PIPELINE_RESERVED = {
@@ -236,7 +236,7 @@ for old, new in renaming.items():
 
 #%%
 # Compatibility of the column names with the pipeline input contract
-# (preprocessing/main.py: build_observations / load_input_file).
+# (build-datasets/main.py: build_observations / load_input_file).
 invalid_names = [c for c in export.columns if not re.fullmatch(r"\w+", c)]
 reserved_left = sorted(set(export.columns) & PIPELINE_RESERVED)
 

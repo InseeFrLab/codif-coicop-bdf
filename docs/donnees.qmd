@@ -15,30 +15,30 @@ observations déjà labellisées pour évaluer le processus) — voir
 
 | Fichier | Définition | Format | Path S3 | Lu par | Commentaire |
 |---|--------|---|---|---|--------|
-| `annotations_test_2024.csv` | Annotations manuelles BdF 2024 (vérité terrain / KB ; sources `receipts_from_app`, `manual_from_app`, `manual_from_book`) | CSV `;` | `s3://projet-budget-famille/data/codification-manuelle-anterieure/annotations_test_2024.csv` | `preprocessing` | Base produite à partir de trois fichiers fournis par l'équipe BDF. Voir ce repo : https://git.lab.sspcloud.fr/ssplab/experimentation-bdf/construction-dataset |
-| `annotations_BDF_2017.csv` | Annotations historiques de l'enquête BdF 2017 (source `bdf_2017`, KB uniquement) | CSV `;` | `s3://projet-budget-famille/data/codification-manuelle-anterieure/annotations_BDF_2017.csv` | `preprocessing` | Utilise l'ancien millésime de la COICOP (difficilement exploitable). Exclu de la base vectorielle des [RAG annotations](09-rag-annotation.qmd) (`exclude_sources`) |
-| `liste_produits_fr_copain.csv` | Liste de produits codifiés issue du *suggester* de l'application de l'enquête — exemples additionnels de la KB des RAG | CSV | `s3://projet-budget-famille/data/input-annotation/liste_produits_fr_copain.csv` | `preprocessing`, `prune` | Codes au **niveau 5, non prunés** à la source : c'est `prune` qui les tronque et les élague |
-| `liste_magasins.csv` | Table de correspondance enseigne → type de magasin | CSV | `s3://projet-budget-famille/data/input-annotation/liste_magasins.csv` | `preprocessing` | Alimente `shop_type_name`, signal utilisé par LCS, les RAG et le juge |
-| `produit_non_annotable.csv` | Liste des libellés non codables (retirés en amont) | CSV | `s3://projet-budget-famille/data/codification-manuelle-anterieure/produit_non_annotable.csv` | `preprocessing` | |
-| `coicop-2018_envoi_rmes_20251022.csv` | Nomenclature COICOP 2018 brute (référentiel des codes + libellés), export RMES, 949 codes sur 5 niveaux | CSV `;` | `s3://projet-budget-famille/data/coicop-2018_envoi_rmes_20251022.csv` | `prune` | **Seule** source de vérité de la nomenclature : `prune` en dérive la nomenclature prunée et la table de mapping que tout l'aval consomme |
-| *fichier d'observations* | Entrée de **production** : libellés à coder, sans vérité terrain (paramètre Argo `input_file`) | CSV / parquet | `s3://projet-budget-famille/data/workflow_inputs/…` (ex. `BDF_data_tickets_appli_20260320_a_codif.csv`) | `preprocessing` (mode prod) | Noms de colonnes libres, mappés par les paramètres `text_column` / `shop_column` / `budget_column` |
+| `annotations_test_2024.csv` | Annotations manuelles BdF 2024 (vérité terrain / KB ; sources `receipts_from_app`, `manual_from_app`, `manual_from_book`) | CSV `;` | `s3://projet-budget-famille/data/codification-manuelle-anterieure/annotations_test_2024.csv` | `build-datasets` | Base produite à partir de trois fichiers fournis par l'équipe BDF. Voir ce repo : https://git.lab.sspcloud.fr/ssplab/experimentation-bdf/construction-dataset |
+| `annotations_BDF_2017.csv` | Annotations historiques de l'enquête BdF 2017 (source `bdf_2017`, KB uniquement) | CSV `;` | `s3://projet-budget-famille/data/codification-manuelle-anterieure/annotations_BDF_2017.csv` | `build-datasets` | Utilise l'ancien millésime de la COICOP (difficilement exploitable). Exclu de la base vectorielle des [RAG annotations](09-rag-annotations.qmd) (`exclude_sources`) |
+| `liste_produits_fr_copain.csv` | Liste de produits codifiés issue du *suggester* de l'application de l'enquête — exemples additionnels de la KB des RAG | CSV | `s3://projet-budget-famille/data/input-annotation/liste_produits_fr_copain.csv` | `build-datasets`, `prune-codes` | Codes au **niveau 5, non prunés** à la source : c'est `prune-codes` qui les tronque et les élague |
+| `liste_magasins.csv` | Table de correspondance enseigne → type de magasin | CSV | `s3://projet-budget-famille/data/input-annotation/liste_magasins.csv` | `build-datasets` | Alimente `shop_type_name`, signal utilisé par LCS, les RAG et le juge |
+| `produit_non_annotable.csv` | Liste des libellés non codables (retirés en amont) | CSV | `s3://projet-budget-famille/data/codification-manuelle-anterieure/produit_non_annotable.csv` | `build-datasets` | |
+| `coicop-2018_envoi_rmes_20251022.csv` | Nomenclature COICOP 2018 brute (référentiel des codes + libellés), export RMES, 949 codes sur 5 niveaux | CSV `;` | `s3://projet-budget-famille/data/coicop-2018_envoi_rmes_20251022.csv` | `prune-codes` | **Seule** source de vérité de la nomenclature : `prune-codes` en dérive la nomenclature prunée et la table de mapping que tout l'aval consomme |
+| *fichier d'observations* | Entrée de **production** : libellés à coder, sans vérité terrain (paramètre Argo `input_file`) | CSV / parquet | `s3://projet-budget-famille/data/workflow_inputs/…` (ex. `BDF_data_tickets_appli_20260320_a_codif.csv`) | `build-datasets` (mode prod) | Noms de colonnes libres, mappés par les paramètres `text_column` / `shop_column` / `budget_column` |
 
 ::: {.callout-note}
 ## Deux entrées particulières
 - **Modèle TTC** : le classifieur neuronal n'est pas un fichier S3 mais un artefact MLflow,
-  référencé par le paramètre Argo `ttc-model-uri`
-  (ex. `mlflow-artifacts:/10/…/artifacts/model`), lu par `run-ttc`.
+  référencé par le paramètre Argo `classify-ttc-model-uri`
+  (ex. `mlflow-artifacts:/10/…/artifacts/model`), lu par `classify-ttc`.
 - **Les données de caisse (ddc)** : ce sont des données récoltées dans le cadre de la production
   de l'IPC. Il s'agit de dépenses issues de tickets de caisse avec le code COICOP correspondant
   (labellisation faite via un référentiel fourni par un prestataire). Ces données sont utilisées
   dans le cadre de l'entraînement du modèle TTC (en dehors de ce pipeline).
 - **Source `copain`** (`s3://projet-budget-famille/data/output-annotation/`) : historiquement
-  une entrée du `preprocessing`, elle est **exclue du pipeline** depuis juin 2026 — son
+  une entrée du `build-datasets`, elle est **exclue du pipeline** depuis juin 2026 — son
   chargement est désactivé (la fonction `load_copain_data()` subsiste dans le code sans être
   appelée).
 - Les listes de règles pour la codification déterministe par regex sont contenues dans le code,
   et non dans un fichier sur S3
-  ([`regex-codif/config/rules.yaml`](https://github.com/InseeFrLab/codif-coicop-bdf/blob/main/regex-codif/config/rules.yaml)).
+  ([`classify-regex/config/rules.yaml`](https://github.com/InseeFrLab/codif-coicop-bdf/blob/main/classify-regex/config/rules.yaml)).
 :::
 
 ## Référentiels de codes embarqués dans le dépôt
@@ -49,8 +49,8 @@ implique un risque de désynchronisation avec la nomenclature RMES (voir
 
 | Fichier | Contenu | Utilisé par |
 |---|---|---|
-| `decide-coicop/data/coicop_et_codes_techniques.csv` | ~700 codes (`Libelle;Code`) : COICOP **tous niveaux, y compris 5** + codes techniques `98.x` / `99.x` | liste des codes valides soumise au juge LLM (`--nomenclature`) |
-| `codif-ttc/data/*.csv` | copie de la nomenclature RMES, table de passage COICOP, familles Circana, données d'entraînement | entraînement et évaluation du modèle TTC |
+| `reconcile-llm/data/coicop_et_codes_techniques.csv` | ~700 codes (`Libelle;Code`) : COICOP **tous niveaux, y compris 5** + codes techniques `98.x` / `99.x` | liste des codes valides soumise au juge LLM (`--nomenclature`) |
+| `classify-ttc/data/*.csv` | copie de la nomenclature RMES, table de passage COICOP, familles Circana, données d'entraînement | entraînement et évaluation du modèle TTC |
 
 ## Artefacts produits par le pipeline
 
@@ -60,15 +60,15 @@ Chaque run écrit ses fichiers intermédiaires sous
 
 | Étape | Fichiers clés |
 |---|---|
-| `preprocessing` | `annotations_full`, `raw_train`, `raw_test`, `suggester`, `observations` (prod), `qa/*` |
-| `codif-regex` | `REGEX_pred`, `raw_test_without_regex`, `raw_train_without_regex` |
-| [`prune`](pruning.qmd) | `nomenclature_pruned`, `mapping_lvl4`, `annotations_train_pruned`, `annotations_test_pruned`, `suggester_pruned` |
-| `codif-lcs` | `raw_test_LCS`, `analyse_codif_LCS` (éval) |
-| `run-rag` | `predictions`, `retrieved_codes` |
-| `rag-annotation` | `predictions` |
-| `run-ttc` | `predictions` |
-| `decide-coicop` | `predictions` (toutes les prédictions + la décision) |
-| `final-output` | le fichier livré, sous son nom d'origine |
+| `build-datasets` | `annotations_full`, `raw_train`, `raw_test`, `suggester`, `observations` (prod), `qa/*` |
+| `classify-regex` | `REGEX_pred`, `raw_test_without_regex`, `raw_train_without_regex` |
+| [`prune-codes`](prune-codes.qmd) | `nomenclature_pruned`, `mapping_lvl4`, `annotations_train_pruned`, `annotations_test_pruned`, `suggester_pruned` |
+| `classify-lcs` | `raw_test_LCS`, `analyse_codif_LCS` (éval) |
+| `classify-rag-notices` | `predictions`, `retrieved_codes` |
+| `classify-rag-annotations` | `predictions` |
+| `classify-ttc` | `predictions` |
+| `reconcile-llm` | `predictions` (toutes les prédictions + la décision) |
+| `export-results` | le fichier livré, sous son nom d'origine |
 | `report` | `report.html` |
 
 ## Codes techniques BdF

@@ -24,11 +24,11 @@ jupyter: python3
 # accuracy là où un run de production n'en fournit normalement pas.
 #
 # Rendu (l'environnement du module `report/` porte déjà toutes les dépendances,
-# `coicop_metrics` et `prune` compris) :
+# `coicop_metrics` et le paquet `prune` compris) :
 #
 #     cd report/ && uv sync
 #     BILAN_RUN_ID=codif-sj4jz BILAN_RUN_DATE=2026-08-31 \
-#     BILAN_INPUT=<chemin s3 du final-output> \
+#     BILAN_INPUT=<chemin s3 du export-results> \
 #       uv run quarto render ../annexes/benchmarking/bilan-codification.qmd
 #
 # Les trois variables ont des valeurs par défaut pointant sur le run du
@@ -64,18 +64,18 @@ if _ROOT is None:
         "Racine du dépôt codif-coicop-bdf introuvable depuis "
         f"{_HERE} : `report/coicop_metrics.py` est requis."
     )
-for _p in (_ROOT / "report", _ROOT / "prune" / "src"):
+for _p in (_ROOT / "report", _ROOT / "prune-codes" / "src"):
     if str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
 
 from coicop_metrics import accuracy, accuracy_series  # noqa: E402
-from prune.utils import truncate_code  # noqa: E402
+from prune_codes.utils import truncate_code  # noqa: E402
 
 RUN_ID = os.environ.get("BILAN_RUN_ID", "codif-sj4jz")
 RUN_DATE = os.environ.get("BILAN_RUN_DATE", "2026-08-31")
 RUN_ROOT = f"s3://projet-budget-famille/data/workflow_runs/{RUN_DATE}/{RUN_ID}"
 INPUT = os.environ.get(
-    "BILAN_INPUT", f"{RUN_ROOT}/final-output/annotations_vague1_2026_a_codif.parquet"
+    "BILAN_INPUT", f"{RUN_ROOT}/export-results/annotations_vague1_2026_a_codif.parquet"
 )
 
 # ── Palette ───────────────────────────────────────────────────────────────────
@@ -138,9 +138,9 @@ df = con.sql(f"SELECT * FROM read_parquet('{INPUT}')").df()
 # annotation brute pouvant aller au niveau 5. Comparer les deux tels quels fait
 # perdre ~9 points d'accuracy en pur artefact — une prédiction canonique `01.2.1`
 # serait comptée fausse face à une vérité `01.2.1.0`. On applique donc à la
-# vérité la troncature puis le mapping d'élagage produits par l'étape `prune` du
+# vérité la troncature puis le mapping d'élagage produits par l'étape `prune-codes` du
 # run lui-même.
-mapping = con.sql(f"SELECT * FROM read_parquet('{RUN_ROOT}/prune/mapping_lvl4.parquet')").df()
+mapping = con.sql(f"SELECT * FROM read_parquet('{RUN_ROOT}/prune-codes/mapping_lvl4.parquet')").df()
 _to_parent = dict(
     zip(mapping["code"].astype(str), mapping["code_parent_equivalent"].astype(str))
 )
@@ -264,7 +264,7 @@ DIV_SHORT = {
     "99": "Hors champ",
 }
 nom = con.sql(
-    f"SELECT code, label_fr FROM read_parquet('{RUN_ROOT}/prune/nomenclature_pruned.parquet') "
+    f"SELECT code, label_fr FROM read_parquet('{RUN_ROOT}/prune-codes/nomenclature_pruned.parquet') "
     f"WHERE length(code) = 2"
 ).df()
 div_labels = dict(zip(nom["code"].astype(str), nom["label_fr"].astype(str)))
@@ -322,7 +322,7 @@ plt.show()
 
 ## Calibration du score SIRUS
 
-`sirus-predict` livre, avec chaque code, un score (`prediction_confidence`).
+`reconcile-sirus` livre, avec chaque code, un score (`prediction_confidence`).
 Cette section répond à une seule question : **ce score sépare-t-il les codes
 fiables des codes douteux ?** Les lignes codées par regex n'ont pas de score et
 sont exclues.
@@ -407,7 +407,7 @@ Deux propriétés du score à garder en tête avant d'en tirer un seuil :
   bas). Les tranches basses, peu peuplées, portent un taux d'autant plus bruité ;
   c'est là que les irrégularités de la courbe se situent.
 
-`sirus-predict` n'applique volontairement aucun seuil : le choix du niveau
+`reconcile-sirus` n'applique volontairement aucun seuil : le choix du niveau
 d'exigence est une décision métier, que ce graphique documente sans la trancher.
 La section suivante en chiffre le prix — combien de produits restent codés
 automatiquement, et avec quel accord, à chaque niveau d'exigence.

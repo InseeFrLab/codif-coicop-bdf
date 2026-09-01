@@ -1,0 +1,27 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/prune_codes"]
+
+[tool.hatch.build.targets.editable]
+packages = ["src/prune_codes"]
+
+[project]
+name = "prune-codes"
+version = "0.1.0"
+description = "Pruning unifié COICOP (troncature niveau 4 + élagage des hiérarchies linéaires)"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "duckdb>=1.4.3",
+    "pandas>=2.3.3",
+    "pyyaml>=6.0",
+]
+
+# `tests/` existe : pytest est déclaré ici pour que
+# `uv sync --group dev` suffise à lancer la suite. Le pipeline installe
+# avec `--no-dev` et n'est pas concerné.
+[dependency-groups]
+dev = ["pytest>=9.0.2"]

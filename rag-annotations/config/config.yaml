@@ -1,0 +1,85 @@
+# config.yaml — RAG sur exemples annotés
+# Les chemins {run_date}/{run_id} sont substitués au runtime via expand_paths().
+
+annotations:
+  # KB déjà tronquée + prunée par l'étape `prune-codes` unifiée (flux 'train').
+  s3_path: "s3://projet-budget-famille/data/workflow_runs/{run_date}/{run_id}/prune-codes/annotations_train_pruned.parquet"
+  features:
+    - id
+    - l_pr_product
+    - annee
+    - code
+    - coicop
+    - shop
+    - shop_type_name
+    - budget
+    - n_obs
+    - source
+  product_col: l_pr_product   # colonne texte à embedder
+  nature: null                # filtre optionnel sur la colonne `source`
+  # Sources EXCLUES de la vector DB (liste vide = toutes gardées).
+  # S'applique aussi au suggester : si "suggester" y figure, le bloc suggester
+  # n'est pas indexé (même si suggester.enabled vaut true).
+  # Valeurs possibles : copain, receipts_from_app, manual_from_app,
+  #                     manual_from_book, bdf_2017, suggester
+  #
+  # Deux profils selon le mode (sélectionné via --skip-eval) :
+  #   - exclude_sources       → ÉVALUATION (KB = lot train restreint) ;
+  #   - exclude_sources_prod  → PRODUCTION (KB = toutes les annotations 2024 + suggester).
+  # NB : copain est déjà exclu en amont (build-datasets, depuis 2026-06) ; il est
+  # conservé ici par défense (no-op si la source n'arrive jamais jusqu'à la KB).
+  exclude_sources: [bdf_2017, copain]
+  exclude_sources_prod: [bdf_2017, copain]
+
+# Données du suggester ajoutées à l'index, aux côtés des annotations de train.
+# Codes au niveau 5 et non prunés en amont → on leur applique exactement le même
+# prune_annotation_lvl4 (troncature niveau 4 + mapping) que les annotations.
+suggester:
+  enabled: true
+  # Suggester déjà pruné par l'étape `prune-codes` unifiée (le pruning du suggester
+  # — source CSV, dedup, mapping — est désormais centralisé dans rag-notices/prune.py).
+  s3_path_pruned: "s3://projet-budget-famille/data/workflow_runs/{run_date}/{run_id}/prune-codes/suggester_pruned.parquet"
+
+qdrant:
+  collection_name: "coicop_annotations_without_copain_2017"
+  upload_batch_size: 56
+
+embedding:
+  model_name: qwen3-embedding-8b
+  model_len: 4096
+  batch_size: 64
+
+retrieval:
+  size: 10
+
+llm:
+  # Source du prompt : local (défaut) ou Langfuse.
+  use_langfuse: true
+  prompt_file: prompts/annotation_rag.md
+  prompt_name: prompt-annotation-rag
+  prompt_version: "2"   # version Langfuse épinglée (évite de charger le mauvais prompt)
+  model_name: gemma4-26b-moe
+  temperature: 0.1
+  max_tokens: 2048
+  concurrency: 32
+
+eval:
+  # L'évaluation est opt-in : pilotée par --skip-eval (défaut 'true' = production).
+  # En mode évaluation, l'input doit contenir les labels (`code` / `coicop`).
+  threshold_confidence: 0.7
+  levels: 4   # évalue les niveaux COICOP 1..levels
+  seed: 42    # graine pour l'échantillonnage optionnel (--sample_size)
+  # Sources à INCLURE dans le test set (liste vide = toutes).
+  # Valeurs possibles : copain, receipts_from_app, manual_from_app, manual_from_book
+  include_sources: [receipts_from_app, manual_from_app, manual_from_book]
+
+# Produits à codifier (input du RAG), pruné par l'étape `prune-codes` :
+#   - mode évaluation : split test labellisé (déjà tronqué/pruné) ;
+#   - mode production  : observations à codifier (sans labels).
+# + artefact produit par ce module (prédictions).
+data:
+  s3_path_input: "s3://projet-budget-famille/data/workflow_runs/{run_date}/{run_id}/prune-codes/annotations_test_pruned.parquet"
+  s3_path_predictions: "s3://projet-budget-famille/data/workflow_runs/{run_date}/{run_id}/classify-rag-annotations/predictions.parquet"
+
+mlflow:
+  experiment_name: rag-annotation

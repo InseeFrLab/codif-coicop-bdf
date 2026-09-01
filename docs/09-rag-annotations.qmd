@@ -1,0 +1,153 @@
+---
+title: "7. RAG sur annotations"
+subtitle: "Codification par RAG sur exemples déjà codifiés (few-shot)"
+---
+
+## Rôle de l'étape
+
+Le module `rag-annotations/` code chaque produit par **RAG sur exemples annotés** : on
+récupère dans une base vectorielle les produits **déjà codifiés** les plus similaires, puis on
+demande à un LLM de choisir un code **parmi ceux de ces voisins**.
+
+La différence avec la [branche RAG notices](04-rag-notices.qmd) est fondamentale :
+
+| | RAG notices | RAG annotations |
+|---|---|---|
+| Ce qui est indexé | les **notices** de la nomenclature COICOP (définitions, inclusions, exclusions) | des **produits réels déjà codés** (annotations manuelles + suggester) |
+| Candidats proposés au LLM | les codes dont la *définition* ressemble au libellé | les codes portés par des libellés *ressemblant* au libellé |
+| Force | couvre toute la nomenclature, même les codes jamais rencontrés | colle aux usages réels de codification et au vocabulaire des enquêtés |
+| Faiblesse | la définition officielle ressemble rarement à « bagu. tradition U » | ne peut proposer qu'un code déjà présent dans la KB |
+
+- Code : [`rag-annotations/`](https://github.com/InseeFrLab/codif-coicop-bdf/tree/main/coicop-rag-annotations) ·
+  config : `rag-annotations/config/config.yaml`
+- Deux sous-étapes Argo : `index-annotations` puis `classify-rag-annotations`.
+
+## Une représentation textuelle unique
+
+Point de conception central : le produit est décrit par **une seule fonction**
+(`build_location_text`), utilisée à l'identique à l'indexation, à la requête et dans les
+exemples du prompt. Un même produit est donc représenté exactement de la même façon des deux
+côtés de la recherche vectorielle :
+
+```text
+café
+café - magasin ou lieu d'achat : Super U
+café - magasin ou lieu d'achat : Super U (type : supermarché)
+```
+
+L'enseigne et le type de magasin sont ajoutés **quand ils sont disponibles** : le lieu d'achat
+est un signal fort pour la COICOP (le même mot « menu » ne se code pas pareil au supermarché et
+au restaurant).
+
+## Étape 1 — construire la base vectorielle
+
+`scripts/0_build_annotation_vector_db.py` indexe deux jeux, **déjà tronqués et élagués** par
+l'étape [`prune-codes`](prune-codes.qmd) (le module ne re-prune rien) :
+
+| Source indexée | Fichier |
+|---|---|
+| KB d'annotations (flux *train*) | `…/{run}/prune-codes/annotations_train_pruned.parquet` |
+| Suggester | `…/{run}/prune-codes/suggester_pruned.parquet` |
+
+- Embeddings : **`qwen3-embedding-8b`** (`model_len` 4096, `batch_size` 64).
+- Collection Qdrant : **`coicop_annotations_without_copain_2017`**
+  (`upload_batch_size` 56).
+
+::: {.callout-note}
+Le suggester arrive au **niveau 5 et non pruné à la source** : c'est l'étape `prune-codes` qui lui
+applique exactement le même `prune_annotation_lvl4` (troncature niveau 4 + mapping canonique)
+qu'aux annotations, pour que tous les candidats vivent dans le même espace de codes.
+:::
+
+### Sources exclues de la KB
+
+Deux profils, choisis selon le mode (`--skip-eval`) :
+
+| Clé de config | Mode | Valeur actuelle |
+|---|---|---|
+| `exclude_sources` | évaluation | `[bdf_2017, copain]` |
+| `exclude_sources_prod` | production | `[bdf_2017, copain]` |
+
+- **`copain`** n'est de toute façon plus importé par le [build-datasets](01-build-datasets.qmd)
+  depuis juin 2026 ; la mention est conservée par défense (sans effet si la source n'arrive
+  jamais).
+- **`bdf_2017`** est écarté de la base vectorielle : millésime ancien, dont les libellés et
+  usages de codification ne reflètent plus la campagne courante.
+- Si `suggester` figurait dans la liste, le bloc suggester ne serait pas indexé — même avec
+  `suggester.enabled: true`.
+
+### Collection de test
+
+Quand `sample-annotations` est renseigné (test sur échantillon), les deux scripts basculent sur
+une collection **suffixée `_test`** (`coicop_annotations_without_copain_2017_test`). La
+collection de production n'est donc jamais écrasée par une base vectorielle partielle.
+
+::: {.callout-warning}
+La même valeur de `sample-annotations` doit être passée à `0_build_annotation_vector_db.py`
+**et** à `1_run_rag.py` : c'est elle qui détermine, de part et d'autre, quelle collection est
+visée.
+:::
+
+## Étape 2 — codifier
+
+`scripts/1_run_rag.py`, pour chaque produit à coder
+(`…/{run}/prune-codes/annotations_test_pruned.parquet`) :
+
+1. **Embedding** de la représentation `build_location_text` du produit ;
+2. **Recherche** des `retrieval.size = 10` produits annotés les plus proches ;
+3. **Prompt few-shot** : les voisins et leurs codes constituent la **liste fermée des candidats
+   autorisés**. Prompt hébergé dans **Langfuse** (`prompt-annotation-rag`, version `2`), avec
+   repli sur le fichier local `prompts/annotation_rag.md` si `llm.use_langfuse: false` ;
+4. **Génération** (`gemma4-26b-moe`, `temperature 0.1`, `max_tokens 2048`, `concurrency 32`) ;
+5. **Parsing** du JSON `{codable, code_predict, confidence}`.
+
+Les consignes du prompt sont volontairement strictes : le code doit être repris **à
+l'identique** dans la liste des candidats, sans le tronquer ni le compléter, et si aucun
+candidat ne convient le modèle doit répondre `codable: false` plutôt qu'un code
+« le moins pire ».
+
+::: {.callout-important}
+Cette garantie de pruning est **incitative, pas structurelle** : contrairement au RAG notices,
+le module ne re-prune pas sa sortie. C'est
+[`reconcile-llm`](06-reconcile-llm.qmd) qui normalise `ragann_code` (troncature niveau 4 +
+élagage) avant le consensus et l'arbitrage.
+:::
+
+## Évaluation (opt-in)
+
+L'évaluation est pilotée par `--skip-eval` (`false` = mode évaluation, positionné
+automatiquement par Argo quand `input_file` est vide). Elle exige des labels dans l'input, et
+restreint le test set aux sources `include_sources`
+(`receipts_from_app`, `manual_from_app`, `manual_from_book`). Sont calculés, sur
+`eval.levels = 4` niveaux (graine `42`) :
+
+- **accuracy et recall par niveau** COICOP (1 à 4) ;
+- **accuracy par division COICOP** (niveau 1) et **par source** du test set ;
+- **distorsion de distribution** entre codes prédits et codes annotés (distance en variation
+  totale et divergence KL) — utile pour repérer un modèle qui « aplatit » la nomenclature ;
+- **fiabilité de la confiance** : AUROC, calibration, balayage de seuils
+  (`threshold_confidence: 0.7`) ;
+- **fiabilité du drapeau `codable`** (lift du refus de coder).
+
+Métriques et rapport partent dans **MLflow**, expérience `classify-rag-annotations`.
+
+## Sortie et intégration
+
+| Fichier | Colonnes |
+|---|---|
+| `…/{run}/classify-rag-annotations/predictions.parquet` | `code_predict`, `codable`, `confidence`, `parsed`, `list_retrieved_codes`, `method="rag-annotations"` |
+
+::: {.callout-note}
+Le dossier de sortie s'appelle **`classify-rag-annotations`** (au singulier, sans `run-`), et non
+`classify-rag-annotations` comme le nom de l'étape Argo.
+:::
+
+`reconcile-llm` renomme ces colonnes en `ragann_code`, `ragann_confidence`, `ragann_codable`,
+et les traite comme la quatrième prédiction candidate — y compris dans le
+[court-circuit consensus](06-reconcile-llm.qmd).
+
+`list_retrieved_codes` permet d'**auditer le retrieval** : si le bon code n'y figure pas, le
+LLM ne pouvait pas le choisir (la liste des candidats est fermée) — le problème vient alors de
+la KB ou de l'embedding, pas de la génération.
+
+➡️ Étape suivante : [8. Decide — arbitrage LLM-as-judge](06-reconcile-llm.qmd)

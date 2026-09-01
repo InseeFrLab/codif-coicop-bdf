@@ -42,7 +42,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--input-file",
         default=None,
-        help="Original input file path; used to locate the final-output file in prediction mode.",
+        help="Original input file path; used to locate the export-results file in prediction mode.",
     )
     # --- MLflow logging ---
     p.add_argument(
@@ -57,23 +57,23 @@ def parse_args() -> argparse.Namespace:
     )
     # Pipeline parameters, logged as MLflow params for traceability.
     p.add_argument("--sample-size", default=None)
-    p.add_argument("--model-name", default=None)
-    p.add_argument("--decide-model", default=None)
-    p.add_argument("--decide-concurrency", default=None)
+    p.add_argument("--classify-rag-model", default=None)
+    p.add_argument("--reconcile-llm-model", default=None)
+    p.add_argument("--reconcile-llm-concurrency", default=None)
     p.add_argument(
-        "--ttc-model-uri",
+        "--classify-ttc-model-uri",
         default=None,
-        help="MLflow URI of the TTC model used by run-ttc, logged for traceability.",
+        help="MLflow URI of the TTC model used by classify-ttc, logged for traceability.",
     )
-    p.add_argument("--skip-vector-db", default=None)
+    p.add_argument("--skip-index", default=None)
     p.add_argument("--skip-report", default=None)
     p.add_argument(
-        "--conciliation", choices=["llm", "sirus"], default="llm",
-        help="Quelle étape de conciliation a tranché : `llm` (decide-coicop, "
-             "défaut) ou `sirus` (sirus-predict). Détermine le parquet lu.",
+        "--reconciliation", choices=["llm", "sirus"], default="llm",
+        help="Quelle étape de conciliation a tranché : `llm` (reconcile-llm, "
+             "défaut) ou `sirus` (reconcile-sirus). Détermine le parquet lu.",
     )
     p.add_argument(
-        "--sirus-model-uri", default=None,
+        "--reconcile-sirus-model-uri", default=None,
         help="Tracé dans MLflow pour savoir quel modèle a produit les codes.",
     )
     return p.parse_args()
@@ -155,18 +155,18 @@ def log_to_mlflow(args, run_root, output_s3, decide_path, prediction) -> None:
             "run_date": args.run_date,
             "bucket": args.bucket,
             "sample_size": args.sample_size,
-            "model_name": args.model_name,
-            "decide_model": args.decide_model,
-            "decide_concurrency": args.decide_concurrency,
-            "ttc_model_uri": args.ttc_model_uri,
-            "skip_vector_db": args.skip_vector_db,
+            "classify_rag_model": args.classify_rag_model,
+            "reconcile_llm_model": args.reconcile_llm_model,
+            "reconcile_llm_concurrency": args.reconcile_llm_concurrency,
+            "classify_ttc_model_uri": args.classify_ttc_model_uri,
+            "skip_index": args.skip_index,
             "skip_report": args.skip_report,
             "output_prefix": run_root,
             "report_html": output_s3,
             # Quelle conciliation a tranché, et avec quel modèle : sans ça, deux
             # runs aux métriques différentes seraient indistinguables.
-            "conciliation": args.conciliation,
-            "sirus_model_uri": args.sirus_model_uri,
+            "reconciliation": args.reconciliation,
+            "reconcile_sirus_model_uri": args.reconcile_sirus_model_uri,
         }
         mlflow.log_params({k: v for k, v in params.items() if v is not None})
         mlflow.set_tag("mode", "prediction" if prediction else "evaluation")
@@ -182,8 +182,8 @@ def log_to_mlflow(args, run_root, output_s3, decide_path, prediction) -> None:
         else:
             print("[report] no parsable step timings provided", flush=True)
 
-        # ---- read the decide-coicop predictions (dot-separated codes) ----
-        print(f"[report] loading decide-coicop predictions (mlflow): {decide_path}", flush=True)
+        # ---- read the reconcile-llm predictions (dot-separated codes) ----
+        print(f"[report] loading reconcile-llm predictions (mlflow): {decide_path}", flush=True)
         con = connect_s3()
         df = con.sql(f"SELECT * FROM read_parquet('{decide_path}')").df()
         mlflow.log_metric("n_obs_total", len(df))
@@ -225,7 +225,7 @@ def log_to_mlflow(args, run_root, output_s3, decide_path, prediction) -> None:
                 for k in strict_levels:
                     n_ok, n_app, acc = accuracy(truth, scorable[col], k)
                     if name == "LLM":
-                        # headline: final accuracy after decide-coicop
+                        # headline: final accuracy after reconcile-llm
                         mlflow.log_metric(f"n_applicable_niv{k}", n_app)
                     if n_app:
                         mlflow.log_metric(f"accuracy_{name.lower()}_niv{k}", acc)
@@ -303,13 +303,13 @@ def log_to_mlflow(args, run_root, output_s3, decide_path, prediction) -> None:
 def main() -> int:
     args = parse_args()
     run_root = f"s3://{args.bucket}/data/workflow_runs/{args.run_date}/{args.run_id}"
-    # Les deux conciliations sont exclusives (paramètre Argo `conciliation`) :
+    # Les deux conciliations sont exclusives (paramètre Argo `reconciliation`) :
     # on lit celle qui a effectivement tourné. Le fichier porte, dans les deux
     # cas, la table fusionnée complète — donc le rapport peut scorer les 4
     # classifieurs de base à l'identique.
-    conciliation_step = "sirus-predict" if args.conciliation == "sirus" else "decide-coicop"
+    conciliation_step = "reconcile-sirus" if args.reconciliation == "sirus" else "reconcile-llm"
     decide_path = f"{run_root}/{conciliation_step}/predictions.parquet"
-    final_output_path = f"{run_root}/final-output/predictions.parquet"
+    final_output_path = f"{run_root}/export-results/predictions.parquet"
     output_s3 = f"{run_root}/report/report.html"
 
     here = Path(__file__).resolve().parent
@@ -320,7 +320,7 @@ def main() -> int:
     env["REPORT_RUN_DATE"] = args.run_date
 
     # prediction mode: ground-truth `code` is entirely NULL
-    print(f"[report] loading decide-coicop predictions: {decide_path}", flush=True)
+    print(f"[report] loading reconcile-llm predictions: {decide_path}", flush=True)
     con = connect_s3()
     row = con.sql(
         f"SELECT bool_and(code IS NULL) FROM read_parquet('{decide_path}')"
@@ -330,10 +330,10 @@ def main() -> int:
     qmd = "prediction_report.qmd" if prediction else "report.qmd"
     if prediction:
         if args.input_file:
-            final_output_path = f"{run_root}/final-output/{os.path.basename(args.input_file)}"
+            final_output_path = f"{run_root}/export-results/{os.path.basename(args.input_file)}"
         env["REPORT_INPUT_PATH"] = final_output_path
         env["REPORT_DECIDE_PATH"] = decide_path
-        print(f"[report] decide-coicop input (qmd): {decide_path}", flush=True)
+        print(f"[report] reconcile-llm input (qmd): {decide_path}", flush=True)
     else:
         env["REPORT_INPUT_PATH"] = decide_path
     print(f"[report] mode={'prediction' if prediction else 'evaluation'}", flush=True)

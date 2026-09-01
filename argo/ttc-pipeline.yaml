@@ -10,23 +10,23 @@ spec:
     - name: pipeline
       dag:
         tasks:
-          - name: run-ttc
-            template: run-ttc
+          - name: classify-ttc
+            template: classify-ttc
 
-    - name: run-ttc
+    - name: classify-ttc
       inputs:
         parameters:
           - name: config
             value: config/config.yaml
           - name: sample_size
-          - name: model-name
+          - name: classify-rag-model
       container:
         image: inseefrlab/onyxia-vscode-python:py3.13.12
         command: [ sh, -c ]
         args:
           - |
             set -e
-            git clone --branch main https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/codif-ttc
+            git clone --branch main https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/classify-ttc
             uv sync --locked --no-dev
 
             uv run --locked --no-dev main.py predict-basic \

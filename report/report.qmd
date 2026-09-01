@@ -83,15 +83,15 @@ con.sql(
 df = con.sql(f"SELECT * FROM read_parquet('{INPUT}')").df()
 
 # Colonne de vérité terrain à scorer : la version canonique `code_lvl4`
-# (tronquée niveau 4 + élaguée) quand decide-coicop l'a produite, sinon le code
+# (tronquée niveau 4 + élaguée) quand reconcile-llm l'a produite, sinon le code
 # brut `code` — les prédictions vivant dans l'espace pruné, la vérité doit y
 # vivre aussi. TRUTH est utilisée partout dans ce rapport.
 TRUTH = truth_column(df)
 HAS_CANONICAL_TRUTH = TRUTH == TRUTH_COL_CANONICAL
 
 # Colonne du code final, c'est-à-dire de l'étape de conciliation qui a tranché
-# dans ce run. Les deux conciliations (juge LLM via decide-coicop, règles SIRUS
-# via sirus-predict) sont EXCLUSIVES : un run porte `llm_code` ou `sirus_code`,
+# dans ce run. Les deux conciliations (juge LLM via reconcile-llm, règles SIRUS
+# via reconcile-sirus) sont EXCLUSIVES : un run porte `llm_code` ou `sirus_code`,
 # jamais les deux. Résoudre ici plutôt qu'écrire `llm_code` en dur permet à ce
 # rapport de rendre dans les deux modes.
 FINAL_NAME, FINAL_COL = final_decision(df)
@@ -376,12 +376,12 @@ Markdown(md)
 ```{python}
 # | label: txt-regime-intro
 # Section propre au juge LLM : le court-circuit consensus est une mécanique de
-# `decide-coicop`, sans équivalent dans la conciliation par règles SIRUS (qui
+# `reconcile-llm`, sans équivalent dans la conciliation par règles SIRUS (qui
 # score tous les candidats de la même façon, sans raccourci).
 if "llm_model" in scorable.columns:
     md = dedent(
         """
-        Les tableaux ci-dessus agrègent deux régimes de décision que `decide-coicop`
+        Les tableaux ci-dessus agrègent deux régimes de décision que `reconcile-llm`
         traite différemment, et que la colonne `llm_model` distingue :
 
         - **Consensus** — le raccourci `try_consensus_decision` : toutes les sources
@@ -402,7 +402,7 @@ else:
         f"_Sans objet : la conciliation de ce run est **{FINAL_NAME}**, qui n'a pas "
         "de régime de décision — tous les candidats sont scorés de la même façon, "
         "sans raccourci consensus. Ce découpage est propre au juge LLM "
-        "(`decide-coicop`)._"
+        "(`reconcile-llm`)._"
     )
 Markdown(md)
 ```
@@ -634,7 +634,7 @@ Markdown(md)
 # pas de score de confiance 1-5, et laisser cette introduction s'afficher
 # décrirait une sortie que le run ne contient pas.
 Markdown(
-    "La commande `decide-coicop` retourne un score de confiance de 1 à 5. Une "
+    "La commande `reconcile-llm` retourne un score de confiance de 1 à 5. Une "
     "calibration saine montre une accuracy croissante avec la confiance."
     if "llm_confiance" in scorable.columns
     else (
@@ -648,7 +648,7 @@ Markdown(
 ```{python}
 # | label: fig-calibration
 # Section propre au juge LLM : le score de confiance entier 1-5 est une sortie
-# de `decide-coicop`. La conciliation SIRUS produit une probabilité continue,
+# de `reconcile-llm`. La conciliation SIRUS produit une probabilité continue,
 # traitée dans sa propre section ci-dessous — les deux échelles ne se comparent
 # pas et ne doivent pas être mélangées dans un même graphique.
 _has_llm_conf = "llm_confiance" in scorable.columns and "llm_code" in scorable.columns
@@ -699,7 +699,7 @@ if "sirus_proba" in scorable.columns:
     md = dedent(
         """
         SIRUS ne renvoie pas une classe mais une **probabilité que le candidat
-        retenu soit le bon code**. L'étape `sirus-predict` s'arrête là : elle
+        retenu soit le bon code**. L'étape `reconcile-sirus` s'arrête là : elle
         livre un code et ce score, **sans verdict**. Elle n'applique aucun seuil
         et ne dit pas si le code est exploitable sans relecture.
 
@@ -775,7 +775,7 @@ Markdown(md)
 # | label: md-sirus-threshold-sweep
 # LE tableau qui instruit la décision d'exploitation : pour chaque seuil de score
 # envisageable, quelle part du volume resterait codable et avec quelle fiabilité.
-# Le pipeline n'applique aucun seuil — `sirus-predict` livre un code et un score.
+# Le pipeline n'applique aucun seuil — `reconcile-sirus` livre un code et un score.
 # C'est ce tableau qui permet d'en choisir un en aval, en connaissance de cause.
 if "sirus_proba" not in scorable.columns:
     md = ""

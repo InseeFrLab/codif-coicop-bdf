@@ -25,9 +25,9 @@ budget_column: MONT_DEP     # amount column
 # --- Volume / debugging ---------------------------------------------------
 # Deux curseurs d'échantillonnage (vide = tout) :
 #   sample-annotations  : taille de la KB d'annotations indexée (vector DB),
-#                         appliqué à l'étape create-vector-db-annotations ;
+#                         appliqué à l'étape index-annotations ;
 #   sample-observations : nb d'observations à coder, mode prod uniquement.
-# Le sampling des observations est CENTRALISÉ à l'étape codif-regex : un seul jeu
+# Le sampling des observations est CENTRALISÉ à l'étape classify-regex : un seul jeu
 # est tiré et hérité par tous les classifieurs (lcs, rag, rag-annotations, ttc),
 # garantissant qu'ils codent exactement les mêmes lignes.
 # En évaluation, les observations = split test des annotations → on utilise
@@ -36,29 +36,29 @@ sample-annotations: ""        # ex. "500"
 sample-observations: ""       # ex. "50" (prod)
 
 # --- LLM models -----------------------------------------------------------
-model-name: gemma4-26b-moe          # run-rag model
-decide-model: gemma4-26b-moe        # decide-coicop arbitration model
-decide-concurrency: "5"
-ttc-model-uri: "mlflow-artifacts:/10/cacf2603514b4887bbfb77e2654c9bc1/artifacts/model"
+classify-rag-model: gemma4-26b-moe          # classify-rag-notices model
+reconcile-llm-model: gemma4-26b-moe        # reconcile-llm arbitration model
+reconcile-llm-concurrency: "5"
+classify-ttc-model-uri: "mlflow-artifacts:/10/cacf2603514b4887bbfb77e2654c9bc1/artifacts/model"
 
 # --- Optional steps -------------------------------------------------------
-skip-vector-db: "false"      # "false" to rebuild the Qdrant vector store
+skip-index: "false"      # "false" to rebuild the Qdrant vector store
 skip-report: "false"        # "true" to skip the Quarto report
 report-experiment: codif-coicop-eval
 
 # --- Conciliation ---------------------------------------------------------
-# EXCLUSIF : `llm` → decide-coicop (juge LLM) ; `sirus` → sirus-predict
+# EXCLUSIF : `llm` → reconcile-llm (juge LLM) ; `sirus` → reconcile-sirus
 # (re-ranking par règles interprétables). L'étape non retenue est skippée ;
-# final-output et report dépendent des deux et tolèrent qu'une soit Skipped.
-conciliation: llm
+# export-results et report dépendent des deux et tolèrent qu'une soit Skipped.
+rereconciliation: llm
 
-# Modèle SIRUS chargé par sirus-predict, OBLIGATOIRE si conciliation: sirus.
+# Modèle SIRUS chargé par reconcile-sirus, OBLIGATOIRE si conciliation: sirus.
 #
-# L'entraînement se fait HORS pipeline : `cd sirus/ && ./train.sh <date>/<run_id>`
-# (cf. sirus/README.md). Il logue le modèle dans MLflow et affiche l'URI à
-# recopier ici — même pratique que ttc-model-uri.
+# L'entraînement se fait HORS pipeline : `cd reconcile-sirus/ && ./train.sh <date>/<run_id>`
+# (cf. reconcile-sirus/README.md). Il logue le modèle dans MLflow et affiche l'URI à
+# recopier ici — même pratique que classify-ttc-model-uri.
 #
 # Le détour par ce paramètre est ce qui rend la fuite impossible : le modèle
 # utilisé en prédiction n'est jamais celui qu'on vient d'entraîner sur ces
 # mêmes lignes.
-sirus-model-uri: "" # ex. "mlflow-artifacts:/12/9f3c.../artifacts/model"
+reconcile-sirus-model-uri: "" # ex. "mlflow-artifacts:/12/9f3c.../artifacts/model"

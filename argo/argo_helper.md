@@ -93,12 +93,12 @@ argo resubmit @latest   # rerun as-is
 | `shop_column` / `budget_column` | `MAG_DEP` / `MONT_DEP` | shop / amount |
 | `annee_column` / `source_column` | `""` | optional |
 | `sample-annotations` | `""` | cap the annotation KB indexed in the vector DB (empty = all) |
-| `sample-observations` | `""` | cap the to-codify set, prod only (empty = all); sampled **once** at `codif-regex` so all classifiers code the same rows; in eval, inference uses `sample-annotations` |
-| `model-name` / `decide-model` | `gemma4-26b-moe` | LLM models |
-| `decide-concurrency` | `5` | arbitration parallelism |
-| `ttc-model-uri` | `mlflow-artifacts:/10/…/model` | TTC model (MLflow) |
-| `skip-vector-db` | `true` | skip Qdrant rebuild |
+| `sample-observations` | `""` | cap the to-codify set, prod only (empty = all); sampled **once** at `classify-regex` so all classifiers code the same rows; in eval, inference uses `sample-annotations` |
+| `classify-rag-model` / `reconcile-llm-model` | `gemma4-26b-moe` | LLM models |
+| `reconcile-llm-concurrency` | `5` | arbitration parallelism |
+| `classify-ttc-model-uri` | `mlflow-artifacts:/10/…/model` | TTC model (MLflow) |
+| `skip-index` | `true` | skip Qdrant rebuild |
 | `skip-report` | `false` | generate the Quarto report |
 | `report-experiment` | `codif-coicop-eval` | report's MLflow experiment |
-| `conciliation` | `llm` | which step decides the final code: `llm` (`decide-coicop`) or `sirus` (`sirus-predict`). **Mutually exclusive** — the other is skipped |
-| `sirus-model-uri` | `""` | SIRUS model (MLflow), required when `conciliation: sirus`. Produced out of pipeline by `sirus/train.sh` |
+| `conciliation` | `llm` | which step decides the final code: `llm` (`reconcile-llm`) or `sirus` (`reconcile-sirus`). **Mutually exclusive** — the other is skipped |
+| `reconcile-sirus-model-uri` | `""` | SIRUS model (MLflow), required when `conciliation: sirus`. Produced out of pipeline by `reconcile-sirus/train.sh` |

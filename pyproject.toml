@@ -5,7 +5,7 @@
 #
 # Pourquoi : les 10 modules se passent des Parquet d'étape en étape. Avec un
 # lock par module, ils avaient divergé sur les briques qui écrivent et relisent
-# ces fichiers — pandas 2.3.3 pour codif-ttc contre 3.0.5 pour decide-coicop,
+# ces fichiers — pandas 2.3.3 pour classify-ttc contre 3.0.5 pour reconcile-llm,
 # duckdb 1.4.4 contre 1.5.5, pyarrow 22 contre 25. Une seule résolution rend
 # cet écart impossible.
 #
@@ -21,9 +21,9 @@
 #
 # --- Version commune de pandas : 2.x, et ce n'est pas un choix -----------------
 # `mlflow` déclare `pandas<3` (toutes les versions >= 3.10 sauf 3.11.0). Cinq
-# modules en dépendent (codif-ttc, coicop-rag, coicop-rag-annotations, report,
+# modules en dépendent (classify-ttc, rag-notices, rag-annotations, report,
 # sirus), donc aucune résolution commune en pandas 3 n'existe aujourd'hui.
-# `preprocessing` et `regex-codif`, qui demandaient `pandas>=3`, ont été relâchés
+# `build-datasets` et `classify-regex`, qui demandaient `pandas>=3`, ont été relâchés
 # en `>=2.3` — leurs locks isolés les avaient emmenés en 3.0.x, ce qui était
 # précisément l'incohérence que ce workspace supprime.
 #
@@ -44,24 +44,24 @@ dependencies = []
 package = false
 
 [tool.uv.workspace]
-# `stats-annotations/` (R) et `annexes/` (scripts d'analyse hors pipeline) ne
+# `classify-lcs/` (R) et `annexes/` (scripts d'analyse hors pipeline) ne
 # sont pas des projets Python : ils ne peuvent pas être membres.
 members = [
-    "codif-ttc",
-    "coicop-rag",
-    "coicop-rag-annotations",
-    "decide-coicop",
-    "final-output",
-    "preprocessing",
-    "prune",
-    "regex-codif",
+    "build-datasets",
+    "classify-regex",
+    "classify-ttc",
+    "export-results",
+    "prune-codes",
+    "rag-annotations",
+    "rag-notices",
+    "reconcile-llm",
+    "reconcile-sirus",
     "report",
-    "sirus",
 ]
 
 # Outillage transverse, disponible depuis la racine (`uv run ruff check .`).
 # Les groupes `dev` des modules restent en place : ils servent aux commandes
-# documentées dans leurs README (`cd sirus && uv run pytest`).
+# documentées dans leurs README (`cd reconcile-sirus && uv run pytest`).
 [dependency-groups]
 dev = [
     "pytest>=9.0.2",

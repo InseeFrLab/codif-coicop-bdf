@@ -15,7 +15,7 @@ terrain.
 
 ## Détection du mode
 
-`report/main.py` lit les prédictions de `decide-coicop` et teste si **tous** les codes de
+`report/main.py` lit les prédictions de `reconcile-llm` et teste si **tous** les codes de
 référence sont nuls :
 
 ```python
@@ -28,8 +28,8 @@ qmd = "prediction_report.qmd" if prediction else "report.qmd"
 
 | Mode | Condition | Gabarit | Entrée |
 |---|---|---|---|
-| **Évaluation** | vérité terrain `code` présente | `report.qmd` | `decide-coicop/predictions.parquet` |
-| **Prédiction** | `code` partout NULL | `prediction_report.qmd` | `final-output/{fichier}` + `decide-coicop/predictions.parquet` |
+| **Évaluation** | vérité terrain `code` présente | `report.qmd` | `reconcile-llm/predictions.parquet` |
+| **Prédiction** | `code` partout NULL | `prediction_report.qmd` | `export-results/{fichier}` + `reconcile-llm/predictions.parquet` |
 
 ::: {.callout-important}
 Le CSV BDF est codé **sans vérité terrain** → c'est le **mode prédiction**
@@ -72,7 +72,7 @@ Le rapport décrit la campagne de codification réalisée, sans calcul d'exactit
 Les **lignes sans code** (`prediction_source` vide) et les **erreurs LLM** (`llm_error`)
 ressortent ici : leur nombre signale la part de produits non codés automatiquement. Voir
 l'éventail des valeurs possibles de `predicted_code` sur la page
-[9. Final output](07-final-output.qmd#quelles-valeurs-pour-predicted_code).
+[9. Final output](07-export-results.qmd#quelles-valeurs-pour-predicted_code).
 
 ## Mode évaluation (jeu annoté)
 
@@ -95,8 +95,8 @@ calcule l'**exactitude**. Ses sections :
 ### Sur quelle vérité terrain le rapport score-t-il ?
 
 Sur **`code_lvl4`**, la version canonique de l'annotation produite par
-[`decide-coicop`](06-decide-coicop.qmd) — pas sur `code` brut. Les prédictions vivant dans
-l'espace de codes [pruné](pruning.qmd), la vérité doit y vivre aussi : sinon une prédiction
+[`reconcile-llm`](06-reconcile-llm.qmd) — pas sur `code` brut. Les prédictions vivant dans
+l'espace de codes [pruné](prune-codes.qmd), la vérité doit y vivre aussi : sinon une prédiction
 canonique exacte (`01.3` face à une annotation `01.3.0.0.x`) est comptée fausse, un biais qui
 touche ~24 % des Postes de la nomenclature. Les runs antérieurs à l'introduction de
 `code_lvl4` retombent automatiquement sur `code` ; la colonne réellement utilisée est affichée
@@ -149,7 +149,7 @@ Avec une vérité canonique, le **niveau 5 n'est plus affiché** : les codes pru
 
 Les gabarits lisent leurs entrées via des **variables d'environnement** plutôt que des
 paramètres Quarto : `REPORT_INPUT_PATH` (fichier de prédictions), `REPORT_DECIDE_PATH`
-(sortie `decide-coicop`, mode prédiction), `REPORT_RUN_ID`, `REPORT_RUN_DATE`. C'est
+(sortie `reconcile-llm`, mode prédiction), `REPORT_RUN_ID`, `REPORT_RUN_DATE`. C'est
 `report/main.py` qui les positionne avant d'appeler `quarto render` ; pour itérer sur le
 gabarit en local, il suffit de les exporter soi-même puis de rendre le `.qmd` directement.
 
@@ -163,7 +163,7 @@ Sont enregistrés notamment :
 
 - **Paramètres** du pipeline pour rejouer/comparer un run : `run_id`, `run_date`,
   `model_name` (LLM RAG), `decide_model`, `decide_concurrency`, **`ttc_model_uri`** (URI du
-  modèle utilisé par [`run-ttc`](05-run-ttc.qmd)), `skip_vector_db`, `truth_column` (la
+  modèle utilisé par [`classify-ttc`](05-classify-ttc.qmd)), `skip_vector_db`, `truth_column` (la
   colonne de vérité terrain scorée), l'emplacement S3 de sortie, etc.
 - **Tags** : mode (`prediction`/`evaluation`), commit et branche git.
 - **Métriques** : durées des étapes Argo, nombre d'observations, distribution des codes

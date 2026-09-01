@@ -32,10 +32,10 @@ from datetime import datetime
 
 import numpy as np
 import pandas as pd
-from prune.utils import ABSTENTION_SENTINELS as prune_abstention_sentinels
-from prune.utils import is_answer
+from prune_codes.utils import ABSTENTION_SENTINELS as prune_abstention_sentinels
+from prune_codes.utils import is_answer
 
-# Prediction columns produced by decide-coicop, in display order.
+# Prediction columns produced by reconcile-llm, in display order.
 # ``llm_code`` is the final prediction (after the LLM arbitration step).
 # ``ragann_code`` (RAG on annotated examples) is only present when the
 # annotation-RAG brick ran — methods absent from the data are skipped.
@@ -48,7 +48,7 @@ METHODS = [
     ("SIRUS", "sirus_code"),
 ]
 
-# Les deux conciliations possibles (paramètre Argo `conciliation`), de la plus
+# Les deux conciliations possibles (paramètre Argo `reconciliation`), de la plus
 # ancienne à la plus récente. Elles sont EXCLUSIVES : un run porte l'une ou
 # l'autre, jamais les deux.
 CONCILIATIONS = [
@@ -62,12 +62,12 @@ LEVELS = [1, 2, 3, 4, 5]
 # parts[:4] already compares the codes in full.
 CANONICAL_LEVELS = [1, 2, 3, 4]
 
-# Ground-truth columns produced by decide-coicop: the raw annotation, and its
+# Ground-truth columns produced by reconcile-llm: the raw annotation, and its
 # canonical form (truncated to level 4 + linear hierarchies pruned).
 TRUTH_COL_RAW = "code"
 TRUTH_COL_CANONICAL = "code_lvl4"
 
-# decide-coicop records the arbitration regime in `llm_model`: the consensus
+# reconcile-llm records the arbitration regime in `llm_model`: the consensus
 # short-circuit (`try_consensus_decision` — every available source agrees with
 # TTC top-1 and its confidence is >= 0.90) retains that code without calling the
 # judge, so `llm_code == ttc_code_1` by construction on those rows. Pooling the
@@ -82,8 +82,8 @@ REGIMES = [("Consensus", "consensus"), ("Arbitré", "arbitrated")]
 REGIME_LEVEL = 4
 
 # Le vocabulaire de l'abstention (« ce classifieur a-t-il répondu ? ») vit dans
-# `prune.utils` : c'est du vocabulaire de code COICOP, partagé avec le module
-# `sirus/`, qui ne peut pas dépendre de `report/` (jupyter, matplotlib, seaborn).
+# `prune_codes.utils` : c'est du vocabulaire de code COICOP, partagé avec le module
+# `reconcile-sirus/`, qui ne peut pas dépendre de `report/` (jupyter, matplotlib, seaborn).
 # Ré-exporté ici pour que report.qmd, prediction_report.qmd et main.py continuent
 # de l'importer depuis `coicop_metrics` sans changement.
 ABSTENTION_SENTINELS = prune_abstention_sentinels
@@ -120,7 +120,7 @@ def final_decision(data: pd.DataFrame, *, strict: bool = True):
     raise KeyError(
         "aucune colonne de conciliation dans ces données "
         f"({[c for _, c in CONCILIATIONS]}) : le parquet ne vient ni de "
-        "decide-coicop ni de sirus-predict."
+        "reconcile-llm ni de reconcile-sirus."
     )
 
 
@@ -209,7 +209,7 @@ def accuracy_table(
     return pd.DataFrame(rows).set_index("méthode")
 
 
-# `is_answer` est importé de `prune.utils` (voir ABSTENTION_SENTINELS ci-dessus)
+# `is_answer` est importé de `prune_codes.utils` (voir ABSTENTION_SENTINELS ci-dessus)
 # et ré-exporté ici : report.qmd et prediction_report.qmd l'importent depuis ce
 # module. Voir ``coverage_table`` pour séparer « coder faux » de « ne pas coder ».
 
@@ -297,7 +297,7 @@ def regime_masks(data: pd.DataFrame) -> list[tuple[str, str, pd.Series]] | None:
     """Split ``data`` into consensus vs judge-arbitrated rows.
 
     Returns ``[(label, metric_suffix, mask), …]``, or None when ``REGIME_COL`` is
-    absent (runs produced before decide-coicop tagged the regime).
+    absent (runs produced before reconcile-llm tagged the regime).
     """
     if REGIME_COL not in data.columns:
         return None
@@ -424,7 +424,7 @@ def parse_step_timings(raw: str) -> dict[str, float]:
     ``raw`` is a JSON object ``{step: [startedAt, finishedAt]}`` using RFC3339
     timestamps. Returns ``duration_<step>_seconds`` for every step whose two
     timestamps parse, plus ``codification_total_seconds`` spanning from the
-    preprocessing start to the decide-coicop finish. Missing/unresolved values
+    preprocessing start to the reconcile-llm finish. Missing/unresolved values
     are skipped rather than raising.
     """
     if not raw:
@@ -448,14 +448,14 @@ def parse_step_timings(raw: str) -> dict[str, float]:
             if duree > 0:
                 out["duration_" + step.replace("-", "_") + "_seconds"] = duree
 
-    # Durée totale de codification : début de preprocessing → fin de la
+    # Durée totale de codification : début de build-datasets → fin de la
     # conciliation. Les deux conciliations étant exclusives (paramètre
     # `conciliation`), on prend celle qui a effectivement tourné : l'autre est
     # skippée et ses horodatages ont été écartés ci-dessus.
-    start = parsed.get("preprocessing", (None, None))[0]
+    start = parsed.get("build-datasets", (None, None))[0]
     end = (
-        parsed.get("decide-coicop", (None, None))[1]
-        or parsed.get("sirus-predict", (None, None))[1]
+        parsed.get("reconcile-llm", (None, None))[1]
+        or parsed.get("reconcile-sirus", (None, None))[1]
     )
     if start and end and (end - start).total_seconds() > 0:
         out["codification_total_seconds"] = (end - start).total_seconds()

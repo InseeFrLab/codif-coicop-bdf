@@ -27,10 +27,10 @@ impossibles à normaliser en aval. Une prédiction `11.2.0` face à une annotati
 comptée comme une erreur, et deux documents quasi identiques se retrouvaient dans Qdrant.
 
 Les postes concernés n'étaient pas anecdotiques en BdF : tabac (`02.3`) et services
-d'hébergement (`11.2`). Voir [Prune](pruning.qmd) pour l'algorithme corrigé et
-`prune/tests/test_pruning.py` pour les tests de non-régression.
+d'hébergement (`11.2`). Voir [Prune](prune-codes.qmd) pour l'algorithme corrigé et
+`prune-codes/tests/test_pruning.py` pour les tests de non-régression.
 
-### Normalisation asymétrique dans `decide-coicop`
+### Normalisation asymétrique dans `reconcile-llm`
 
 Trois oublis dans la normalisation (troncature niveau 4 + élagage) :
 
@@ -44,12 +44,12 @@ Trois oublis dans la normalisation (troncature niveau 4 + élagage) :
   Postes** de la nomenclature, et non uniformément réparti entre divisions. La table
   intermédiaire porte désormais les deux colonnes (`code` brut et `code_lvl4` canonique) et le
   rapport score sur la seconde.
-- **`llm_code`** n'était normalisé que dans `final-output`, pas dans la sortie de
-  `decide-coicop` — or c'est cette sortie que le rapport score.
+- **`llm_code`** n'était normalisé que dans `export-results`, pas dans la sortie de
+  `reconcile-llm` — or c'est cette sortie que le rapport score.
 
 ### Fuite de la vérité terrain dans le prompt du juge
 
-Le prompt de `decide-coicop` contenait une ligne `Code de référence : {code}`, valant `N/A` en
+Le prompt de `reconcile-llm` contenait une ligne `Code de référence : {code}`, valant `N/A` en
 production mais **exposant le code annoté en évaluation**. Double effet : métriques du juge
 invalides (leakage), et incitation à répondre au niveau 5. La ligne a été retirée.
 
@@ -57,8 +57,8 @@ invalides (leakage), et incitation à répondre au niveau 5. La ligne a été re
 
 ### Le juge LLM ne voit pas la nomenclature prunée
 
-`decide-coicop` soumet au LLM un **fichier statique du dépôt**
-(`decide-coicop/data/coicop_et_codes_techniques.csv`, ~700 codes) et non la
+`reconcile-llm` soumet au LLM un **fichier statique du dépôt**
+(`reconcile-llm/data/coicop_et_codes_techniques.csv`, ~700 codes) et non la
 `nomenclature_pruned.parquet` du run. Ce fichier contient **171 codes de niveau 5** et tous les
 codes en `.0` que l'élagage vient d'éliminer. On demande donc au juge de choisir « le niveau le
 plus précis justifié » dans une liste qui contient des codes que le pipeline s'interdit par
@@ -66,8 +66,8 @@ ailleurs. La normalisation aval rattrape le tir, mais :
 
 - le juge peut hésiter entre deux codes que le pipeline considère comme un seul ;
 - le fichier peut se désynchroniser de la nomenclature RMES à tout moment (il existe déjà deux
-  versions divergentes dans le dépôt : celle de `decide-coicop/data/` et celle de
-  `codif-ttc/data/`).
+  versions divergentes dans le dépôt : celle de `reconcile-llm/data/` et celle de
+  `classify-ttc/data/`).
 
 **Piste** : passer `--nomenclature` depuis Argo en dérivant un CSV de
 `nomenclature_pruned.parquet`.
@@ -77,7 +77,7 @@ ailleurs. La normalisation aval rattrape le tir, mais :
 Deux règles regex (`\bremboursement\b` et `^retrait\b`) produisent le code **`99.6`**. Ce code
 est bien un code technique **utilisé en pratique** — il figure dans le suggester avec le libellé
 « Remboursement prêt » — mais il est **absent du référentiel soumis au juge LLM**
-(`decide-coicop/data/coicop_et_codes_techniques.csv`, qui contient 20 codes techniques : `98`,
+(`reconcile-llm/data/coicop_et_codes_techniques.csv`, qui contient 20 codes techniques : `98`,
 `98.1`–`98.8`, `99`, `99.1`–`99.5`, `99.9`). Conséquences :
 
 - le juge ne peut jamais *choisir* `99.6`, même quand c'est la bonne réponse ;
@@ -124,7 +124,7 @@ Le risque théorique reste entier pour un **changement de millésime** : toutes 
 supposées en ECOICOP v2 (COICOP 2018), y compris les annotations BdF 2017 (converties en
 amont). Un code ECOICOP **v1** qui fuiterait serait tronqué en un code v2 faux dans ~76 % des
 cas, les deux arborescences ne coïncidant pas. Une table de passage v1→v2 existe dans le dépôt
-(`codif-ttc/data/table_passage_coicop.csv`) mais **n'est utilisée par aucun code**, et rien ne
+(`classify-ttc/data/table_passage_coicop.csv`) mais **n'est utilisée par aucun code**, et rien ne
 détecte un code v1 en entrée.
 
 **Piste** : logguer (ou faire échouer) les codes dont la troncature niveau 4 n'existe pas dans
@@ -134,11 +134,11 @@ détecte un code v1 en entrée.
 
 ### Quatre copies de `truncate_code`
 
-La même fonction est dupliquée dans quatre modules : `prune/src/prune/utils.py`,
-`coicop-rag/src/coicop_rag/utils.py`, `coicop-rag/src/coicop_rag/eval/metrics.py`,
-`coicop-rag-annotations/src/coicop_rag_annotations/utils.py`. Les implémentations sont
-identiques aujourd'hui — rien ne le garantit demain. Seuls `decide-coicop` et `final-output`
-consomment le module `prune` comme dépendance et partagent donc réellement la logique.
+La même fonction est dupliquée dans quatre modules : `prune-codes/src/prune/utils.py`,
+`rag-notices/src/rag_notices/utils.py`, `rag-notices/src/rag_notices/eval/metrics.py`,
+`rag-annotations/src/rag_annotations/utils.py`. Les implémentations sont
+identiques aujourd'hui — rien ne le garantit demain. Seuls `reconcile-llm` et `export-results`
+consomment le module `prune-codes` comme dépendance et partagent donc réellement la logique.
 
 Cette fonction est par ailleurs peu défensive :
 
@@ -153,12 +153,12 @@ Cette fonction est par ailleurs peu défensive :
 
 Les collections Qdrant portent des **noms fixes** (`coicop_lineage`,
 `coicop_annotations_without_copain_2017`) et sont réutilisées d'un run à l'autre quand
-`skip-vector-db=true`, alors que `mapping_lvl4.parquet` est **recalculé à chaque run**. Si la
+`skip-index=true`, alors que `mapping_lvl4.parquet` est **recalculé à chaque run**. Si la
 nomenclature source change sans reconstruction de l'index, l'index décrit l'ancien espace de
 codes et le mapping le nouveau.
 
 **Règle pratique** : toute évolution de la nomenclature source impose un run avec
-`skip-vector-db=false`.
+`skip-index=false`.
 
 ### `filter_nomenclature` sans repli quand toutes les prédictions sont au niveau 1
 
@@ -174,7 +174,7 @@ Le `report` publie désormais explicitement **deux conventions** d'accuracy, doc
 loguées séparément (`accuracy_*` stricte et `accuracy_all_*` inclusive) — voir
 [la page report](08-report.qmd#les-deux-conventions-daccuracy). Il reste en revanche une
 troisième série, non alignée : les métriques que **chaque branche RAG** loggue pour son propre
-compte (expériences MLflow `test` et `rag-annotation`).
+compte (expériences MLflow `test` et `classify-rag-annotations`).
 
 Ces branches évaluent sur leur propre périmètre (leur jeu d'entrée pruné, leurs propres
 niveaux, `eval.levels: 4`) et avec leur propre convention. Pour un même modèle et un même jeu,
@@ -192,7 +192,7 @@ la nomenclature prunée — voir le point suivant.
 Le suggester contient **27 codes de niveau 2** et 56 de niveau 3 avant pruning ; après
 troncature et élagage, **59 de ses codes sont au niveau 2** et 1 107 au niveau 3 (sur
 6 611 produits distincts). Tous sont indexés comme candidats légitimes dans la base vectorielle
-des [RAG annotations](09-rag-annotation.qmd), et le prompt impose au LLM de choisir **parmi**
+des [RAG annotations](09-rag-annotations.qmd), et le prompt impose au LLM de choisir **parmi**
 ces candidats. Le RAG annotations peut donc légitimement proposer un code très agrégé, sans que
 rien ne distingue une réponse volontairement agrégée d'une sous-codification.
 
@@ -218,19 +218,19 @@ sous-codification dans le fichier livré.
 
 - **Détection du mode du rapport** : `report/main.py` teste `bool_and(code IS NULL)`. Un seul
   code non nul dans un fichier de production fait basculer tout le rapport en mode évaluation.
-- **Accuracy regex trompeuse** : `regex-codif` calcule une accuracy par égalité stricte entre
+- **Accuracy regex trompeuse** : `classify-regex` calcule une accuracy par égalité stricte entre
   la vérité (niveau 5) et son code prédit (niveau ≤ 4) — la métrique est proche de 0 par
   construction et ne doit pas être lue comme une performance.
-- **Script d'évaluation obsolète** : `coicop-rag/scripts/eval.py` lit des colonnes
+- **Script d'évaluation obsolète** : `rag-notices/scripts/eval.py` lit des colonnes
   (`code_tprune`, `code_predict_tprune`) que `2_run_rag.py` ne produit plus, et contient des
   chemins S3 datés en dur. Il n'est pas appelé par Argo.
-- **Config résiduelle** : `coicop-rag/config/config.yaml` déclare encore un `path_raw`
+- **Config résiduelle** : `rag-notices/config/config.yaml` déclare encore un `path_raw`
   (nomenclature brute) qu'aucun script ne lit — seule la nomenclature prunée est utilisée.
-- **Pas de verrouillage des dépendances R** : `stats-annotations` installe ses paquets au
-  runtime via `install.packages`, sans `renv` ni lockfile : les résultats de `codif-lcs` ne sont
+- **Pas de verrouillage des dépendances R** : `classify-lcs` installe ses paquets au
+  runtime via `install.packages`, sans `renv` ni lockfile : les résultats de `classify-lcs` ne sont
   pas strictement reproductibles dans le temps.
 
 ---
 
-Retour à l'[accueil](index.qmd) · voir aussi [Prune](pruning.qmd) et
-[Decide](06-decide-coicop.qmd).
+Retour à l'[accueil](index.qmd) · voir aussi [Prune](prune-codes.qmd) et
+[Decide](06-reconcile-llm.qmd).
