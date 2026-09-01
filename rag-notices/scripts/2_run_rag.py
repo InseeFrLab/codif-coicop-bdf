@@ -8,6 +8,7 @@ import yaml
 import datetime
 import logging
 import argparse
+from pathlib import Path
 from tqdm import tqdm
 import duckdb
 import pandas as pd
@@ -245,6 +246,9 @@ def main():
 
 def setup_logging():
     """Configure logging with both console and file handlers"""
+    # Chaque run Argo part d'un clone neuf : le dossier n'existe pas encore, et
+    # FileHandler ne le crée pas. Sans ça, l'étape échoue à l'import.
+    Path("logs").mkdir(parents=True, exist_ok=True)
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
