@@ -19,7 +19,7 @@ dependencies = [
 ]
 
 [tool.uv.sources]
-prune = { path = "../prune" }
+prune = { workspace = true }
 
 [dependency-groups]
 dev = [

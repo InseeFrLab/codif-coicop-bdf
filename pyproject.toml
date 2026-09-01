@@ -1,0 +1,69 @@
+# Racine du workspace uv — elle ne porte aucun code et aucune dépendance
+# d'exécution. Son seul rôle : déclarer les modules Python du dépôt comme
+# membres d'un même workspace, ce qui force UNE résolution commune et donc UN
+# seul `uv.lock` (à côté de ce fichier).
+#
+# Pourquoi : les 10 modules se passent des Parquet d'étape en étape. Avec un
+# lock par module, ils avaient divergé sur les briques qui écrivent et relisent
+# ces fichiers — pandas 2.3.3 pour codif-ttc contre 3.0.5 pour decide-coicop,
+# duckdb 1.4.4 contre 1.5.5, pyarrow 22 contre 25. Une seule résolution rend
+# cet écart impossible.
+#
+# Ce que ça ne change pas : chaque module garde son `pyproject.toml` et sa
+# propre liste de dépendances, et `cd <module> && uv sync` n'installe QUE les
+# dépendances de ce module (le lock partagé ne dicte que les versions, pas le
+# périmètre installé).
+#
+# Ajouter une dépendance à un module, depuis n'importe où dans le dépôt :
+#   uv add --package <module> <paquet>
+# Mettre à jour un paquet pour tout le dépôt :
+#   uv lock --upgrade-package <paquet>
+#
+# --- Version commune de pandas : 2.x, et ce n'est pas un choix -----------------
+# `mlflow` déclare `pandas<3` (toutes les versions >= 3.10 sauf 3.11.0). Cinq
+# modules en dépendent (codif-ttc, coicop-rag, coicop-rag-annotations, report,
+# sirus), donc aucune résolution commune en pandas 3 n'existe aujourd'hui.
+# `preprocessing` et `regex-codif`, qui demandaient `pandas>=3`, ont été relâchés
+# en `>=2.3` — leurs locks isolés les avaient emmenés en 3.0.x, ce qui était
+# précisément l'incohérence que ce workspace supprime.
+#
+# Aucune contrainte artificielle n'est posée ici : le plafond vient de mlflow et
+# disparaîtra avec lui. Le jour où mlflow supportera pandas 3,
+# `uv lock --upgrade-package pandas` fera monter tout le dépôt d'un coup.
+
+[project]
+name = "codif-coicop-bdf"
+version = "0.1.0"
+description = "Pipeline de codification COICOP de l'enquête Budget de Famille (racine de workspace)"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = []
+
+[tool.uv]
+# La racine n'est pas un paquet installable : rien à construire ici.
+package = false
+
+[tool.uv.workspace]
+# `stats-annotations/` (R) et `annexes/` (scripts d'analyse hors pipeline) ne
+# sont pas des projets Python : ils ne peuvent pas être membres.
+members = [
+    "codif-ttc",
+    "coicop-rag",
+    "coicop-rag-annotations",
+    "decide-coicop",
+    "final-output",
+    "preprocessing",
+    "prune",
+    "regex-codif",
+    "report",
+    "sirus",
+]
+
+# Outillage transverse, disponible depuis la racine (`uv run ruff check .`).
+# Les groupes `dev` des modules restent en place : ils servent aux commandes
+# documentées dans leurs README (`cd sirus && uv run pytest`).
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+    "ruff>=0.15.1",
+]

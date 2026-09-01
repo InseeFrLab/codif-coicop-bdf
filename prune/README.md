@@ -22,9 +22,12 @@ coicop-rag-annotations).
 ## Usage
 
 ```bash
-uv sync
+uv sync --locked
 uv run scripts/main.py --config config/config.yaml --run-id <ID> --run-date <YYYY-MM-DD>
 ```
+
+Le dépôt est un workspace `uv` : le lock est à la racine, et cette commande n'installe
+que les dépendances de ce module (voir « Environnement Python » dans le README racine).
 
 Entrées : la nomenclature COICOP brute + les sorties de `codif-regex`
 (`raw_train_without_regex` = KB, `raw_test_without_regex` = à coder) + le

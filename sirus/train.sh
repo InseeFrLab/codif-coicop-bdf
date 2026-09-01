@@ -22,7 +22,7 @@ if [ -z "${MLFLOW_TRACKING_URI:-}" ]; then
 fi
 
 mkdir -p "$ART"
-uv sync
+uv sync --locked
 Rscript R/install_deps.R
 
 # `rag-annotation` au SINGULIER, contrairement au nom de l'étape Argo.

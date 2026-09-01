@@ -6,7 +6,12 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "mlflow>=3.9.0",
-    "torchtextclassifiers>=1.0.3",
+    # Plafonné sur la majeure en production (1.0.4). Rien dans le workspace
+    # n'impose 2.0 : la résolution commune le prendrait par défaut, et un saut
+    # majeur de la brique de classification n'a pas sa place dans un commit
+    # d'harmonisation d'environnement. À monter séparément, avec un test de
+    # prédiction contre un modèle MLflow existant.
+    "torchtextclassifiers>=1.0.3,<2",
     "transformers>=4.30.0",
     "pandas>=2.0.0",
     "pyarrow>=12.0.0",
@@ -14,7 +19,7 @@ dependencies = [
     "beautifulsoup4>=4.14.3",
     "requests>=2.32.5",
     "unidecode>=1.4.0",
-    "duckdb==1.4.4",
+    "duckdb>=1.5.1",
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.34.0",
     "openai>=2.16.0",
@@ -27,3 +32,8 @@ synth = [
     "langchain-openai>=0.3.0",
 ]
 
+# `tests/` existe : pytest est déclaré ici pour que
+# `uv sync --group dev` suffise à lancer la suite. Le pipeline installe
+# avec `--no-dev` et n'est pas concerné.
+[dependency-groups]
+dev = ["pytest>=9.0.2"]

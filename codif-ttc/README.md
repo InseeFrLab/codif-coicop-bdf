@@ -11,11 +11,14 @@ Les deux approches utilisent un tokenizer n-grammes de caracteres (3-6 grammes) 
 
 ## Installation
 
-Prerequis : Python 3.13 (voir `.python-version`).
+Prerequis : Python 3.13 (voir `.python-version` à la racine du dépôt).
 
 ```bash
-uv sync
+uv sync --locked
 ```
+
+Le dépôt est un workspace `uv` : le lock est à la racine, et cette commande n'installe
+que les dépendances de ce module (voir « Environnement Python » dans le README racine).
 
 ## Vue d'ensemble du pipeline
 

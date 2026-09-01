@@ -129,7 +129,37 @@ Ce dépôt rassemble le code de toutes les étapes du pipeline, auparavant dispe
 | [`final-output/`](./final-output/) | — | Étape `final-output` (livrable utilisateur) |
 | [`report/`](./report/) | — | Rapport Quarto d'exactitude (étape `report`, opt-in) |
 
-Chaque sous-dossier Python conserve son propre `pyproject.toml` / `uv.lock` et peut être développé et exécuté indépendamment.
+Chaque sous-dossier Python conserve son propre `pyproject.toml` (ses dépendances lui
+appartiennent), mais tous sont membres d'un même **workspace `uv`**.
+
+## Environnement Python
+
+Un `pyproject.toml` à la racine déclare les 10 modules Python comme membres d'un workspace, ce
+qui donne **un seul `uv.lock`** pour tout le dépôt : une seule version de `pandas`, `duckdb`,
+`pyarrow`… partagée par toutes les étapes. C'est nécessaire parce que les étapes se passent des
+Parquet : avec un lock par module, `regex-codif` écrivait en pandas 3 ce que `codif-ttc` relisait
+en pandas 2.
+
+```bash
+# Travailler sur un module : n'installe que SES dépendances, aux versions du lock racine
+cd prune/ && uv sync --locked
+uv run scripts/main.py --help
+
+# Ajouter une dépendance à un module, depuis n'importe où dans le dépôt
+uv add --package prune polars
+
+# Faire monter un paquet pour TOUT le dépôt (le lock est commun)
+uv lock --upgrade-package duckdb
+```
+
+L'environnement (`.venv`) vit à la racine du workspace et est reconstruit par chaque `uv sync` :
+enchaîner deux modules est normal et rapide. `--locked` fait échouer la commande si le lock ne
+correspond plus aux `pyproject.toml` — c'est ce que fait le pipeline, plutôt que de re-résoudre
+les dépendances en silence au démarrage d'une étape.
+
+`stats-annotations/` (R) n'est pas concerné : ses dépendances sont installées par `R/main.R`.
+
+Python ≥ 3.13 partout (`.python-version` à la racine).
 
 ## Lancer le workflow
 

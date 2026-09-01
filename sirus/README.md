@@ -192,7 +192,7 @@ l'égalité bit-à-bit atteignable — et donc la divergence détectable.
 
 ```bash
 cd sirus/
-uv sync --group dev
+uv sync --locked --group dev
 uv run pytest                    # tests golden + invariants de la table candidat
 Rscript R/install_deps.R         # une fois par environnement, ~1 min 30 à vide
                                  # (appelé aussi par train.sh, idempotent)

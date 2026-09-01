@@ -4,9 +4,12 @@ Using coicop classification.
 
 ## Starting
 
-```python
-uv sync
+```bash
+uv sync --locked
 ```
+
+Le dépôt est un workspace `uv` : le lock est à la racine, et cette commande n'installe
+que les dépendances de ce module (voir « Environnement Python » dans le README racine).
 
 ## Workflow
 
@@ -74,7 +77,7 @@ qu'Onyxia injecte chaque clé comme variable d'environnement.
 
 ```bash
 cd coicop-rag
-uv sync
+uv sync --locked
 mkdir -p logs prompts   # le logger écrit dans logs/ (sinon échec au démarrage)
 
 uv run python           # session interactive : os.environ est déjà peuplé par Vault

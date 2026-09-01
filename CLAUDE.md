@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Monorepo for the automatic COICOP codification pipeline of the INSEE Budget de Famille (BDF) survey. Orchestrated via Argo Workflows (`argo/codif-pipeline.yaml`). Each subdirectory is an independent Python (or R) module with its own `pyproject.toml` / `uv.lock`.
+Monorepo for the automatic COICOP codification pipeline of the INSEE Budget de Famille (BDF) survey. Orchestrated via Argo Workflows (`argo/codif-pipeline.yaml`). Each subdirectory is a Python (or R) module with its own `pyproject.toml`. The Python modules are members of a single **uv workspace**: one `uv.lock` at the repo root, one resolved version per package across the whole pipeline.
 
 ## Pipeline DAG
 
@@ -64,15 +64,29 @@ Key pipeline parameters:
 
 ## Developing a Module
 
-Each Python module is self-contained:
+The repo is a **uv workspace**: one `pyproject.toml` per module for its own dependencies, but
+a single `uv.lock` at the root — so every step runs the same pandas/duckdb/pyarrow. Syncing from
+a module directory installs only that module's dependencies, into the shared `.venv` at the
+workspace root:
 
 ```bash
 cd <module>/
-uv sync          # install deps
+uv sync --locked   # only this module's deps, versions from the root lock
 uv run python main.py ...
+
+uv add --package <module> <pkg>      # add a dependency, from anywhere in the repo
+uv lock --upgrade-package <pkg>      # bump a package for the whole repo
 ```
 
-PyPI packages are fetched through the INSEE Nexus proxy (configured per-module in `pyproject.toml [tool.uv]`). Python ≥ 3.13 required everywhere.
+`--locked` fails if the lock no longer matches the `pyproject.toml` files instead of silently
+re-resolving; the Argo steps use `uv sync --locked --no-dev`.
+
+**pandas stays on 2.x** and it is not a preference: `mlflow` declares `pandas<3`, and five
+modules depend on mlflow. The reason is documented in the root `pyproject.toml`; the day mlflow
+supports pandas 3, `uv lock --upgrade-package pandas` moves the whole repo at once.
+
+No package index is configured in the repo — uv resolves against PyPI directly. Python ≥ 3.13
+required everywhere (`.python-version` at the root).
 
 Inter-module data exchange goes through S3 (parquet files). The path convention is `s3://<bucket>/<run_id>/<run_date>/<step_name>/`.
 

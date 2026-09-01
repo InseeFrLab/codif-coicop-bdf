@@ -19,3 +19,9 @@ dependencies = [
     "pandas>=2.3.3",
     "pyyaml>=6.0",
 ]
+
+# `tests/` existe : pytest est déclaré ici pour que
+# `uv sync --group dev` suffise à lancer la suite. Le pipeline installe
+# avec `--no-dev` et n'est pas concerné.
+[dependency-groups]
+dev = ["pytest>=9.0.2"]

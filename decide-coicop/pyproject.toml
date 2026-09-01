@@ -14,7 +14,7 @@ dependencies = [
 ]
 
 [tool.uv.sources]
-prune = { path = "../prune" }
+prune = { workspace = true }
 
 # Rend `decide_coicop` importable depuis un module frère : `sirus/` réutilise
 # `load_all_observations` pour ne pas dupliquer la fusion des 4 classifieurs ni

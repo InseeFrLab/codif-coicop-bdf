@@ -334,7 +334,7 @@ spec:
           - |
             set -e
             git clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/preprocessing
-            uv sync
+            uv sync --locked --no-dev
             ARGS="--run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}"
             # input_file vide => mode évaluation : ne pas passer --input-file ni les colonnes (sens uniquement en prédiction)
             if [ -n "{{inputs.parameters.input_file}}" ]; then
@@ -344,7 +344,7 @@ spec:
               [ -n "{{inputs.parameters.annee_column}}" ]  && ARGS="$ARGS --annee-column {{inputs.parameters.annee_column}}"
               [ -n "{{inputs.parameters.source_column}}" ] && ARGS="$ARGS --source-column {{inputs.parameters.source_column}}"
             fi
-            uv run main.py $ARGS
+            uv run --locked --no-dev main.py $ARGS
         env:
           - name: AWS_ACCESS_KEY_ID
             valueFrom:
@@ -394,7 +394,7 @@ spec:
           - |
             set -e
             git clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/regex-codif
-            uv sync
+            uv sync --locked --no-dev
             ARGS="--run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}"
             # input_file non vide => mode production (train=annotations_full, test=observations)
             [ -n "{{workflow.parameters.input_file}}" ] && ARGS="$ARGS --input-file {{workflow.parameters.input_file}}"
@@ -403,7 +403,7 @@ spec:
             SAMPLE_OBS="{{workflow.parameters.sample-observations}}"
             [ -z "{{workflow.parameters.input_file}}" ] && SAMPLE_OBS="{{workflow.parameters.sample-annotations}}"
             [ -n "$SAMPLE_OBS" ] && ARGS="$ARGS --sample-size $SAMPLE_OBS"
-            uv run src/main.py $ARGS
+            uv run --locked --no-dev src/main.py $ARGS
         env:
           - name: AWS_ACCESS_KEY_ID
             valueFrom:
@@ -507,8 +507,8 @@ spec:
           - |
             set -e
             git clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/prune
-            uv sync
-            uv run scripts/main.py --config {{inputs.parameters.config}} --run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}
+            uv sync --locked --no-dev
+            uv run --locked --no-dev scripts/main.py --config {{inputs.parameters.config}} --run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}
         env:
           - name: AWS_ACCESS_KEY_ID
             valueFrom:
@@ -555,7 +555,7 @@ spec:
           - |
             set -e
             git clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/coicop-rag
-            uv run scripts/0_create_vector_db.py --config {{inputs.parameters.config}} --run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}
+            uv run --locked --no-dev scripts/0_create_vector_db.py --config {{inputs.parameters.config}} --run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}
         env:
           - name: AWS_ACCESS_KEY_ID
             valueFrom:
@@ -637,7 +637,7 @@ spec:
               ARGS="$ARGS --model_name {{inputs.parameters.model-name}}"
             fi
 
-            uv run scripts/2_run_rag.py $ARGS
+            uv run --locked --no-dev scripts/2_run_rag.py $ARGS
         env:
           - name: LANGFUSE_BASE_URL
             valueFrom:
@@ -745,7 +745,7 @@ spec:
             BUILD_ARGS="--config {{inputs.parameters.config}} --run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}} --skip-eval $SKIP_EVAL"
             # Échantillon de la KB d'annotations indexée dans la vector DB.
             [ -n "{{workflow.parameters.sample-annotations}}" ] && BUILD_ARGS="$BUILD_ARGS --sample-size {{workflow.parameters.sample-annotations}}"
-            uv run scripts/0_build_annotation_vector_db.py $BUILD_ARGS
+            uv run --locked --no-dev scripts/0_build_annotation_vector_db.py $BUILD_ARGS
         env:
           - name: AWS_ACCESS_KEY_ID
             valueFrom:
@@ -836,7 +836,7 @@ spec:
             # sample-annotations non vide → collection Qdrant de test (suffix _test).
             [ -n "{{inputs.parameters.sample-annotations}}" ] && ARGS="$ARGS --sample-annotations {{inputs.parameters.sample-annotations}}"
 
-            uv run scripts/1_run_rag.py $ARGS
+            uv run --locked --no-dev scripts/1_run_rag.py $ARGS
         env:
           - name: LANGFUSE_BASE_URL
             valueFrom:
@@ -937,11 +937,11 @@ spec:
           - |
             set -e
             git clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/codif-ttc
-            uv sync
+            uv sync --locked --no-dev
 
             RUN_ROOT="s3://projet-budget-famille/data/workflow_runs/{{inputs.parameters.run_date}}/{{inputs.parameters.run_id}}"
             # Échantillonnage centralisé en amont (codif-regex) → pas de sampling ici.
-            uv run main.py predict-basic \
+            uv run --locked --no-dev main.py predict-basic \
               --model "{{inputs.parameters.ttc-model-uri}}" \
               --file "$RUN_ROOT/codif-regex/raw_test_without_regex.parquet" \
               --output "$RUN_ROOT/run-ttc/predictions.parquet" \
@@ -1005,7 +1005,7 @@ spec:
           - |
             set -e
             git clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/decide-coicop
-            uv sync
+            uv sync --locked --no-dev
 
             RUN_ROOT="s3://projet-budget-famille/data/workflow_runs/{{inputs.parameters.run_date}}/{{inputs.parameters.run_id}}"
             # Colonnes utilisateur : observations en production, split test des annotations en évaluation.
@@ -1024,7 +1024,7 @@ spec:
               ARGS="$ARGS --model {{inputs.parameters.model}}"
             fi
 
-            uv run main.py decide-coicop $ARGS
+            uv run --locked --no-dev main.py decide-coicop $ARGS
         env:
           - name: LLMLAB_API_KEY
             valueFrom:
@@ -1090,7 +1090,7 @@ spec:
           - |
             set -e
             git clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/sirus
-            uv sync
+            uv sync --locked --no-dev
 
             RUN_ROOT="s3://projet-budget-famille/data/workflow_runs/{{inputs.parameters.run_date}}/{{inputs.parameters.run_id}}"
             # Colonnes utilisateur : observations en production, split test des
@@ -1110,7 +1110,7 @@ spec:
                   --model-uri {{inputs.parameters.sirus-model-uri}} \
                   --output-file $RUN_ROOT/sirus-predict/predictions.parquet"
 
-            uv run main.py predict $ARGS
+            uv run --locked --no-dev main.py predict $ARGS
         env:
           # MLFLOW_* : nécessaires pour résoudre sirus-model-uri.
           - name: MLFLOW_TRACKING_URI
@@ -1181,7 +1181,7 @@ spec:
           - |
             set -e
             git clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/final-output
-            uv sync
+            uv sync --locked --no-dev
             ARGS="--run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}"
             # Quelle conciliation a produit le code final. Le chemin du parquet
             # en est déduit côté Python : une seule source de vérité.
@@ -1192,7 +1192,7 @@ spec:
             [ -n "{{inputs.parameters.annee_column}}" ]  && ARGS="$ARGS --annee-column {{inputs.parameters.annee_column}}"
             # input_file non vide => mode production : colonnes utilisateur depuis observations.parquet
             [ -n "{{workflow.parameters.input_file}}" ] && ARGS="$ARGS --input-file {{workflow.parameters.input_file}}"
-            uv run main.py $ARGS
+            uv run --locked --no-dev main.py $ARGS
         env:
           - name: AWS_ACCESS_KEY_ID
             valueFrom:
@@ -1253,7 +1253,7 @@ spec:
           - |
             set -e
             git clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/report
-            uv sync
+            uv sync --locked --no-dev
 
             ARGS="--run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}} \
                   --experiment-name {{inputs.parameters.experiment-name}} \
@@ -1276,7 +1276,7 @@ spec:
             # step-timings is JSON (spaces/newlines): pass it directly with literal
             # single quotes so it stays one argument (it must NOT go through $ARGS,
             # which would word-split it on expansion).
-            uv run main.py $ARGS --step-timings '{{inputs.parameters.step-timings}}'
+            uv run --locked --no-dev main.py $ARGS --step-timings '{{inputs.parameters.step-timings}}'
         env:
           - name: MLFLOW_TRACKING_URI
             valueFrom:

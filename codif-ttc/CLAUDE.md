@@ -8,11 +8,12 @@ Hierarchical text classifier for COICOP (Classification of Individual Consumptio
 
 ## Commands
 
-All commands use `uv` as the package manager (with INSEE internal PyPI proxy).
+All commands use `uv`. This module is a member of the repo-root uv workspace: the lockfile
+lives at the repo root, and syncing here installs only this module's dependencies.
 
 ```bash
-# Install dependencies
-uv sync
+# Install dependencies (versions come from the root uv.lock)
+uv sync --locked
 
 # Train hierarchical classifier (n-gram tokenizer, 5-level)
 uv run python main.py train-hierarchical --data data/data-train.parquet --output checkpoints/hierarchical

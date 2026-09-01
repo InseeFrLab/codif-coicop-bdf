@@ -27,9 +27,9 @@ spec:
           - |
             set -e
             git clone --branch main https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/codif-ttc
-            uv sync
+            uv sync --locked --no-dev
 
-            uv run main.py predict-basic \
+            uv run --locked --no-dev main.py predict-basic \
               --model "mlflow-artifacts:/10/cacf2603514b4887bbfb77e2654c9bc1/artifacts/model" \
               --file "s3://projet-budget-famille/data/output-annotation-consolidated/annotations-consolidated-2026-04-15/raw_test.parquet" \
               --output "s3://projet-budget-famille/data/workflow_outputs/outputs_ttc/predictions_{{= sprig.date "20060102150405" sprig.now }}.parquet" \

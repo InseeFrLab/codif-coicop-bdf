@@ -21,4 +21,4 @@ dev = [
 ]
 
 [tool.uv.sources]
-decide-coicop = { path = "../decide-coicop" }
+decide-coicop = { workspace = true }
