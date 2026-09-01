@@ -6,6 +6,10 @@ project:
     - "cards/*.qmd"
     - "slides/*/index.qmd"
     - "!archive/"
+    # Plans de refactor : documents de travail internes, pas de la documentation
+    # publiée. Le `.md` suffirait (la liste ci-dessus ne prend que des .qmd), mais
+    # l'exclusion explicite protège d'un futur ajout de "*.md" à cette liste.
+    - "!refactor-plan.md"
 
 website:
   title: "Codification COICOP — BDF"
