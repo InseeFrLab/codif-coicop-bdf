@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "type": "classif",
+  "aggregation": "mean",
+  "features": [
+    "vote_lcs",
+    "vote_rag",
+    "vote_ragann",
+    "vote_ttc",
+    "nb_votants",
+    "conf_rag",
+    "conf_ragann",
+    "conf_ttc",
+    "dist_lcs",
+    "code_candidat_n1"
+  ],
+  "feature_kind": {
+    "vote_lcs": "numeric",
+    "vote_rag": "numeric",
+    "vote_ragann": "numeric",
+    "vote_ttc": "numeric",
+    "nb_votants": "numeric",
+    "conf_rag": "numeric",
+    "conf_ragann": "numeric",
+    "conf_ttc": "numeric",
+    "dist_lcs": "numeric",
+    "code_candidat_n1": "factor"
+  },
+  "factor_levels": {
+    "code_candidat_n1": [
+      "01",
+      "02",
+      "03",
+      "04",
+      "05",
+      "06",
+      "07",
+      "08",
+      "09",
+      "10",
+      "11",
+      "12",
+      "13",
+      "98",
+      "99"
+    ]
+  },
+  "mean": "0.5",
+  "rules": [],
+  "sentinels": {
+    "conf_missing": "-1",
+    "dist_lcs_missing": "1.5"
+  },
+  "hyperparams": {
+    "num_rule_requested": 12,
+    "num_rule_selected": 12,
+    "max_depth": 2,
+    "num_trees": 7000,
+    "q": 10,
+    "seed": 11
+  }
+}

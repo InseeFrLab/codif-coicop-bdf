@@ -67,6 +67,15 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--skip-vector-db", default=None)
     p.add_argument("--skip-report", default=None)
+    p.add_argument(
+        "--conciliation", choices=["llm", "sirus"], default="llm",
+        help="Quelle étape de conciliation a tranché : `llm` (decide-coicop, "
+             "défaut) ou `sirus` (sirus-predict). Détermine le parquet lu.",
+    )
+    p.add_argument(
+        "--sirus-model-uri", default=None,
+        help="Tracé dans MLflow pour savoir quel modèle a produit les codes.",
+    )
     return p.parse_args()
 
 
@@ -154,6 +163,10 @@ def log_to_mlflow(args, run_root, output_s3, decide_path, prediction) -> None:
             "skip_report": args.skip_report,
             "output_prefix": run_root,
             "report_html": output_s3,
+            # Quelle conciliation a tranché, et avec quel modèle : sans ça, deux
+            # runs aux métriques différentes seraient indistinguables.
+            "conciliation": args.conciliation,
+            "sirus_model_uri": args.sirus_model_uri,
         }
         mlflow.log_params({k: v for k, v in params.items() if v is not None})
         mlflow.set_tag("mode", "prediction" if prediction else "evaluation")
@@ -290,7 +303,12 @@ def log_to_mlflow(args, run_root, output_s3, decide_path, prediction) -> None:
 def main() -> int:
     args = parse_args()
     run_root = f"s3://{args.bucket}/data/workflow_runs/{args.run_date}/{args.run_id}"
-    decide_path = f"{run_root}/decide-coicop/predictions.parquet"
+    # Les deux conciliations sont exclusives (paramètre Argo `conciliation`) :
+    # on lit celle qui a effectivement tourné. Le fichier porte, dans les deux
+    # cas, la table fusionnée complète — donc le rapport peut scorer les 4
+    # classifieurs de base à l'identique.
+    conciliation_step = "sirus-predict" if args.conciliation == "sirus" else "decide-coicop"
+    decide_path = f"{run_root}/{conciliation_step}/predictions.parquet"
     final_output_path = f"{run_root}/final-output/predictions.parquet"
     output_s3 = f"{run_root}/report/report.html"
 

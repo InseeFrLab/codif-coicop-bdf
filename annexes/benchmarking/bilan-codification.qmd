@@ -1,0 +1,573 @@
+---
+title: "Bilan de la codification COICOP"
+subtitle: "Accuracy niveau 4 et calibration du score SIRUS, mesurées contre la codification précédente"
+format:
+  html:
+    toc: true
+    toc-depth: 2
+    embed-resources: true
+    code-fold: true
+    theme: cosmo
+    fig-width: 9
+    fig-height: 5
+execute:
+  echo: false
+  warning: false
+  error: false
+jupyter: python3
+---
+
+```{python}
+# | tags: [setup]
+# Bilan simple d'un run de PRODUCTION dont le fichier d'entrée était déjà annoté :
+# la colonne `code_previous` sert de référence, ce qui permet de mesurer une
+# accuracy là où un run de production n'en fournit normalement pas.
+#
+# Rendu (l'environnement du module `report/` porte déjà toutes les dépendances,
+# `coicop_metrics` et `prune` compris) :
+#
+#     cd report/ && uv sync
+#     BILAN_RUN_ID=codif-sj4jz BILAN_RUN_DATE=2026-08-31 \
+#     BILAN_INPUT=<chemin s3 du final-output> \
+#       uv run quarto render ../annexes/benchmarking/bilan-codification.qmd
+#
+# Les trois variables ont des valeurs par défaut pointant sur le run du
+# 2026-08-31 ; les redéfinir suffit à rejouer le bilan sur un autre run.
+
+import os
+import sys
+from pathlib import Path
+from textwrap import dedent
+
+import duckdb
+import matplotlib.pyplot as plt
+import matplotlib.ticker as mticker
+import numpy as np
+import pandas as pd
+import seaborn as sns
+from IPython.display import Markdown
+
+# `coicop_metrics` (module libre de report/) et `prune` (paquet installé, mais
+# ajouté ici pour un rendu hors environnement report/) : on réutilise les
+# helpers testés plutôt que de réimplémenter la comparaison de codes.
+# Racine du dépôt trouvée en remontant jusqu'à un marqueur, et non par un nombre
+# de niveaux : quarto exécute depuis le dossier du .qmd, mais un rendu lancé
+# autrement (kernel enregistré globalement, notebook ouvert à la main) n'aurait
+# pas la même profondeur.
+_HERE = Path.cwd().resolve()
+_ROOT = next(
+    (p for p in (_HERE, *_HERE.parents) if (p / "report" / "coicop_metrics.py").is_file()),
+    None,
+)
+if _ROOT is None:
+    raise RuntimeError(
+        "Racine du dépôt codif-coicop-bdf introuvable depuis "
+        f"{_HERE} : `report/coicop_metrics.py` est requis."
+    )
+for _p in (_ROOT / "report", _ROOT / "prune" / "src"):
+    if str(_p) not in sys.path:
+        sys.path.insert(0, str(_p))
+
+from coicop_metrics import accuracy, accuracy_series  # noqa: E402
+from prune.utils import truncate_code  # noqa: E402
+
+RUN_ID = os.environ.get("BILAN_RUN_ID", "codif-sj4jz")
+RUN_DATE = os.environ.get("BILAN_RUN_DATE", "2026-08-31")
+RUN_ROOT = f"s3://projet-budget-famille/data/workflow_runs/{RUN_DATE}/{RUN_ID}"
+INPUT = os.environ.get(
+    "BILAN_INPUT", f"{RUN_ROOT}/final-output/annotations_vague1_2026_a_codif.parquet"
+)
+
+# ── Palette ───────────────────────────────────────────────────────────────────
+# Une seule série par graphique : un seul ton porteur (slot catégoriel 1 de la
+# palette de référence, valeur documentée et validée), le reste en encre
+# neutre/récessive. Pas de dégradé en fonction de la valeur : la longueur de la
+# barre porte déjà la magnitude.
+SERIES = "#2a78d6"
+INK_MUTED = "#8a8a85"
+INK_REF = "#52514e"
+
+
+def fr(value, decimals=1):
+    """Nombre au format français (virgule décimale, espace comme séparateur de
+    milliers) — le document est en français, matplotlib ne le fait pas seul."""
+    return f"{value:,.{decimals}f}".replace(",", " ").replace(".", ",")
+
+
+def fr_int(value):
+    """Entier au format français. À utiliser dans les f-strings qui contiennent
+    aussi un `fr(...)` : un `.replace(",", " ")` global sur la chaîne finale
+    écraserait la virgule décimale produite par `fr` (« 77,2 » → « 77 2 »)."""
+    return f"{int(value):,}".replace(",", " ")
+
+sns.set_theme(style="whitegrid")
+plt.rcParams.update({
+    "grid.linewidth": 0.5,
+    "axes.edgecolor": "#d5d4cf",
+    "axes.linewidth": 0.6,
+})
+
+con = duckdb.connect()
+con.sql("INSTALL httpfs; LOAD httpfs;")
+endpoint = (
+    os.environ.get("AWS_S3_ENDPOINT")
+    or os.environ.get("AWS_ENDPOINT_URL", "").replace("https://", "").replace("http://", "")
+    or "minio.lab.sspcloud.fr"
+)
+con.sql(
+    dedent(
+        f"""
+        CREATE OR REPLACE SECRET s3_secret (
+            TYPE s3,
+            KEY_ID '{os.environ.get("AWS_ACCESS_KEY_ID", "")}',
+            SECRET '{os.environ.get("AWS_SECRET_ACCESS_KEY", "")}',
+            SESSION_TOKEN '{os.environ.get("AWS_SESSION_TOKEN", "")}',
+            ENDPOINT '{endpoint}',
+            URL_STYLE 'path',
+            USE_SSL true
+        );
+        """
+    )
+)
+
+df = con.sql(f"SELECT * FROM read_parquet('{INPUT}')").df()
+
+# ── Vérité de référence, ramenée dans l'espace canonique ──────────────────────
+# INDISPENSABLE : `predicted_code` vit dans l'espace canonique (tronqué au niveau
+# 4 puis hiérarchies linéaires élaguées), alors que `code_previous` est une
+# annotation brute pouvant aller au niveau 5. Comparer les deux tels quels fait
+# perdre ~9 points d'accuracy en pur artefact — une prédiction canonique `01.2.1`
+# serait comptée fausse face à une vérité `01.2.1.0`. On applique donc à la
+# vérité la troncature puis le mapping d'élagage produits par l'étape `prune` du
+# run lui-même.
+mapping = con.sql(f"SELECT * FROM read_parquet('{RUN_ROOT}/prune/mapping_lvl4.parquet')").df()
+_to_parent = dict(
+    zip(mapping["code"].astype(str), mapping["code_parent_equivalent"].astype(str))
+)
+df["truth"] = (
+    df["code_previous"]
+    .map(lambda c: truncate_code(c, 4))
+    .map(lambda c: _to_parent.get(str(c), c))
+)
+
+# Convention `inclusive=True` : toutes les lignes portant une vérité comptent, à
+# quelle que profondeur que ce soit. C'est la seule convention qui ait un sens
+# sur des codes canoniques — une vérité `01.3` **est** la réponse de niveau 4, et
+# non une troncature de celle-ci (cf. docstring de report/coicop_metrics.py).
+LEVEL = 4
+df["ok"] = accuracy_series(df["truth"], df["predicted_code"], LEVEL, inclusive=True)
+
+n_tot = len(df)
+n_ok, n_app, acc_glob = accuracy(df["truth"], df["predicted_code"], LEVEL, inclusive=True)
+# Convention stricte, à titre de comparaison : exclut du dénominateur les
+# observations dont la vérité canonique est moins profonde que 4.
+_, n_strict, acc_strict = accuracy(
+    df["truth"], df["predicted_code"], LEVEL, inclusive=False
+)
+```
+
+## Ce que mesure ce bilan
+
+Ce run est un run de **production** : le pipeline a codifié un fichier
+d'observations, sans vérité terrain. Mais ce fichier-ci avait **déjà été
+annoté** — il porte une colonne `code_previous`. Les chiffres ci-dessous
+comparent donc la codification automatique à cette **annotation antérieure**.
+
+C'est un **taux d'accord**, pas une accuracy au sens strict : quand les deux
+divergent, ce n'est pas nécessairement la machine qui a tort.
+
+```{python}
+display(Markdown(f"""
+| | |
+|---|---|
+| Run | `{RUN_ID}` ({RUN_DATE}) |
+| Fichier | `{INPUT.rsplit('/', 1)[-1]}` |
+| Observations | **{n_tot:,}** |
+| Conciliation | SIRUS (règles interprétables) |
+| Niveau évalué | {LEVEL} (sous-classe COICOP) |
+""".replace(",", " ")))
+```
+
+## Accuracy globale au niveau 4
+
+```{python}
+display(Markdown(
+    f"""
+### {fr(acc_glob*100)} % {{.unnumbered}}
+
+**{fr_int(n_ok)}** des **{fr_int(n_app)}** observations reçoivent le même code de
+niveau 4 que la codification précédente.
+"""
+))
+
+display(Markdown(f"""
+En convention **stricte** — les observations dont la vérité canonique est moins
+profonde que le niveau {LEVEL} sont exclues du dénominateur — le taux est de
+**{fr(acc_strict*100)} %** sur {fr_int(n_strict)} observations. Les deux
+conventions sont justes ; la première couvre toute la population, la seconde ne
+juge que les observations codables jusqu'au niveau {LEVEL}.
+"""))
+```
+
+### Par source de la décision
+
+Deux briques produisent le code final : les **règles regex** captent en amont les
+libellés conventionnels (« courses », « carte bancaire », « réduction »…), et
+**SIRUS** tranche tout le reste.
+
+```{python}
+by_src = (
+    df.groupby("prediction_source")
+    .agg(n=("ok", "size"), ok=("ok", lambda s: (s == True).sum()))  # noqa: E712
+)
+by_src["Accuracy"] = (by_src["ok"] / by_src["n"] * 100).map(lambda v: f"{fr(v)} %")
+# Trier AVANT de formater : `fr_int` rend du texte, et un tri lexicographique sur
+# « 14 695 » / « 1 598 » ne donne pas l'ordre des effectifs.
+by_src = by_src.sort_values("n", ascending=False)
+by_src["n"] = by_src["n"].map(fr_int)
+by_src["ok"] = by_src["ok"].map(fr_int)
+by_src = by_src.rename(
+    columns={"n": "Observations", "ok": "Codes concordants"}
+).rename_axis("Source")
+display(Markdown(by_src.to_markdown()))
+```
+
+## Accuracy par division COICOP
+
+La **division** est le premier niveau de la nomenclature (2 chiffres). Les
+divisions `98` et `99` ne sont pas des divisions COICOP mais des codes
+conventionnels de l'enquête : dépenses regroupées ou illisibles pour `98`,
+opérations hors champ (dons, opérations bancaires, impôts) pour `99`.
+
+```{python}
+DIV_LABELS_EXTRA = {
+    "98": "Dépenses regroupées ou indéterminées (hors COICOP)",
+    "99": "Opérations hors champ (hors COICOP)",
+}
+# Libellés courts pour l'axe du graphique. Tronquer les libellés officiels
+# couperait en plein mot ; le tableau ci-dessus porte la version intégrale.
+DIV_SHORT = {
+    "01": "Alimentation",
+    "02": "Boissons alcoolisées, tabac",
+    "03": "Habillement et chaussures",
+    "04": "Logement, eau, énergie",
+    "05": "Meubles et entretien du foyer",
+    "06": "Santé",
+    "07": "Transports",
+    "08": "Information et communication",
+    "09": "Loisirs, sport et culture",
+    "10": "Enseignement",
+    "11": "Restauration et hébergement",
+    "12": "Assurance et services financiers",
+    "13": "Soins corporels, services divers",
+    "98": "Dépenses regroupées",
+    "99": "Hors champ",
+}
+nom = con.sql(
+    f"SELECT code, label_fr FROM read_parquet('{RUN_ROOT}/prune/nomenclature_pruned.parquet') "
+    f"WHERE length(code) = 2"
+).df()
+div_labels = dict(zip(nom["code"].astype(str), nom["label_fr"].astype(str)))
+div_labels.update(DIV_LABELS_EXTRA)
+
+df["division"] = df["truth"].astype(str).str.split(".").str[0]
+by_div = (
+    df.groupby("division")
+    .agg(n=("ok", "size"), ok=("ok", lambda s: (s == True).sum()))  # noqa: E712
+)
+by_div["acc"] = by_div["ok"] / by_div["n"] * 100
+by_div["label"] = by_div.index.map(lambda d: div_labels.get(d, "—"))
+by_div = by_div.sort_values("acc", ascending=False)
+
+table = pd.DataFrame({
+    "Division": by_div.index,
+    "Libellé": by_div["label"].values,
+    "Observations": [fr_int(v) for v in by_div["n"]],
+    "Accuracy": [f"{fr(v)} %" for v in by_div["acc"]],
+})
+display(Markdown(table.to_markdown(index=False)))
+```
+
+```{python}
+# Catégories nominales : une seule couleur pour toutes les barres. La longueur
+# porte déjà la magnitude, la teinte n'a rien à ajouter.
+plot_div = by_div.sort_values("acc")
+labels = [f"{d} · {DIV_SHORT.get(d, '—')}" for d in plot_div.index]
+
+fig, ax = plt.subplots(figsize=(9, 5.6))
+ax.barh(labels, plot_div["acc"], color=SERIES, height=0.6)
+ax.axvline(acc_glob * 100, color=INK_REF, linewidth=1.2, zorder=3)
+ax.annotate(
+    f"ensemble : {fr(acc_glob*100)} %",
+    xy=(acc_glob * 100, len(plot_div) - 0.35), xytext=(5, 0),
+    textcoords="offset points", color=INK_REF, fontsize=9, va="center",
+)
+# Étiquettes alignées en colonne à droite des barres, et non collées à
+# l'extrémité de chacune : sinon celles des divisions proches de la moyenne
+# viennent chevaucher la ligne de référence.
+for y, (a, n) in enumerate(zip(plot_div["acc"], plot_div["n"])):
+    ax.annotate(f"{fr(a, 0)} %", xy=(104, y), va="center", ha="right",
+                fontsize=8.5, color=INK_REF)
+    ax.annotate(f"n = {n:,}".replace(",", " "), xy=(109, y), va="center",
+                fontsize=8.5, color=INK_MUTED)
+ax.set_xlim(0, 124)
+ax.set_xticks([0, 20, 40, 60, 80, 100])
+ax.set_xlabel(f"Accord avec la codification précédente au niveau {LEVEL} (%)")
+ax.set_title("Accuracy par division COICOP", loc="left")
+ax.xaxis.set_major_formatter(mticker.PercentFormatter(xmax=100, decimals=0))
+ax.grid(axis="y", visible=False)
+plt.tight_layout()
+plt.show()
+```
+
+## Calibration du score SIRUS
+
+`sirus-predict` livre, avec chaque code, un score (`prediction_confidence`).
+Cette section répond à une seule question : **ce score sépare-t-il les codes
+fiables des codes douteux ?** Les lignes codées par regex n'ont pas de score et
+sont exclues.
+
+```{python}
+sir = df[df["prediction_source"] == "sirus"].copy()
+s_min, s_max = sir["prediction_confidence"].min(), sir["prediction_confidence"].max()
+
+EDGES = np.arange(0.30, 0.7001, 0.05)
+sir["bin"] = pd.cut(sir["prediction_confidence"], bins=EDGES, include_lowest=True)
+cal = (
+    sir.groupby("bin", observed=False)
+    .agg(n=("ok", "size"), ok=("ok", lambda s: (s == True).sum()))  # noqa: E712
+)
+cal["acc"] = cal["ok"] / cal["n"] * 100
+cal = cal[cal["n"] > 0]
+centers = np.array([iv.mid for iv in cal.index])
+
+# Deux panneaux partageant l'axe des scores plutôt qu'un double axe Y : accorder
+# deux échelles sur un même cadre inventerait une corrélation absente des
+# données. Le panneau du bas rend lisibles les tranches à faible effectif, où le
+# taux du haut est nécessairement bruité.
+fig, (ax, axn) = plt.subplots(
+    2, 1, figsize=(9, 6.4), sharex=True,
+    gridspec_kw={"height_ratios": [3, 1], "hspace": 0.12},
+)
+
+ax.plot(centers, cal["acc"], color=SERIES, linewidth=2, marker="o",
+        markersize=8, markerfacecolor=SERIES, markeredgecolor="white",
+        markeredgewidth=2, zorder=3)
+ax.axhline(acc_glob * 100, color=INK_REF, linewidth=1.2, zorder=2)
+ax.annotate(f"ensemble du run : {fr(acc_glob*100)} %",
+            xy=(EDGES[0], acc_glob * 100), xytext=(2, 5), textcoords="offset points",
+            color=INK_REF, fontsize=9)
+# Étiquette au-dessus du point, sauf quand la courbe monte vers lui : on la
+# passe alors en dessous pour ne pas l'écrire sur le segment qui y arrive.
+_acc = list(cal["acc"])
+for i, (x, a) in enumerate(zip(centers, _acc)):
+    if i == 0:
+        # Premier point : au-dessus, l'étiquette tomberait sur le segment qui
+        # monte vers le point suivant ; on la pose à gauche du marqueur.
+        ax.annotate(f"{fr(a, 0)} %", xy=(x, a), xytext=(-10, 0),
+                    textcoords="offset points", ha="right", va="center",
+                    fontsize=9, color=INK_REF)
+        continue
+    rising_into = _acc[i - 1] < a
+    dy, va = (-13, "top") if rising_into else (11, "bottom")
+    ax.annotate(f"{fr(a, 0)} %", xy=(x, a), xytext=(0, dy),
+                textcoords="offset points", ha="center", va=va,
+                fontsize=9, color=INK_REF)
+# Marge à gauche pour que l'étiquette du premier point ne soit pas coupée.
+ax.set_xlim(EDGES[0] - 0.012, EDGES[-1] + 0.006)
+ax.set_ylim(0, 108)
+ax.set_ylabel(f"Accuracy niveau {LEVEL} (%)")
+ax.yaxis.set_major_formatter(mticker.PercentFormatter(xmax=100, decimals=0))
+ax.set_title("L'accuracy croît avec le score SIRUS", loc="left")
+
+axn.bar(centers, cal["n"], width=0.045, color=INK_MUTED)
+axn.set_ylabel("Observations")
+axn.set_xlabel("Score SIRUS (tranches de 0,05)")
+axn.xaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: fr(v, 2)))
+axn.grid(axis="x", visible=False)
+axn.yaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"{int(v):,}".replace(",", " ")))
+plt.tight_layout()
+plt.show()
+```
+
+```{python}
+lo, hi = cal["acc"].iloc[0], cal["acc"].iloc[-1]
+display(Markdown(f"""
+**Le score discrimine fortement.** De la tranche la plus basse à la plus haute,
+l'accuracy passe de **{fr(lo, 0)} %** à **{fr(hi, 0)} %**. Un score élevé est donc un
+indicateur utilisable pour décider quelles lignes relire.
+
+Deux propriétés du score à garder en tête avant d'en tirer un seuil :
+
+- **la plage atteignable est étroite** — ici **[{fr(s_min, 2)} ; {fr(s_max, 2)}]**, jamais
+  0 ni 1. Le score est une moyenne non pondérée des sorties de règles, donc une
+  combinaison convexe de valeurs strictement intermédiaires : **0,5 n'a rien de
+  particulier**, et un seuil lu sur ce modèle ne se transpose pas au suivant ;
+- **la masse est très concentrée** dans la tranche haute (voir le panneau du
+  bas). Les tranches basses, peu peuplées, portent un taux d'autant plus bruité ;
+  c'est là que les irrégularités de la courbe se situent.
+
+`sirus-predict` n'applique volontairement aucun seuil : le choix du niveau
+d'exigence est une décision métier, que ce graphique documente sans la trancher.
+La section suivante en chiffre le prix — combien de produits restent codés
+automatiquement, et avec quel accord, à chaque niveau d'exigence.
+"""))
+```
+
+## Combien de produits code-t-on à un seuil donné ?
+
+Poser un seuil sur le score, c'est arbitrer entre deux coûts : les lignes
+retenues partent **sans relecture** (et leurs erreurs avec elles), les lignes
+écartées repartent en **reprise manuelle**. Cette section chiffre les deux
+termes de l'arbitrage seuil par seuil.
+
+Le périmètre auto-codé réunit, à un seuil donné, les lignes **regex** — qui
+n'ont pas de score et sortent donc toujours du pipeline — et les lignes
+**SIRUS** dont le score atteint le seuil. C'est ce périmètre-là qui est livré,
+donc c'est sur lui que le volume et l'accuracy sont mesurés.
+
+```{python}
+IS_SIRUS = df["prediction_source"] == "sirus"
+CONF = df["prediction_confidence"]
+N_REGEX = int((~IS_SIRUS).sum())
+
+# Grille bornée au score maximum réellement atteint : au-delà, SIRUS ne retient
+# plus rien et le périmètre se réduit aux seules lignes regex — un régime sans
+# intérêt pour la décision, qui écraserait la lecture des seuils utiles.
+grid = np.arange(EDGES[0], s_max + 1e-9, 0.005)
+rows = []
+for _t in grid:
+    keep = (~IS_SIRUS) | (CONF >= _t)
+    n_keep = int(keep.sum())
+    rows.append({
+        "seuil": _t,
+        "n": n_keep,
+        "n_sirus": int((IS_SIRUS & (CONF >= _t)).sum()),
+        "acc": (df.loc[keep, "ok"] == True).sum() / n_keep * 100,  # noqa: E712
+    })
+sweep = pd.DataFrame(rows)
+
+# Deux panneaux partageant l'axe des seuils, pour la même raison que plus haut :
+# un volume (des produits) et un taux (des pourcents) ne se superposent pas sur
+# un même cadre sans inventer une équivalence entre les deux échelles. Le volume
+# passe en premier : c'est la grandeur que le seuil pilote directement.
+fig, (axv, axa) = plt.subplots(
+    2, 1, figsize=(9, 6.8), sharex=True,
+    gridspec_kw={"height_ratios": [1, 1], "hspace": 0.12},
+)
+
+axv.fill_between(sweep["seuil"], 0, sweep["n"], color=SERIES, alpha=0.12)
+axv.plot(sweep["seuil"], sweep["n"], color=SERIES, linewidth=2, zorder=3)
+# Deux repères encadrent la courbe : le fichier entier (ce qu'on code sans
+# seuil) et le plancher regex (ce qu'on code encore quand SIRUS ne passe plus).
+axv.axhline(n_tot, color=INK_REF, linewidth=1, linestyle=(0, (4, 3)), zorder=2)
+axv.annotate(f"fichier entier : {fr_int(n_tot)} produits",
+             xy=(grid[-1], n_tot), xytext=(0, 5), textcoords="offset points",
+             ha="right", fontsize=9, color=INK_REF)
+axv.axhline(N_REGEX, color=INK_MUTED, linewidth=1, linestyle=(0, (4, 3)), zorder=2)
+axv.annotate(f"plancher regex : {fr_int(N_REGEX)} produits, sans score",
+             xy=(grid[0], N_REGEX), xytext=(2, 5), textcoords="offset points",
+             fontsize=9, color=INK_MUTED)
+axv.set_ylim(0, n_tot * 1.16)
+axv.set_ylabel("Produits codés")
+axv.yaxis.set_major_formatter(
+    mticker.FuncFormatter(lambda v, _: f"{int(v):,}".replace(",", " "))
+)
+# Axe droit : le même effectif en part du fichier. Ce n'est pas une seconde
+# mesure mais un changement d'unité de la même courbe — d'où l'axe secondaire
+# dérivé, et non un `twinx` portant une série distincte.
+axv_pct = axv.secondary_yaxis(
+    "right", functions=(lambda v: v / n_tot * 100, lambda p: p * n_tot / 100)
+)
+axv_pct.set_ylabel("Part du fichier")
+axv_pct.yaxis.set_major_formatter(mticker.PercentFormatter(xmax=100, decimals=0))
+axv.set_title(
+    "Ce qu'un seuil laisse passer, et ce qu'il coûte en accuracy", loc="left"
+)
+
+axa.plot(sweep["seuil"], sweep["acc"], color=SERIES, linewidth=2, zorder=3)
+axa.axhline(acc_glob * 100, color=INK_REF, linewidth=1.2, zorder=2)
+# Repère posé au milieu, sous la ligne : à droite il tombait dans la chute
+# finale de la courbe, à gauche sur son point de départ (qui vaut exactement
+# cette valeur — aucun seuil, c'est le run entier).
+axa.annotate(f"aucun seuil : {fr(acc_glob*100)} %",
+             xy=(grid[len(grid) // 2], acc_glob * 100), xytext=(0, -12),
+             textcoords="offset points", ha="center", fontsize=9, color=INK_REF)
+axa.set_ylim(0, 108)
+axa.set_ylabel(f"Accuracy niveau {LEVEL}")
+axa.yaxis.set_major_formatter(mticker.PercentFormatter(xmax=100, decimals=0))
+axa.set_xlabel("Seuil exigé sur le score SIRUS")
+axa.xaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: fr(v, 2)))
+axa.set_xlim(grid[0] - 0.004, grid[-1] + 0.004)
+plt.tight_layout()
+plt.show()
+```
+
+```{python}
+# Tableau de décision : les mêmes courbes, aux seuils ronds qu'on est susceptible
+# de retenir. Le graphique donne la forme, ce tableau donne les nombres qu'on
+# reporte dans une note ou une consigne de reprise.
+SEUILS = [0.35, 0.40, 0.45, 0.50, 0.55, 0.60, 0.65]
+rows = []
+for _t in SEUILS:
+    keep = (~IS_SIRUS) | (CONF >= _t)
+    n_keep = int(keep.sum())
+    n_ok_keep = int((df.loc[keep, "ok"] == True).sum())  # noqa: E712
+    rows.append({
+        "Seuil": fr(_t, 2),
+        "Produits codés": fr_int(n_keep),
+        "Part du fichier": f"{fr(n_keep / n_tot * 100, 0)} %",
+        "Accuracy": f"{fr(n_ok_keep / n_keep * 100)} %",
+        "À reprendre à la main": fr_int(n_tot - n_keep),
+    })
+display(Markdown(
+    pd.DataFrame(rows).to_markdown(index=False)
+    + f"\n\n*Rappel : sans seuil, les **{fr_int(n_tot)}** produits sont codés "
+    f"avec **{fr(acc_glob*100)} %** d'accord.*"
+))
+```
+
+```{python}
+# Repères commentés : on cite le prix en volume des seuils plausibles, plutôt que
+# de laisser le lecteur interpoler à l'œil. Le plus gros paquet de scores égaux
+# est calculé, pas écrit en dur : c'est lui qui fixe la granularité du seuil, et
+# il change à chaque réentraînement.
+_ref = sweep.iloc[0]
+_gain = sweep[sweep["seuil"] >= 0.45].iloc[0]
+_haut = sweep[sweep["seuil"] >= 0.60].iloc[0]
+_ties = sir["prediction_confidence"].value_counts()
+_tie_score, _tie_n = _ties.index[0], int(_ties.iloc[0])
+display(Markdown(f"""
+**Lecture.** Le volume ne décroît pas régulièrement : le score prend un petit
+nombre de valeurs très peuplées, si bien que la courbe tient un plateau puis
+chute par paliers, chaque palier étant un paquet de lignes de score identique.
+Deux points de repère sur ce run :
+
+- à **{fr(_gain['seuil'], 2)}**, on code encore
+  **{fr_int(_gain['n'])}** produits ({fr(_gain['n'] / n_tot * 100, 0)} % du
+  fichier) avec **{fr(_gain['acc'])} %** d'accord — soit
+  **{fr(_gain['acc'] - _ref['acc'])} points** gagnés contre
+  **{fr_int(_ref['n'] - _gain['n'])}** produits renvoyés en reprise ;
+- à **{fr(_haut['seuil'], 2)}**, l'accord monte à **{fr(_haut['acc'])} %** mais le
+  périmètre codé tombe à **{fr(_haut['n'] / n_tot * 100, 0)} %** du fichier :
+  **{fr_int(n_tot - _haut['n'])}** produits à relire.
+
+Trois limites à garder en vue.
+
+**Le seuil ne se règle pas plus fin que les paliers.** Le plus gros paquet réunit
+**{fr_int(_tie_n)}** lignes SIRUS au score exact **{fr(_tie_score, 3)}**, soit
+{fr(_tie_n / len(sir) * 100, 0)} % d'entre elles : franchir cette seule valeur
+renvoie d'un coup ces {fr_int(_tie_n)} produits en reprise. C'est la chute
+visible à l'extrémité droite du graphique — au-delà, le périmètre codé n'est
+presque plus que du regex, d'où l'effondrement de l'accuracy qui l'accompagne.
+
+**L'accuracy du périmètre est plafonnée par les lignes regex** : elles y entrent
+toujours, à quelque seuil que ce soit, et leur taux d'accord propre
+({fr((df.loc[~IS_SIRUS, 'ok'] == True).mean() * 100)} %) tire l'ensemble vers le
+bas. Aucun seuil sur le score SIRUS ne corrige cela ; c'est aux règles regex
+qu'il faut s'adresser.
+
+**Le seuil se relit à chaque réentraînement** : la plage de scores atteignable et
+la position des paliers sont des propriétés du modèle ajusté, pas du problème.
+"""))
+```

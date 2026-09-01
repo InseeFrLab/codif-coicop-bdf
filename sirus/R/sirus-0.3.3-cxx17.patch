@@ -1,0 +1,55 @@
+--- a/src/Makevars	2020-03-04 15:34:42.000000000 +0000
++++ b/src/Makevars	2026-08-17 12:38:19.000000000 +0000
+@@ -1,4 +1,8 @@
+ ## Use c++11
+ CXX_STD = CXX11
+-PKG_CPPFLAGS = -DR_BUILD
++# R_NO_REMAP: modern toolchains ignore CXX_STD=CXX11 and build with a newer
++# default C++ standard, under which Rinternals.h's bare error/length macros
++# corrupt unrelated standard headers pulled in transitively (e.g.
++# <bits/locale_conv.h>). No code in this package calls the bare R API macros.
++PKG_CPPFLAGS = -DR_BUILD -DR_NO_REMAP
+ 
+--- a/src/utility.h	2020-03-04 15:34:42.000000000 +0000
++++ b/src/utility.h	2026-08-17 12:38:07.000000000 +0000
+@@ -25,6 +25,13 @@
+ #include <utility> 
+ 
+ #ifdef R_BUILD
++// R_NO_REMAP: Rinternals.h otherwise defines bare macros like `error` and
++// `length` (-> Rf_error/Rf_length). On newer glibc/libstdc++ those macros
++// leak into unrelated standard headers pulled in transitively later in the
++// same translation unit (e.g. <bits/locale_conv.h>, which itself defines
++// members named `error`/`length`), breaking compilation. No code in this
++// package calls the bare R API macros, so this is safe.
++#define R_NO_REMAP
+ #include <Rinternals.h>
+ #endif
+ 
+@@ -500,7 +507,14 @@
+ }
+ #endif
+ 
+-// Provide make_unique (not available in C++11)
++// Provide make_unique (not available in C++11). Modern compilers/R toolchains
++// ignore this package's `CXX_STD = CXX11` Makevars directive and build with a
++// much newer default standard (e.g. gnu++20), where std::make_unique already
++// exists. Since the unqualified calls below take std::vector<...> arguments,
++// ADL then makes std::make_unique a second, ambiguous candidate against this
++// polyfill. Guarding the polyfill to pre-C++14 builds only avoids the clash
++// while keeping true C++11 builds working.
++#if __cplusplus < 201402L
+ namespace detail {
+ 
+ template<class T> struct _Unique_if {
+@@ -531,6 +545,10 @@
+ template<class T, class ... Args>
+ typename detail::_Unique_if<T>::_Known_bound make_unique(Args&&...) = delete;
+ 
++#else
++using std::make_unique;
++#endif
++
+ }
+ // namespace ranger
+ 

@@ -12,8 +12,12 @@ Monorepo for the automatic COICOP codification pipeline of the INSEE Budget de F
                                       ┌──→ create-vector-db ──────────────┐  (skippable)
    preprocessing ──┐   ┌──→ prune ────┤                                   ├──→ run-rag(-annotations) ─┐
                    └──→┤              └──→ create-vector-db-annotations ───┘                           │
-                       └──→ codif-regex ─┬──→ codif-lcs ──────────────────────────────────────────────┼──→ decide-coicop ──→ final-output ──→ report
-                         (→ prune)       └──→ run-ttc  ───────────────────────────────────────────────┘
+                       └──→ codif-regex ─┬──→ codif-lcs ──────────────────────────────────────────────┼──→ CONCILIATION ──→ final-output ──→ report
+                         (→ prune)       └──→ run-ttc  ───────────────────────────────────────────────┘        │
+                                                                                                       ┌───────┴────────┐
+                                                                              (paramètre conciliation) │                │
+                                                                                  decide-coicop (llm)  │   sirus-predict (sirus)
+                                                                                   — les deux sont exclusifs —
 ```
 
 Le pruning (troncature niv.4 + élagage des hiérarchies linéaires) est centralisé dans le module `prune/` : une étape unique, après `codif-regex`, qui produit tous les artefacts prunés (nomenclature, mapping, annotations train/test, suggester) sous `…/{run}/prune/`. L'aval ne fait que lire.
@@ -28,6 +32,7 @@ Le pruning (troncature niv.4 + élagage des hiérarchies linéaires) est central
 | `stats-annotations/` | `codif-lcs` | R |
 | `codif-ttc/` | `run-ttc` | Python |
 | `decide-coicop/` | `decide-coicop` | Python |
+| `sirus/` | `sirus-predict` (entraînement hors pipeline) | Python + R |
 | `report/` | `report` | Python + Quarto |
 | `final-output/` | `final-output` | Python |
 
@@ -53,6 +58,9 @@ Key pipeline parameters:
 - `sample-annotations` — cap the annotation KB indexed in the vector DB.
 - `sample-observations` — cap the to-codify set (production only); sampled once at `codif-regex` so all classifiers share the same rows. In eval, `sample-annotations` is used instead.
 - `model-name` (LLM for run-rag), `decide-model` (default `gemma4-26b-moe`), `decide-concurrency` (default `5`), `skip-vector-db`, `skip-report`.
+- `conciliation` — `llm` (default, `decide-coicop`) or `sirus` (`sirus-predict`). **Mutually exclusive**: the other step is skipped via `when:`, and `final-output`/`report` depend on both (legacy `dependencies:` tolerates a Skipped node).
+- `sirus-model-uri` — MLflow artifact URI, required when `conciliation: sirus`. Training happens **outside the pipeline** (`cd sirus/ && ./train.sh <date>/<run_id>`), so the model can never come from the run it scores — train-on-test is impossible by construction (same pattern as `ttc-model-uri`).
+- `sirus-predict` applies **no threshold**: it emits `sirus_code` + `sirus_proba` per product and nothing else. Deciding what score is good enough to skip review is a business call, informed by the "Calibration de SIRUS" section of the evaluation report.
 
 ## Developing a Module
 
@@ -77,6 +85,8 @@ Inter-module data exchange goes through S3 (parquet files). The path convention 
 **`coicop-rag-annotations/`** — RAG sur exemples annotés : `0_build_annotation_vector_db.py` indexe la KB prunée (+ suggester), `1_run_rag.py` codifie l'input pruné (éval/prod via `--skip-eval`).
 
 **`decide-coicop/`** — Module autonome : LLM-as-judge fusionnant les sorties de `codif-lcs`, `run-rag`, `run-rag-annotations`, `run-ttc`. Normalise d'abord les codes LCS/TTC (troncature niv.4 + élagage, via `prune`, dépendance path). Consensus short-circuit : si les quatre s'accordent et que la confiance TTC ≥ 0.90, aucun appel LLM. Reprise supportée : relancer avec le même `run_id`/`run_date` reprend depuis la sortie existante. Entrée `main.py decide-coicop`.
+
+**`sirus/`** — Conciliation alternative au juge LLM, par règles interprétables (SIRUS). Une seule étape Argo, `sirus-predict` (**Python pur** : le modèle est une liste de règles en JSON et le scoring une moyenne, donc pas de R ni de compilation en production). L'**entraînement est hors pipeline**, comme celui de `codif-ttc/` : `cd sirus/ && ./train.sh <date>/<run_id>` enchaîne la construction de la table candidat-level (Python, réutilisant `decide_coicop.load_all_observations`), l'ajustement (R) et les mesures + log MLflow (Python). L'équivalence Python ↔ `sirus.predict` est prouvée par un test golden bit-exact et re-vérifiée à chaque entraînement. Voir `sirus/README.md` — en particulier sur l'exploitation du score, dont la plage atteignable est une propriété du modèle et non du problème.
 
 **`stats-annotations/`** — R scripts only; entry point is `R/main.R`.
 

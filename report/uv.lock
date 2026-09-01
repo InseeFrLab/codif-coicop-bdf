@@ -478,6 +478,7 @@ dependencies = [
     { name = "mlflow" },
     { name = "nbformat" },
     { name = "pandas" },
+    { name = "prune" },
     { name = "pyarrow" },
     { name = "seaborn" },
     { name = "tabulate" },
@@ -498,6 +499,7 @@ requires-dist = [
     { name = "mlflow", specifier = ">=3.9.0" },
     { name = "nbformat", specifier = ">=5.10" },
     { name = "pandas", specifier = ">=2.2" },
+    { name = "prune", directory = "../prune" },
     { name = "pyarrow", specifier = ">=16" },
     { name = "seaborn", specifier = ">=0.13" },
     { name = "tabulate", specifier = ">=0.9" },
@@ -2338,6 +2340,23 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/9b/ca/25afc144934014700c52e05103c2421997482d561f3101ff352e1292fb81/protobuf-6.33.6-cp39-abi3-manylinux2014_s390x.whl", hash = "sha256:c96c37eec15086b79762ed265d59ab204dabc53056e3443e702d2681f4b39ce3", size = 339381, upload-time = "2026-03-18T19:04:54.616Z" },
     { url = "https://files.pythonhosted.org/packages/16/92/d1e32e3e0d894fe00b15ce28ad4944ab692713f2e7f0a99787405e43533a/protobuf-6.33.6-cp39-abi3-manylinux2014_x86_64.whl", hash = "sha256:e9db7e292e0ab79dd108d7f1a94fe31601ce1ee3f7b79e0692043423020b0593", size = 323436, upload-time = "2026-03-18T19:04:55.768Z" },
     { url = "https://files.pythonhosted.org/packages/c4/72/02445137af02769918a93807b2b7890047c32bfb9f90371cbc12688819eb/protobuf-6.33.6-py3-none-any.whl", hash = "sha256:77179e006c476e69bf8e8ce866640091ec42e1beb80b213c3900006ecfba6901", size = 170656, upload-time = "2026-03-18T19:04:59.826Z" },
+]
+
+[[package]]
+name = "prune"
+version = "0.1.0"
+source = { directory = "../prune" }
+dependencies = [
+    { name = "duckdb" },
+    { name = "pandas" },
+    { name = "pyyaml" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "duckdb", specifier = ">=1.4.3" },
+    { name = "pandas", specifier = ">=2.3.3" },
+    { name = "pyyaml", specifier = ">=6.0" },
 ]
 
 [[package]]

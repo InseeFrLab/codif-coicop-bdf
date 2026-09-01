@@ -3,6 +3,8 @@
 Lancer depuis `report/` : `uv run --with pytest pytest test_coicop_metrics.py`
 """
 
+import json
+
 import pandas as pd
 
 from coicop_metrics import (
@@ -18,6 +20,7 @@ from coicop_metrics import (
     declared_refusal_table,
     is_answer,
     level_result,
+    parse_step_timings,
     regime_accuracy_table,
     regime_masks,
     truth_column,
@@ -275,3 +278,37 @@ class TestTruthDepth:
             3: 2,
             4: 3,
         }
+
+
+# --- Horodatages d'une tâche skippée ----------------------------------------
+# Depuis l'introduction du paramètre `conciliation`, decide-coicop et
+# sirus-predict sont exclusifs : l'un des deux est toujours Skipped, et Argo
+# résout ses horodatages en zéro temps.
+
+
+def test_skipped_task_timestamps_are_ignored():
+    raw = json.dumps(
+        {
+            "preprocessing": ["2026-08-28T10:00:00Z", "2026-08-28T10:01:00Z"],
+            "decide-coicop": ["0001-01-01T00:00:00Z", "0001-01-01T00:00:00Z"],
+            "sirus-predict": ["2026-08-28T10:02:00Z", "2026-08-28T10:03:00Z"],
+        }
+    )
+    out = parse_step_timings(raw)
+    assert "duration_decide_coicop_seconds" not in out
+    assert out["duration_sirus_predict_seconds"] == 60.0
+    # Le total retombe sur la conciliation qui a réellement tourné.
+    assert out["codification_total_seconds"] == 180.0
+
+
+def test_total_uses_llm_conciliation_when_it_ran():
+    raw = json.dumps(
+        {
+            "preprocessing": ["2026-08-28T10:00:00Z", "2026-08-28T10:01:00Z"],
+            "decide-coicop": ["2026-08-28T10:02:00Z", "2026-08-28T10:05:00Z"],
+            "sirus-predict": ["0001-01-01T00:00:00Z", "0001-01-01T00:00:00Z"],
+        }
+    )
+    out = parse_step_timings(raw)
+    assert out["codification_total_seconds"] == 300.0
+    assert "duration_sirus_predict_seconds" not in out

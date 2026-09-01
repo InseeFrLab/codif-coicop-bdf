@@ -61,6 +61,23 @@ spec:
       - name: report-experiment
         value: "codif-coicop-eval"
 
+      # --- Conciliation : EXCLUSIVE ------------------------------------------
+      # `llm`   → decide-coicop (juge LLM), comportement historique
+      # `sirus` → sirus-predict (re-ranking par règles interprétables)
+      # L'étape non retenue est skippée ; final-output et report dépendent des
+      # deux et tolèrent qu'une soit Skipped. Les deux ne tournent jamais
+      # ensemble, par choix : un seul code final par produit, sans ambiguïté.
+      - name: conciliation
+        value: llm
+        enum: [llm, sirus]
+
+      # Modèle SIRUS chargé par sirus-predict. Obligatoire quand
+      # conciliation: sirus. L'entraînement se fait HORS pipeline
+      # (`sirus/train.sh`, cf. sirus/README.md) et logue le modèle dans MLflow ;
+      # on recopie ici l'URI qu'il affiche — même pratique que ttc-model-uri.
+      - name: sirus-model-uri
+        value: ""
+
   templates:
     # -----------------------------------------------------------------------
     # Main pipeline: DAG with parallelism
@@ -191,9 +208,16 @@ spec:
                 - name: ttc-model-uri
                   value: "{{workflow.parameters.ttc-model-uri}}"
 
+          # Conciliation, variante 1 : le juge LLM. Skippée quand
+          # conciliation=sirus. Testée sur `!= "sirus"` et non `== "llm"` :
+          # si `enum` n'était pas honoré et qu'on soumettait une valeur
+          # inattendue, on dégrade vers le comportement historique (LLM seul)
+          # plutôt que vers « aucune des deux », qui laisserait final-output
+          # lire un parquet inexistant.
           - name: decide-coicop
             dependencies: [codif-lcs, run-rag, run-rag-annotations, run-ttc]
             template: decide-coicop
+            when: '"{{workflow.parameters.conciliation}}" != "sirus"'
             arguments:
               parameters:
                 - name: model
@@ -205,8 +229,31 @@ spec:
                 - name: run_date
                   value: "{{workflow.parameters.run_date}}"
 
+          # Conciliation, variante 2 : les règles SIRUS. `prune` est dans les
+          # dépendances parce que l'étape lit prune/mapping_lvl4.parquet.
+          # Le modèle vient de MLflow, jamais du run courant : l'entraînement
+          # est hors pipeline, donc prédire sur ses propres données
+          # d'entraînement est impossible par construction.
+          - name: sirus-predict
+            dependencies: [codif-lcs, run-rag, run-rag-annotations, run-ttc, prune]
+            template: sirus-predict
+            when: '"{{workflow.parameters.conciliation}}" == "sirus"'
+            arguments:
+              parameters:
+                - name: run_id
+                  value: "{{workflow.parameters.run_id}}"
+                - name: run_date
+                  value: "{{workflow.parameters.run_date}}"
+                - name: sirus-model-uri
+                  value: "{{workflow.parameters.sirus-model-uri}}"
+
+          # Dépend des DEUX conciliations : la forme historique `dependencies:`
+          # se développe en `Succeeded || Skipped || Daemoned`, donc l'étape
+          # skippée satisfait sa clause. Même mécanisme que create-vector-db →
+          # run-rag. Ne pas passer à `depends:` : le dépôt n'en utilise nulle
+          # part et mélanger les deux formes est un piège de maintenance.
           - name: final-output
-            dependencies: [decide-coicop]
+            dependencies: [decide-coicop, sirus-predict]
             template: final-output
             arguments:
               parameters:
@@ -214,6 +261,8 @@ spec:
                   value: "{{workflow.parameters.run_id}}"
                 - name: run_date
                   value: "{{workflow.parameters.run_date}}"
+                - name: conciliation
+                  value: "{{workflow.parameters.conciliation}}"
                 - name: text_column
                   value: "{{workflow.parameters.text_column}}"
                 - name: shop_column
@@ -224,7 +273,7 @@ spec:
                   value: "{{workflow.parameters.annee_column}}"
 
           - name: report
-            dependencies: [preprocessing, codif-regex, codif-lcs, run-rag, run-rag-annotations, run-ttc, decide-coicop, final-output]
+            dependencies: [preprocessing, codif-regex, codif-lcs, run-rag, run-rag-annotations, run-ttc, decide-coicop, sirus-predict, final-output]
             template: report
             when: '"{{workflow.parameters.skip-report}}" != "true"'
             arguments:
@@ -233,6 +282,10 @@ spec:
                   value: "{{workflow.parameters.run_id}}"
                 - name: run_date
                   value: "{{workflow.parameters.run_date}}"
+                - name: conciliation
+                  value: "{{workflow.parameters.conciliation}}"
+                - name: sirus-model-uri
+                  value: "{{workflow.parameters.sirus-model-uri}}"
                 - name: input_file
                   value: "{{workflow.parameters.input_file}}"
                 - name: experiment-name
@@ -257,7 +310,8 @@ spec:
                      "run-rag":["{{tasks.run-rag.startedAt}}","{{tasks.run-rag.finishedAt}}"],
                      "run-rag-annotations":["{{tasks.run-rag-annotations.startedAt}}","{{tasks.run-rag-annotations.finishedAt}}"],
                      "run-ttc":["{{tasks.run-ttc.startedAt}}","{{tasks.run-ttc.finishedAt}}"],
-                     "decide-coicop":["{{tasks.decide-coicop.startedAt}}","{{tasks.decide-coicop.finishedAt}}"]}
+                     "decide-coicop":["{{tasks.decide-coicop.startedAt}}","{{tasks.decide-coicop.finishedAt}}"],
+                     "sirus-predict":["{{tasks.sirus-predict.startedAt}}","{{tasks.sirus-predict.finishedAt}}"]}
 
     # -----------------------------------------------------------------------
     # Step 0: Preprocessing — construction du dataset
@@ -1016,13 +1070,106 @@ spec:
             cpu: 15000m
 
     # -----------------------------------------------------------------------
-    # Step 6: Final user-facing output (regex + LLM predictions merged)
+    # Step 5bis: Conciliation par règles SIRUS (alternative au juge LLM)
+    #
+    # Python pur : le modèle est une liste de règles en JSON, et le scoring une
+    # moyenne. Aucune étape du pipeline n'installe ni ne compile le paquet R
+    # `sirus` — seul l'entraînement en a besoin, et il se fait hors pipeline
+    # (`sirus/train.sh`, cf. sirus/README.md).
+    # -----------------------------------------------------------------------
+    - name: sirus-predict
+      inputs:
+        parameters:
+          - name: run_id
+          - name: run_date
+          - name: sirus-model-uri
+      container:
+        image: inseefrlab/onyxia-vscode-python:py3.13.12
+        command: [sh, -c]
+        args:
+          - |
+            set -e
+            git clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/sirus
+            uv sync
+
+            RUN_ROOT="s3://projet-budget-famille/data/workflow_runs/{{inputs.parameters.run_date}}/{{inputs.parameters.run_id}}"
+            # Colonnes utilisateur : observations en production, split test des
+            # annotations en évaluation (même règle que decide-coicop).
+            EXTRA_COLUMNS_FILE="$RUN_ROOT/preprocessing/raw_test.parquet"
+            [ -n "{{workflow.parameters.input_file}}" ] && EXTRA_COLUMNS_FILE="$RUN_ROOT/preprocessing/observations.parquet"
+
+            # Attention : le dossier de RAG-annotations est `rag-annotation`
+            # (singulier), contrairement au nom de l'étape.
+            ARGS="--lcs-file $RUN_ROOT/codif-lcs/raw_test_LCS.parquet \
+                  --rag-file $RUN_ROOT/run-rag/predictions.parquet \
+                  --rag-annotations-file $RUN_ROOT/rag-annotation/predictions.parquet \
+                  --ttc-file $RUN_ROOT/run-ttc/predictions.parquet \
+                  --mapping-file $RUN_ROOT/prune/mapping_lvl4.parquet \
+                  --tocodify-file $RUN_ROOT/codif-regex/raw_test_without_regex.parquet \
+                  --extra-columns-file $EXTRA_COLUMNS_FILE \
+                  --model-uri {{inputs.parameters.sirus-model-uri}} \
+                  --output-file $RUN_ROOT/sirus-predict/predictions.parquet"
+
+            uv run main.py predict $ARGS
+        env:
+          # MLFLOW_* : nécessaires pour résoudre sirus-model-uri.
+          - name: MLFLOW_TRACKING_URI
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: MLFLOW_TRACKING_URI
+          - name: MLFLOW_TRACKING_USERNAME
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: MLFLOW_TRACKING_USERNAME
+          - name: MLFLOW_TRACKING_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: MLFLOW_TRACKING_PASSWORD
+          - name: AWS_ACCESS_KEY_ID
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_ACCESS_KEY_ID
+          - name: AWS_SECRET_ACCESS_KEY
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_SECRET_ACCESS_KEY
+          - name: AWS_SESSION_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_SESSION_TOKEN
+          - name: AWS_S3_ENDPOINT
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_S3_ENDPOINT
+          - name: AWS_ENDPOINT_URL
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_ENDPOINT_URL
+        resources:
+          requests:
+            memory: 2Gi
+            cpu: 100m
+          limits:
+            memory: 8Gi
+            cpu: 2000m
+
+    # -----------------------------------------------------------------------
+    # Step 6: Final user-facing output (regex + conciliation merged)
     # -----------------------------------------------------------------------
     - name: final-output
       inputs:
         parameters:
           - name: run_id
           - name: run_date
+          - name: conciliation
           - name: text_column
           - name: shop_column
           - name: budget_column
@@ -1036,6 +1183,9 @@ spec:
             git clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/final-output
             uv sync
             ARGS="--run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}"
+            # Quelle conciliation a produit le code final. Le chemin du parquet
+            # en est déduit côté Python : une seule source de vérité.
+            ARGS="$ARGS --decision-source {{inputs.parameters.conciliation}}"
             [ -n "{{inputs.parameters.text_column}}" ]   && ARGS="$ARGS --text-column {{inputs.parameters.text_column}}"
             [ -n "{{inputs.parameters.shop_column}}" ]   && ARGS="$ARGS --shop-column {{inputs.parameters.shop_column}}"
             [ -n "{{inputs.parameters.budget_column}}" ] && ARGS="$ARGS --budget-column {{inputs.parameters.budget_column}}"
@@ -1093,6 +1243,8 @@ spec:
           - name: ttc-model-uri
           - name: skip-vector-db
           - name: skip-report
+          - name: conciliation
+          - name: sirus-model-uri
           - name: step-timings
       container:
         image: inseefrlab/onyxia-vscode-python:py3.13.12
@@ -1117,6 +1269,9 @@ spec:
             [ -n "$SAMPLE_OBS" ]                         && ARGS="$ARGS --sample-size $SAMPLE_OBS"
             [ -n "{{inputs.parameters.model-name}}" ]    && ARGS="$ARGS --model-name {{inputs.parameters.model-name}}"
             [ -n "{{inputs.parameters.ttc-model-uri}}" ] && ARGS="$ARGS --ttc-model-uri {{inputs.parameters.ttc-model-uri}}"
+            # Détermine quel parquet de conciliation le rapport lit.
+            ARGS="$ARGS --conciliation {{inputs.parameters.conciliation}}"
+            [ -n "{{inputs.parameters.sirus-model-uri}}" ] && ARGS="$ARGS --sirus-model-uri {{inputs.parameters.sirus-model-uri}}"
 
             # step-timings is JSON (spaces/newlines): pass it directly with literal
             # single quotes so it stays one argument (it must NOT go through $ARGS,
