@@ -22,6 +22,8 @@ classification pipeline and passed in by name — the same arrangement as `class
         └── les deux noms sont recopiés dans argo/params.yaml ──┐
                                                                 ▼
 ③ argo/codif-pipeline.yaml   (input_file : production / évaluation)
+   Le DAG ci-dessous tourne DEUX FOIS : `smoke` sur 100 lignes (~8 min), puis `full`.
+   Un smoke en échec bloque le vrai run. Échappatoire : `-p skip-smoke=true`.
 build-datasets
   └─→ classify-regex ─┬─→ classify-lcs ────────────────────────────────────┐
                       ├─→ classify-ttc ────────────────────────────────────┤

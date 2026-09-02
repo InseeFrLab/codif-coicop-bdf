@@ -19,6 +19,8 @@ l'entraînement de `classify-ttc` et de `reconcile-sirus`.
         └── les deux noms sont recopiés dans argo/params.yaml ──┐
                                                                 ▼
 ③ argo/codif-pipeline.yaml   (input_file : production / évaluation)
+   Le DAG ci-dessous tourne DEUX FOIS : smoke sur 100 lignes (~8 min), puis pour de vrai.
+   Si le smoke échoue, le vrai run ne démarre pas. Échappatoire : -p skip-smoke=true
 
 build-datasets
   └─→ classify-regex ─┬─→ classify-lcs ─────────────────────────────┐

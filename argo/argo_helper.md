@@ -58,6 +58,38 @@ classify-rag-annotations-collection: coicop_annotations__full__2026-09-02__index
 
 They are reusable: rebuild them only when the nomenclature or the annotation base changes.
 
+## Every run is preceded by a smoke run
+
+`codif-pipeline.yaml` runs the **whole DAG twice**: first on a small sample
+(`smoke-observations`, default 100), then for real. If the smoke pass fails, the real
+run never starts.
+
+```
+smoke (≈8 min, 100 lignes)  ──→  full (≈2 h)
+        │                          ▲
+        └── échec ─────────────────┘  jamais atteint
+```
+
+It costs ~8 min measured in production on the real CSV — about 7% of a full run — which
+is what makes gating every run bearable. `argo get` shows both passes as `smoke` and
+`full`; their S3 outputs live under `…/{run_id}-smoke/` and `…/{run_id}/`, and the smoke
+logs to its own MLflow experiment (`codif-coicop-smoke`) so its 100-row metrics never mix
+with real ones.
+
+**Escape hatch.** A false-positive smoke must not immobilise production:
+
+```bash
+argo submit codif-pipeline.yaml --parameter-file params.yaml -p skip-smoke=true --watch
+```
+
+The smoke task then shows as `Skipped`, and `full` runs anyway — the legacy `dependencies:`
+form expands to `Succeeded || Skipped || Daemoned`, so a skipped task satisfies it while a
+**failed** one does not.
+
+**What it does not catch**: volume-related failures (OOM, rate limits, timeouts that only
+appear at 16 000 rows), and a deliverable that is produced but wrong — the success criterion
+is the state of the steps, not the content they produce.
+
 ## Launch
 
 ```bash
@@ -116,6 +148,9 @@ argo resubmit @latest   # rerun as-is
 | `text_column` | `NAT_DEP` | label column to classify |
 | `shop_column` / `budget_column` | `MAG_DEP` / `MONT_DEP` | shop / amount |
 | `annee_column` / `source_column` | `""` | optional |
+| `skip-smoke` | `"false"` | `"true"` runs the real pass without the smoke gate |
+| `smoke-observations` | `"100"` | size of the smoke sample |
+| `smoke-experiment` | `codif-coicop-smoke` | MLflow experiment of the smoke pass |
 | `sample-observations` | `""` | cap the to-codify set, in **both** modes (empty = all); sampled **once** at `classify-regex` so all classifiers code the same rows. To cap the indexed KB instead, that is `kb-sample-size` of `index-annotations-pipeline.yaml` |
 | `classify-rag-notices-collection` | `""` | **required** — Qdrant collection from `index-notices-pipeline.yaml` |
 | `classify-rag-annotations-collection` | `""` | **required** — Qdrant collection from `index-annotations-pipeline.yaml` |

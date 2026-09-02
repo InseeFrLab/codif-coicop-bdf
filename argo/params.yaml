@@ -10,11 +10,11 @@
 # --- Code source ----------------------------------------------------------
 # Branche du dépôt clonée par tous les steps (défaut YAML: main).
 # La mettre sur une feature branch permet de tester sans merger dans main.
-git-branch: main
+git-branch: refactor
 
 # --- Input ----------------------------------------------------------------
-# input_file: s3://projet-budget-famille/data/workflow_inputs/BDF_data_saisie_vague1_a_codif.csv
-input_file: "" # mode evaluation
+input_file: s3://projet-budget-famille/data/workflow_inputs/BDF_data_saisie_vague1_a_codif.csv
+# input_file: "" # mode evaluation
 
 text_column: NAT_DEP        # label column to classify
 shop_column: MAG_DEP        # shop column
@@ -23,14 +23,20 @@ budget_column: MONT_DEP     # amount column
 # source_column: ""         # optional
 
 # --- Volume / debugging ---------------------------------------------------
-# Nombre de libellés à coder (vide = tout), en production comme en évaluation.
-# Le tirage est CENTRALISÉ à l'étape classify-regex : un seul jeu est tiré et
-# hérité par tous les classifieurs (lcs, rag, rag-annotations, ttc), qui codent
-# donc exactement les mêmes lignes.
+sample-observations: "150"       # ex. "100"
+
+# --- Smoke run ------------------------------------------------------------
+# Le DAG complet tourne d'abord sur `smoke-observations` lignes. Si cette passe
+# échoue, le vrai run ne démarre pas.
 #
-# Pour plafonner la KB indexée dans la vector DB, ce n'est plus ici :
-# c'est `kb-sample-size` de argo/index-annotations-pipeline.yaml.
-sample-observations: ""       # ex. "100"
+# `skip-smoke: "true"` lance le vrai run sans passer par le smoke — pour une
+# urgence, ou quand un smoke en faux positif immobilise la production.
+#
+# Les deux passes écrivent sous des run_id distincts (`<workflow>-smoke` et
+# `<workflow>`), et le smoke logue dans son propre espace MLflow.
+# skip-smoke: "false"
+# smoke-observations: "100"
+# smoke-experiment: codif-coicop-smoke
 
 # --- LLM models -----------------------------------------------------------
 classify-rag-model: gemma4-26b-moe          # classify-rag-notices model
@@ -42,18 +48,9 @@ classify-ttc-model-uri: "mlflow-artifacts:/10/cacf2603514b4887bbfb77e2654c9bc1/a
 # Collections Qdrant à interroger. Produites HORS de ce pipeline :
 #   argo submit argo/index-notices-pipeline.yaml
 #   argo submit argo/index-annotations-pipeline.yaml
-# Chacun affiche en fin d'exécution la ligne exacte à recopier ci-dessous.
-# Laissées vides, les étapes classify-rag-* échouent en quelques secondes avec
-# un message nommant le pipeline à lancer — plutôt que de retomber en silence
-# sur l'index d'un autre run.
-#
-# ⚠️  Le nom de la collection d'annotations porte le périmètre de la KB :
-# `__full__` (tous les produits annotés, le défaut) ou `__train__` (ancien
-# split, transitoire). Pour un run d'ÉVALUATION dont le jeu de test provient
-# du même lot historique que la KB, une collection `__full__` contient les
-# réponses attendues et l'accuracy serait gonflée.
-classify-rag-notices-collection: ""       # ex. "coicop_notices__2026-09-02__index-notices-a7k2p"
-classify-rag-annotations-collection: ""   # ex. "coicop_annotations__full__2026-09-02__index-annotations-b3x9q"
+
+classify-rag-notices-collection: "coicop_notices__2026-09-02__index-notices-h82mt"
+classify-rag-annotations-collection: "coicop_annotations__full__2026-09-02__index-annotations-jp6dt"
 
 # --- Optional steps -------------------------------------------------------
 skip-report: "false"        # "true" to skip the Quarto report
@@ -61,17 +58,7 @@ report-experiment: codif-coicop-eval
 
 # --- Conciliation ---------------------------------------------------------
 # EXCLUSIF : `llm` → reconcile-llm (juge LLM) ; `sirus` → reconcile-sirus
-# (re-ranking par règles interprétables). L'étape non retenue est skippée ;
-# export-results et report dépendent des deux et tolèrent qu'une soit Skipped.
-reconciliation: llm
+reconciliation: sirus
 
 # Modèle SIRUS chargé par reconcile-sirus, OBLIGATOIRE si reconciliation: sirus.
-#
-# L'entraînement se fait HORS pipeline : `cd reconcile-sirus/ && ./train.sh <date>/<run_id>`
-# (cf. reconcile-sirus/README.md). Il logue le modèle dans MLflow et affiche l'URI à
-# recopier ici — même pratique que classify-ttc-model-uri.
-#
-# Le détour par ce paramètre est ce qui rend la fuite impossible : le modèle
-# utilisé en prédiction n'est jamais celui qu'on vient d'entraîner sur ces
-# mêmes lignes.
-reconcile-sirus-model-uri: "" # ex. "mlflow-artifacts:/12/9f3c.../artifacts/model"
+reconcile-sirus-model-uri: "mlflow-artifacts:/15/312f69aff83943de97b3a91b1f4185fa/artifacts/model/"

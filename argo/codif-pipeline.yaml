@@ -3,7 +3,7 @@ kind: Workflow
 metadata:
   generateName: codif-
 spec:
-  entrypoint: pipeline
+  entrypoint: codification
   serviceAccountName: workflow
 
   podSpecPatch: |
@@ -31,38 +31,24 @@ spec:
         value: ""
       - name: source_column
         value: ""
-      # Plafonne le jeu À CODER, dans les deux modes (vide = tout).
-      # Échantillonnage CENTRALISÉ à classify-regex : un seul tirage, hérité par
-      # les quatre classifieurs, qui codent donc exactement les mêmes lignes.
-      #
-      # Il y avait ici un second curseur, `sample-annotations`, qui plafonnait la
-      # KB indexée dans la vector DB. Il a disparu avec l'indexation, qui est
-      # sortie de ce pipeline : pour plafonner la KB, c'est `kb-sample-size` de
-      # argo/index-annotations-pipeline.yaml. Le jeu à coder en évaluation, lui,
-      # relève de ce paramètre-ci comme en production — c'est le même concept.
+      # Plafonne le jeu À CODER, dans les deux modes (vide = tout). Tirage
+      # unique à classify-regex, hérité par les 4 classifieurs.
+      # Pour plafonner la KB indexée : `kb-sample-size` de
+      # argo/index-annotations-pipeline.yaml — ce n'est pas ici.
       - name: sample-observations
         value: ""
       - name: classify-rag-model
         value: "gemma4-26b-moe"
 
       # --- Vector DB : OBLIGATOIRES ------------------------------------------
-      # Noms des collections Qdrant à interroger, produits HORS de ce pipeline
-      # par argo/index-notices-pipeline.yaml et
-      # argo/index-annotations-pipeline.yaml. Chaque indexation affiche en fin
-      # d'exécution la ligne à recopier ici — même pratique que
-      # classify-ttc-model-uri et reconcile-sirus-model-uri.
+      # Collections Qdrant produites hors de ce pipeline (index-*-pipeline.yaml,
+      # qui affichent la ligne à recopier ici). Défaut vide DÉLIBÉRÉMENT : Argo
+      # n'a pas de paramètre requis, donc la garde est doublée — `exit 1` dans le
+      # conteneur et `required=True` en argparse. Un nom absent doit échouer en
+      # secondes, pas retomber en silence sur l'index d'un autre run.
       #
-      # Défaut vide, DÉLIBÉRÉMENT : il n'existe pas de mécanisme de paramètre
-      # requis dans Argo, donc la garde est faite deux fois — dans le script du
-      # conteneur (echo + exit 1) et dans l'argparse Python. Un nom absent doit
-      # échouer en quelques secondes, pas retomber en silence sur l'index d'un
-      # autre run ni planter après deux heures.
-      #
-      # ⚠️  Pour un run d'ÉVALUATION dont le jeu de test provient du même lot
-      # historique que la KB, préférer une collection bâtie en `kb-scope=train`
-      # (son nom contient `__train__`) : une collection `__full__` contient tous
-      # les produits annotés, donc les réponses attendues, et l'accuracy serait
-      # gonflée sans qu'aucune étape n'échoue.
+      # ⚠️  Évaluation sur le lot historique → préférer une collection
+      # `__train__` : une `__full__` contient les réponses attendues.
       - name: classify-rag-notices-collection
         value: ""
       - name: classify-rag-annotations-collection
@@ -84,6 +70,20 @@ spec:
       - name: report-experiment
         value: "codif-coicop-eval"
 
+      # --- Smoke run ----------------------------------------------------------
+      # Le DAG tourne d'abord sur un échantillon (~8 min mesurées) ; s'il échoue,
+      # le vrai run ne démarre pas. Attrape ce qui casse une étape (clone,
+      # dépendance, config, paramètre, collection). N'attrape pas les pannes de
+      # volume ni un livrable produit mais faux.
+      - name: skip-smoke
+        value: "false"
+      - name: smoke-observations
+        value: "100"
+      # Sans expérience dédiée, les métriques du smoke (100 lignes) seraient
+      # indiscernables des vraies dans `test`, `rag-annotation` et l'expérience du rapport.
+      - name: smoke-experiment
+        value: "codif-coicop-smoke"
+
       # --- Conciliation : EXCLUSIVE ------------------------------------------
       # `llm`   → reconcile-llm (juge LLM), comportement historique
       # `sirus` → reconcile-sirus (re-ranking par règles interprétables)
@@ -101,36 +101,82 @@ spec:
       - name: reconcile-sirus-model-uri
         value: ""
 
-  # `git -c http.version=HTTP/1.1` sur tous les clones : NE PAS RETIRER.
-  # Le git de l'image (2.54.0, lié à libcurl3-gnutls) n'arrive pas à lire la
-  # réponse HTTP/2 de GitHub — il échoue sur « expected flush after ref
-  # listing » puis réclame un Username, ce qui fait croire à tort à un problème
-  # d'authentification. GitHub répond pourtant 200 avec le bon content-type
-  # (vérifié en trace GIT_CURL_VERBOSE). Forcer HTTP/1.1 neutralise la couche
-  # de transport fautive en conservant le protocole git v2.
+  # ===== Deux réglages à ne pas « nettoyer » ==============================
+  #
+  # `git -c http.version=HTTP/1.1` sur tous les clones. Le git de l'image
+  # (2.54.0, lié à libcurl3-gnutls) ne sait pas lire la réponse HTTP/2 de
+  # GitHub : il échoue sur « expected flush after ref listing » puis réclame un
+  # Username — ce qui ressemble à un problème d'authentification et n'en est
+  # pas (GitHub répond 200). HTTP/1.1 contourne le transport fautif.
+  #
+  # `retryStrategy` sur les 11 étapes (2 essais, backoff). Depuis que le smoke
+  # conditionne le vrai run, un 503 passager bloquerait la production. La
+  # politique est `OnFailure` et non `OnTransientError` : ce dernier ne couvre
+  # que des erreurs qu'Argo sait reconnaître, or une panne réseau ressort ici en
+  # code de sortie ordinaire. Rejouer est sûr — chaque étape réécrit ses sorties
+  # en entier, et reconcile-llm reprend où il s'était arrêté.
 
   templates:
-    # -----------------------------------------------------------------------
-    # Main pipeline: DAG with parallelism
+    # Entrypoint : le DAG tourne DEUX FOIS — smoke sur un échantillon, puis
+    # pour de vrai. `dependencies:` (forme historique) se satisfait d'une tâche
+    # réussie OU sautée, jamais d'une tâche échouée : c'est tout le gate.
+    #   smoke réussi  → `full` démarre        smoke échoué  → `full` jamais
+    #   smoke sauté   → `full` démarre (skip-smoke)
+    # Les deux passes écrivent sous des run_id distincts (`…-smoke`), donc leurs
+    # sorties S3 ne se mélangent pas.
+    - name: codification
+      dag:
+        tasks:
+          - name: smoke
+            template: pipeline
+            when: '"{{workflow.parameters.skip-smoke}}" != "true"'
+            arguments:
+              parameters:
+                - name: run_id
+                  value: "{{workflow.parameters.run_id}}-smoke"
+                - name: sample-observations
+                  value: "{{workflow.parameters.smoke-observations}}"
+                - name: report-experiment
+                  value: "{{workflow.parameters.smoke-experiment}}"
+                - name: rag-experiment
+                  value: "{{workflow.parameters.smoke-experiment}}"
+
+          - name: full
+            dependencies: [smoke]
+            template: pipeline
+            arguments:
+              parameters:
+                - name: run_id
+                  value: "{{workflow.parameters.run_id}}"
+                - name: sample-observations
+                  value: "{{workflow.parameters.sample-observations}}"
+                - name: report-experiment
+                  value: "{{workflow.parameters.report-experiment}}"
+                # Vide : les 2 étapes RAG gardent l'expérience de leur config.
+                - name: rag-experiment
+                  value: ""
+
+    # Le DAG de codification lui-même. Les 4 classifieurs tournent en parallèle,
+    # puis une conciliation tranche. L'indexation des vector DB n'est plus ici :
+    # elle a ses propres workflows, et les collections sont passées en paramètre.
     #
-    # Les 4 classifieurs tournent en parallèle, puis une conciliation tranche.
-    # `prune-codes` (post classify-regex) produit TOUS les artefacts prunés
-    # (nomenclature, mapping, annotations train/test, suggester) ; l'aval ne fait que lire.
-    #
-    # L'indexation des vector DB n'est PLUS ici : elle a ses propres workflows
-    # (argo/index-notices-pipeline.yaml, argo/index-annotations-pipeline.yaml),
-    # et les collections à interroger sont désignées par paramètre.
-    #
-    #   build-datasets ──→ classify-regex ─┬─→ classify-lcs ─────────────────────────────────────────────────────┐
-    #                       (→ prune-codes)├─→ classify-ttc ─────────────────────────────────────────────────────┤
-    #                                      └─→ prune-codes ─┬─→ classify-rag-notices ───────────────────────────┤
-    #                                                        └─→ classify-rag-annotations ──────────────────────┘
-    #                                                                                                            │
-    #                                                       ┌────────────────────────────────────────────────────┘
-    #                                                       └─→ reconcile-llm  OU  reconcile-sirus   (exclusifs : paramètre reconciliation)
-    #                                                               └─→ export-results ─→ report  (skip-report)
-    # -----------------------------------------------------------------------
+    #   build-datasets ─→ classify-regex ─┬─→ classify-lcs ──────────────────┐
+    #                                     ├─→ classify-ttc ──────────────────┤
+    #                                     └─→ prune-codes ─┬─→ rag-notices ──┤
+    #                                                      └─→ rag-annotations┘
+    #                                                                        │
+    #        reconcile-llm OU reconcile-sirus (exclusifs) ←──────────────────┘
+    #                └─→ export-results ─→ report
     - name: pipeline
+      inputs:
+        parameters:
+          # Ce qui DIFFÈRE entre la passe smoke et la passe réelle. Tout le
+          # reste (input_file, colonnes, modèles, collections) est identique aux
+          # deux et reste en portée workflow.
+          - name: run_id                # suffixé `-smoke` pour isoler les sorties S3
+          - name: sample-observations   # 100 pour le smoke, le paramètre réel sinon
+          - name: report-experiment     # expérience MLflow du rapport
+          - name: rag-experiment        # expérience MLflow des 2 étapes RAG (vide = défaut du module)
       dag:
         tasks:
           - name: build-datasets
@@ -138,7 +184,7 @@ spec:
             arguments:
               parameters:
                 - name: run_id
-                  value: "{{workflow.parameters.run_id}}"
+                  value: "{{inputs.parameters.run_id}}"
                 - name: run_date
                   value: "{{workflow.parameters.run_date}}"
                 - name: input_file
@@ -159,8 +205,10 @@ spec:
             template: classify-regex
             arguments:
               parameters:
+                - name: sample-observations
+                  value: "{{inputs.parameters.sample-observations}}"
                 - name: run_id
-                  value: "{{workflow.parameters.run_id}}"
+                  value: "{{inputs.parameters.run_id}}"
                 - name: run_date
                   value: "{{workflow.parameters.run_date}}"
 
@@ -172,7 +220,7 @@ spec:
             arguments:
               parameters:
                 - name: run_id
-                  value: "{{workflow.parameters.run_id}}"
+                  value: "{{inputs.parameters.run_id}}"
                 - name: run_date
                   value: "{{workflow.parameters.run_date}}"
 
@@ -182,7 +230,7 @@ spec:
             arguments:
               parameters:
                 - name: run_id
-                  value: "{{workflow.parameters.run_id}}"
+                  value: "{{inputs.parameters.run_id}}"
                 - name: run_date
                   value: "{{workflow.parameters.run_date}}"
 
@@ -201,8 +249,10 @@ spec:
                   value: "{{workflow.parameters.classify-rag-model}}"
                 - name: collection-name
                   value: "{{workflow.parameters.classify-rag-notices-collection}}"
+                - name: mlflow-experiment
+                  value: "{{inputs.parameters.rag-experiment}}"
                 - name: run_id
-                  value: "{{workflow.parameters.run_id}}"
+                  value: "{{inputs.parameters.run_id}}"
                 - name: run_date
                   value: "{{workflow.parameters.run_date}}"
 
@@ -215,8 +265,10 @@ spec:
                   value: "{{workflow.parameters.classify-rag-model}}"
                 - name: collection-name
                   value: "{{workflow.parameters.classify-rag-annotations-collection}}"
+                - name: mlflow-experiment
+                  value: "{{inputs.parameters.rag-experiment}}"
                 - name: run_id
-                  value: "{{workflow.parameters.run_id}}"
+                  value: "{{inputs.parameters.run_id}}"
                 - name: run_date
                   value: "{{workflow.parameters.run_date}}"
 
@@ -226,7 +278,7 @@ spec:
             arguments:
               parameters:
                 - name: run_id
-                  value: "{{workflow.parameters.run_id}}"
+                  value: "{{inputs.parameters.run_id}}"
                 - name: run_date
                   value: "{{workflow.parameters.run_date}}"
                 - name: classify-ttc-model-uri
@@ -249,7 +301,7 @@ spec:
                 - name: reconcile-llm-concurrency
                   value: "{{workflow.parameters.reconcile-llm-concurrency}}"
                 - name: run_id
-                  value: "{{workflow.parameters.run_id}}"
+                  value: "{{inputs.parameters.run_id}}"
                 - name: run_date
                   value: "{{workflow.parameters.run_date}}"
 
@@ -265,7 +317,7 @@ spec:
             arguments:
               parameters:
                 - name: run_id
-                  value: "{{workflow.parameters.run_id}}"
+                  value: "{{inputs.parameters.run_id}}"
                 - name: run_date
                   value: "{{workflow.parameters.run_date}}"
                 - name: reconcile-sirus-model-uri
@@ -282,7 +334,7 @@ spec:
             arguments:
               parameters:
                 - name: run_id
-                  value: "{{workflow.parameters.run_id}}"
+                  value: "{{inputs.parameters.run_id}}"
                 - name: run_date
                   value: "{{workflow.parameters.run_date}}"
                 - name: reconciliation
@@ -302,8 +354,10 @@ spec:
             when: '"{{workflow.parameters.skip-report}}" != "true"'
             arguments:
               parameters:
+                - name: sample-observations
+                  value: "{{inputs.parameters.sample-observations}}"
                 - name: run_id
-                  value: "{{workflow.parameters.run_id}}"
+                  value: "{{inputs.parameters.run_id}}"
                 - name: run_date
                   value: "{{workflow.parameters.run_date}}"
                 - name: reconciliation
@@ -313,7 +367,7 @@ spec:
                 - name: input_file
                   value: "{{workflow.parameters.input_file}}"
                 - name: report-experiment
-                  value: "{{workflow.parameters.report-experiment}}"
+                  value: "{{inputs.parameters.report-experiment}}"
                 - name: classify-rag-model
                   value: "{{workflow.parameters.classify-rag-model}}"
                 - name: reconcile-llm-model
@@ -353,6 +407,13 @@ spec:
           - name: budget_column
           - name: annee_column
           - name: source_column
+      retryStrategy:          # cf. « Reprise sur échec » en tête de fichier
+        limit: "2"
+        retryPolicy: OnFailure
+        backoff:
+          duration: "30s"
+          factor: "2"
+          maxDuration: "5m"
       container:
         image: inseefrlab/onyxia-vscode-python:py3.13.12
         command: [sh, -c]
@@ -412,8 +473,18 @@ spec:
     - name: classify-regex
       inputs:
         parameters:
+          # Passé par le DAG et non lu en portée workflow : c'est ce qui permet
+          # à la passe smoke de coder 100 lignes et à la passe réelle de tout coder.
+          - name: sample-observations
           - name: run_id
           - name: run_date
+      retryStrategy:          # cf. « Reprise sur échec » en tête de fichier
+        limit: "2"
+        retryPolicy: OnFailure
+        backoff:
+          duration: "30s"
+          factor: "2"
+          maxDuration: "5m"
       container:
         image: inseefrlab/onyxia-vscode-python:py3.13.12
         command: [sh, -c]
@@ -428,7 +499,7 @@ spec:
             [ -n "{{workflow.parameters.input_file}}" ] && ARGS="$ARGS --input-file {{workflow.parameters.input_file}}"
             # Sampling CENTRALISÉ du jeu à coder (unique point du pipeline) :
             # tous les classifieurs aval héritent de ce tirage.
-            [ -n "{{workflow.parameters.sample-observations}}" ] && ARGS="$ARGS --sample-size {{workflow.parameters.sample-observations}}"
+            [ -n "{{inputs.parameters.sample-observations}}" ] && ARGS="$ARGS --sample-size {{inputs.parameters.sample-observations}}"
             uv run --locked --no-dev src/main.py $ARGS
         env:
           - name: AWS_ACCESS_KEY_ID
@@ -472,6 +543,13 @@ spec:
         parameters:
           - name: run_id
           - name: run_date
+      retryStrategy:          # cf. « Reprise sur échec » en tête de fichier
+        limit: "2"
+        retryPolicy: OnFailure
+        backoff:
+          duration: "30s"
+          factor: "2"
+          maxDuration: "5m"
       container:
         image: inseefrlab/onyxia-vscode-r-python-julia:r4.5.3-py3.13.12
         command: [sh, -c]
@@ -527,6 +605,13 @@ spec:
             value: config/config.yaml
           - name: run_id
           - name: run_date
+      retryStrategy:          # cf. « Reprise sur échec » en tête de fichier
+        limit: "2"
+        retryPolicy: OnFailure
+        backoff:
+          duration: "30s"
+          factor: "2"
+          maxDuration: "5m"
       container:
         image: inseefrlab/onyxia-vscode-python:py3.13.12
         command: [sh, -c]
@@ -574,8 +659,19 @@ spec:
             value: config/config.yaml
           - name: classify-rag-model
           - name: collection-name
+          # Expérience MLflow. Vide = celle de la config du module. La passe
+          # smoke y met une expérience dédiée : sans ça, ses métriques calculées
+          # sur 100 lignes seraient indiscernables d'un vrai run.
+          - name: mlflow-experiment
           - name: run_id
           - name: run_date
+      retryStrategy:          # cf. « Reprise sur échec » en tête de fichier
+        limit: "2"
+        retryPolicy: OnFailure
+        backoff:
+          duration: "30s"
+          factor: "2"
+          maxDuration: "5m"
       container:
         image: inseefrlab/onyxia-vscode-python:py3.13.12
         command: [sh, -c]
@@ -604,6 +700,7 @@ spec:
               ARGS="$ARGS --model_name {{inputs.parameters.classify-rag-model}}"
             fi
 
+            [ -n "{{inputs.parameters.mlflow-experiment}}" ] && ARGS="$ARGS --experiment_name {{inputs.parameters.mlflow-experiment}}"
             uv run --locked --no-dev scripts/2_run_rag.py $ARGS
         env:
           - name: LANGFUSE_BASE_URL
@@ -695,8 +792,19 @@ spec:
             value: config/config.yaml
           - name: classify-rag-model
           - name: collection-name
+          # Expérience MLflow. Vide = celle de la config du module. La passe
+          # smoke y met une expérience dédiée : sans ça, ses métriques calculées
+          # sur 100 lignes seraient indiscernables d'un vrai run.
+          - name: mlflow-experiment
           - name: run_id
           - name: run_date
+      retryStrategy:          # cf. « Reprise sur échec » en tête de fichier
+        limit: "2"
+        retryPolicy: OnFailure
+        backoff:
+          duration: "30s"
+          factor: "2"
+          maxDuration: "5m"
       container:
         image: inseefrlab/onyxia-vscode-python:py3.13.12
         command: [sh, -c]
@@ -729,6 +837,7 @@ spec:
               ARGS="$ARGS --model_name {{inputs.parameters.classify-rag-model}}"
             fi
 
+            [ -n "{{inputs.parameters.mlflow-experiment}}" ] && ARGS="$ARGS --experiment_name {{inputs.parameters.mlflow-experiment}}"
             uv run --locked --no-dev scripts/1_run_rag.py $ARGS
         env:
           - name: LANGFUSE_BASE_URL
@@ -823,6 +932,13 @@ spec:
           - name: run_id
           - name: run_date
           - name: classify-ttc-model-uri
+      retryStrategy:          # cf. « Reprise sur échec » en tête de fichier
+        limit: "2"
+        retryPolicy: OnFailure
+        backoff:
+          duration: "30s"
+          factor: "2"
+          maxDuration: "5m"
       container:
         image: inseefrlab/onyxia-vscode-python:py3.13.12
         command: [ sh, -c ]
@@ -892,6 +1008,13 @@ spec:
           - name: reconcile-llm-concurrency
           - name: run_id
           - name: run_date
+      retryStrategy:          # cf. « Reprise sur échec » en tête de fichier
+        limit: "2"
+        retryPolicy: OnFailure
+        backoff:
+          duration: "30s"
+          factor: "2"
+          maxDuration: "5m"
       container:
         image: inseefrlab/onyxia-vscode-python:py3.13.12
         command: [sh, -c]
@@ -978,6 +1101,13 @@ spec:
           - name: run_id
           - name: run_date
           - name: reconcile-sirus-model-uri
+      retryStrategy:          # cf. « Reprise sur échec » en tête de fichier
+        limit: "2"
+        retryPolicy: OnFailure
+        backoff:
+          duration: "30s"
+          factor: "2"
+          maxDuration: "5m"
       container:
         image: inseefrlab/onyxia-vscode-python:py3.13.12
         command: [sh, -c]
@@ -1070,6 +1200,13 @@ spec:
           - name: shop_column
           - name: budget_column
           - name: annee_column
+      retryStrategy:          # cf. « Reprise sur échec » en tête de fichier
+        limit: "2"
+        retryPolicy: OnFailure
+        backoff:
+          duration: "30s"
+          factor: "2"
+          maxDuration: "5m"
       container:
         image: inseefrlab/onyxia-vscode-python:py3.13.12
         command: [sh, -c]
@@ -1140,10 +1277,18 @@ spec:
           - name: classify-ttc-model-uri
           - name: classify-rag-notices-collection
           - name: classify-rag-annotations-collection
+          - name: sample-observations
           - name: skip-report
           - name: reconciliation
           - name: reconcile-sirus-model-uri
           - name: step-timings
+      retryStrategy:          # cf. « Reprise sur échec » en tête de fichier
+        limit: "2"
+        retryPolicy: OnFailure
+        backoff:
+          duration: "30s"
+          factor: "2"
+          maxDuration: "5m"
       container:
         image: inseefrlab/onyxia-vscode-python:py3.13.12
         command: [sh, -c]
@@ -1164,7 +1309,7 @@ spec:
 
             [ -n "{{inputs.parameters.input_file}}" ]    && ARGS="$ARGS --input-file {{inputs.parameters.input_file}}"
             # Même échantillon que celui tiré par classify-regex.
-            [ -n "{{workflow.parameters.sample-observations}}" ] && ARGS="$ARGS --sample-size {{workflow.parameters.sample-observations}}"
+            [ -n "{{inputs.parameters.sample-observations}}" ] && ARGS="$ARGS --sample-size {{inputs.parameters.sample-observations}}"
             [ -n "{{inputs.parameters.classify-rag-model}}" ]    && ARGS="$ARGS --classify-rag-model {{inputs.parameters.classify-rag-model}}"
             [ -n "{{inputs.parameters.classify-ttc-model-uri}}" ] && ARGS="$ARGS --classify-ttc-model-uri {{inputs.parameters.classify-ttc-model-uri}}"
             # Détermine quel parquet de conciliation le rapport lit.
