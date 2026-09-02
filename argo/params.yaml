@@ -24,8 +24,11 @@ budget_column: MONT_DEP     # amount column
 
 # --- Volume / debugging ---------------------------------------------------
 # Deux curseurs d'échantillonnage (vide = tout) :
-#   sample-annotations  : taille de la KB d'annotations indexée (vector DB),
-#                         appliqué à l'étape index-annotations ;
+#   sample-annotations  : nb d'observations à coder en mode ÉVALUATION.
+#                         (N'a plus rien à voir avec la taille de la KB indexée :
+#                         l'indexation est sortie de ce pipeline. Pour plafonner
+#                         la KB, utiliser `kb-sample-size` du pipeline
+#                         argo/index-annotations-pipeline.yaml.)
 #   sample-observations : nb d'observations à coder, mode prod uniquement.
 # Le sampling des observations est CENTRALISÉ à l'étape classify-regex : un seul jeu
 # est tiré et hérité par tous les classifieurs (lcs, rag, rag-annotations, ttc),
@@ -41,8 +44,22 @@ reconcile-llm-model: gemma4-26b-moe        # reconcile-llm arbitration model
 reconcile-llm-concurrency: "5"
 classify-ttc-model-uri: "mlflow-artifacts:/10/cacf2603514b4887bbfb77e2654c9bc1/artifacts/model"
 
+# --- Vector DB : OBLIGATOIRES ---------------------------------------------
+# Collections Qdrant à interroger. Produites HORS de ce pipeline :
+#   argo submit argo/index-notices-pipeline.yaml
+#   argo submit argo/index-annotations-pipeline.yaml -p input_file=""
+# Chacun affiche en fin d'exécution la ligne exacte à recopier ci-dessous.
+# Laissées vides, les étapes classify-rag-* échouent en quelques secondes avec
+# un message nommant le pipeline à lancer — plutôt que de retomber en silence
+# sur l'index d'un autre run.
+#
+# ⚠️  Run d'ÉVALUATION → collection d'annotations bâtie en évaluation (nom
+# contenant `__eval__`). Une collection de production contient toutes les
+# annotations, y compris le split test : l'accuracy serait gonflée.
+classify-rag-notices-collection: ""       # ex. "coicop_notices__2026-09-02__index-notices-a7k2p"
+classify-rag-annotations-collection: ""   # ex. "coicop_annotations__eval__2026-09-02__index-annotations-b3x9q"
+
 # --- Optional steps -------------------------------------------------------
-skip-index: "false"      # "false" to rebuild the Qdrant vector store
 skip-report: "false"        # "true" to skip the Quarto report
 report-experiment: codif-coicop-eval
 
@@ -50,9 +67,9 @@ report-experiment: codif-coicop-eval
 # EXCLUSIF : `llm` → reconcile-llm (juge LLM) ; `sirus` → reconcile-sirus
 # (re-ranking par règles interprétables). L'étape non retenue est skippée ;
 # export-results et report dépendent des deux et tolèrent qu'une soit Skipped.
-rereconciliation: llm
+reconciliation: llm
 
-# Modèle SIRUS chargé par reconcile-sirus, OBLIGATOIRE si conciliation: sirus.
+# Modèle SIRUS chargé par reconcile-sirus, OBLIGATOIRE si reconciliation: sirus.
 #
 # L'entraînement se fait HORS pipeline : `cd reconcile-sirus/ && ./train.sh <date>/<run_id>`
 # (cf. reconcile-sirus/README.md). Il logue le modèle dans MLflow et affiche l'URI à

@@ -1,17 +1,22 @@
 """
 Annotation Vector Database Creation
 ===================================
-Reads the **already-pruned** annotation KB (`prune-codes/annotations_train_pruned.parquet`,
-produced by the `prune` module), embeds ALL of it and uploads it to a Qdrant collection.
+Lit la KB **déjà prunée** (`prune-codes/annotations_train_pruned.parquet`),
+l'embarque intégralement et la charge dans une collection Qdrant.
 
-There is no train/test split here: the upstream `preprocessing` already separates
-train annotations from the test annotations. So every loaded annotation goes into
-the vector DB; `1_run_rag.py` codifies the separate (also pruned) input set.
+Ce qu'on indexe, ce sont les **produits déjà annotés** : `annotations_full` +
+`suggester` au sens de build-datasets. Rien à voir avec les produits *à classer*
+— d'où l'absence de toute notion de fichier d'entrée ici.
 
-Optionally, the **suggester** examples (`prune-codes/suggester_pruned.parquet`, already pruned)
-are added to the index as extra retrieval candidates. Source filtering is applied here
-(`exclude_sources` / `exclude_sources_prod` per `--skip-eval`); the KB can be capped with
-`--sample-size`.
+`--kb-scope` :
+  full  (défaut) — tous les produits annotés ;
+  train          — l'ancien split, conservé pour la transition et destiné à
+                   disparaître. Il n'existait que faute de jeu de test
+                   indépendant ; les nouveaux produits annotés en fournissent un.
+
+Le **suggester** (`prune-codes/suggester_pruned.parquet`) est ajouté à l'index
+comme candidats de retrieval supplémentaires. La KB peut être plafonnée par
+`--sample-size` (essais rapides).
 
 Usage:
     uv run scripts/0_build_annotation_vector_db.py --run-id <ID> --run-date <YYYY-MM-DD>
@@ -33,6 +38,13 @@ from rag_annotations.utils import (
     embed_texts,
     expand_paths,
 )
+from rag_annotations.vector_index import (
+    build_collection_name,
+    dumps,
+    git_sha,
+    log_paste_banner,
+    write_manifest,
+)
 
 
 def main():
@@ -41,9 +53,11 @@ def main():
     parser.add_argument("--run-id", required=True, help="Workflow run identifier")
     parser.add_argument("--run-date", required=True, help="Workflow run date (YYYY-MM-DD)")
     parser.add_argument(
-        "--skip-eval", default="true",
-        help="Mirrors the run step: 'true' = production (default), else evaluation. "
-             "Selects which sources are excluded from the index "
+        "--kb-scope", choices=["full", "train"], default="full",
+        help="Quels produits annotés composent la KB. 'full' (défaut) : tous "
+             "(annotations_full). 'train' : l'ancien split, conservé pour la "
+             "transition et destiné à disparaître — il n'existait que faute de jeu "
+             "de test indépendant. Sélectionne aussi le profil de sources exclues "
              "(annotations.exclude_sources_prod vs exclude_sources).",
     )
     parser.add_argument(
@@ -51,11 +65,21 @@ def main():
         help="Limite le nombre d'annotations indexées dans la vector DB (KB). "
              "Vide = toutes. Échantillonnage sans remise, graine eval.seed.",
     )
+    parser.add_argument(
+        "--collection-name",
+        default=None,
+        help=(
+            "Nom complet de la collection à créer. Par défaut, composé depuis "
+            "`qdrant.collection_base`, le mode et l'identité de CE run "
+            "d'indexation. À ne renseigner que pour rejouer un nom précis."
+        ),
+    )
     args = parser.parse_args()
 
-    # Production indexe un périmètre de sources plus large que l'évaluation
-    # (cf. exclude_sources_prod) ; do_eval suit la même convention que 1_run_rag.py.
-    do_eval = str(args.skip_eval).lower() != "true"
+    # `train` (l'ancien split) applique le profil de sources restreint,
+    # `full` le profil large — les deux listes sont identiques aujourd'hui,
+    # la distinction est conservée le temps de la transition.
+    is_train_split = args.kb_scope == "train"
 
     with open(args.config, "r") as f:
         config = yaml.safe_load(f)
@@ -93,13 +117,13 @@ def main():
     logger.info(f"  → {len(annotations)} annotations loaded (nature={nature or 'all'})")
 
     # Exclude configured sources from the vector DB.
-    # Évaluation : exclude_sources (KB = lot train restreint).
-    # Production  : exclude_sources_prod (KB = toutes les annotations voulues).
-    if do_eval:
+    # train : exclude_sources (profil restreint de l'ancien split).
+    # full  : exclude_sources_prod (profil large, toutes les annotations voulues).
+    if is_train_split:
         exclude_sources = config["annotations"].get("exclude_sources") or []
     else:
         exclude_sources = config["annotations"].get("exclude_sources_prod") or []
-    logger.info(f"  → mode={'evaluation' if do_eval else 'production'}, exclude_sources={exclude_sources}")
+    logger.info(f"  → kb_scope={args.kb_scope}, exclude_sources={exclude_sources}")
     if exclude_sources:
         before = len(annotations)
         annotations = annotations[~annotations["source"].isin(exclude_sources)]
@@ -170,10 +194,21 @@ def main():
     # STEP 5: create Qdrant collection and upload
     # -----------------------------------------------------------------------
     logger.info("STEP 5: creating collection and uploading points")
-    collection_name = config["qdrant"]["collection_name"]
-    if args.sample_size:
-        collection_name = collection_name + "_test"
-        logger.info(f"  → sample-size set: using test collection '{collection_name}'")
+    # Le mode est dans le NOM, pas seulement dans le manifeste : une KB de
+    # production contient *toutes* les annotations, donc l'interroger depuis un
+    # run d'évaluation gonfle l'accuracy sans lever d'erreur. C'est le champ
+    # qu'un humain confond le plus en recopiant, autant qu'il soit visible.
+    # L'ancien suffixe `_test`, accordé par convention entre ce script et
+    # 1_run_rag.py, disparaît : le nom unique le rend inutile, et
+    # `sample_size` reste visible via le suffixe `__sampleN`.
+    collection_name = args.collection_name or build_collection_name(
+        base=config["qdrant"]["collection_base"],
+        run_date=args.run_date,
+        run_id=args.run_id,
+        mode=args.kb_scope,
+        sample_size=args.sample_size,
+    )
+    logger.info(f"  → collection cible : {collection_name}")
     if client_qdrant.collection_exists(collection_name):
         client_qdrant.delete_collection(collection_name)
         logger.info(f"  → existing collection deleted: {collection_name}")
@@ -205,10 +240,39 @@ def main():
         client_qdrant.upsert(collection_name=collection_name, points=points[i:i + batch_size])
         logger.info(f"  → batch {i // batch_size + 1}/{n_batches} uploaded")
 
+    # -----------------------------------------------------------------------
+    # STEP 6: manifest
+    # -----------------------------------------------------------------------
+    logger.info("STEP 6: writing manifest")
+
+    # Compté auprès de Qdrant, jamais `len(points)` : seule mesure qui atteste
+    # que les points sont bien arrivés.
+    point_count = client_qdrant.count(collection_name=collection_name, exact=True).count
+
+    manifest = {
+        "collection_name": collection_name,
+        "kind": "annotations",
+        "kb_scope": args.kb_scope,
+        "run_id": args.run_id,
+        "run_date": args.run_date,
+        "embedding_model": config["embedding"]["model_name"],
+        "embedding_dim": config["embedding"]["model_len"],
+        "strategy": None,  # pas de découpage : une annotation = un point
+        "sample_size": args.sample_size,
+        "point_count": point_count,
+        "source_annotations": config["annotations"]["s3_path"],
+        "git_sha": git_sha(),
+    }
+    uri = write_manifest(con, config["qdrant"]["manifests_root"], manifest)
+    logger.info(f"  ✓ manifeste écrit : {uri}")
+    logger.info(dumps(manifest))
+
     logger.info("=" * 80)
     logger.info("ANNOTATION VECTOR DB CREATION COMPLETED")
-    logger.info(f"  collection: {collection_name} ({len(points)} points)")
+    logger.info(f"  collection: {collection_name} ({point_count} points)")
     logger.info("=" * 80)
+
+    log_paste_banner(logger, {"classify-rag-annotations-collection": collection_name})
 
 
 logging.basicConfig(

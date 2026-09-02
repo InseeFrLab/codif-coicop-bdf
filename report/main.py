@@ -65,7 +65,19 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="MLflow URI of the TTC model used by classify-ttc, logged for traceability.",
     )
-    p.add_argument("--skip-index", default=None)
+    # Quelles vector DB ont servi. Loggué pour la même raison que les URI de
+    # modèles : sans ça, deux runs bâtis sur des index différents mais aux
+    # métriques différentes seraient indistinguables dans MLflow.
+    p.add_argument(
+        "--classify-rag-notices-collection",
+        default=None,
+        help="Collection Qdrant interrogée par classify-rag-notices, pour traçabilité.",
+    )
+    p.add_argument(
+        "--classify-rag-annotations-collection",
+        default=None,
+        help="Collection Qdrant interrogée par classify-rag-annotations, pour traçabilité.",
+    )
     p.add_argument("--skip-report", default=None)
     p.add_argument(
         "--reconciliation", choices=["llm", "sirus"], default="llm",
@@ -159,7 +171,8 @@ def log_to_mlflow(args, run_root, output_s3, decide_path, prediction) -> None:
             "reconcile_llm_model": args.reconcile_llm_model,
             "reconcile_llm_concurrency": args.reconcile_llm_concurrency,
             "classify_ttc_model_uri": args.classify_ttc_model_uri,
-            "skip_index": args.skip_index,
+            "classify_rag_notices_collection": args.classify_rag_notices_collection,
+            "classify_rag_annotations_collection": args.classify_rag_annotations_collection,
             "skip_report": args.skip_report,
             "output_prefix": run_root,
             "report_html": output_s3,

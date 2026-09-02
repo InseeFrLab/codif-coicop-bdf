@@ -31,8 +31,11 @@ spec:
         value: ""
       - name: source_column
         value: ""
-      # Sampling — deux curseurs :
-      #   sample-annotations : plafonne la KB d'annotations (vector DB) ;
+      # Sampling — deux curseurs, tous deux sur le jeu À CODER :
+      #   sample-annotations : nb d'observations à coder en mode ÉVALUATION.
+      #     (Ne plafonne plus la KB indexée : l'indexation est sortie de ce
+      #      pipeline. Pour ça, voir `kb-sample-size` du pipeline
+      #      argo/index-annotations-pipeline.yaml.)
       #   sample-observations : plafonne le jeu à coder (inférence lcs/rag/rag-annotations).
       # En mode évaluation, l'inférence porte sur le split test des annotations →
       # elle utilise sample-annotations (sample-observations n'a pas de sens en éval).
@@ -42,8 +45,29 @@ spec:
         value: ""
       - name: classify-rag-model
         value: "gemma4-26b-moe"
-      - name: skip-index
-        value: "true"
+
+      # --- Vector DB : OBLIGATOIRES ------------------------------------------
+      # Noms des collections Qdrant à interroger, produits HORS de ce pipeline
+      # par argo/index-notices-pipeline.yaml et
+      # argo/index-annotations-pipeline.yaml. Chaque indexation affiche en fin
+      # d'exécution la ligne à recopier ici — même pratique que
+      # classify-ttc-model-uri et reconcile-sirus-model-uri.
+      #
+      # Défaut vide, DÉLIBÉRÉMENT : il n'existe pas de mécanisme de paramètre
+      # requis dans Argo, donc la garde est faite deux fois — dans le script du
+      # conteneur (echo + exit 1) et dans l'argparse Python. Un nom absent doit
+      # échouer en quelques secondes, pas retomber en silence sur l'index d'un
+      # autre run ni planter après deux heures.
+      #
+      # ⚠️  Pour un run d'ÉVALUATION dont le jeu de test provient du même lot
+      # historique que la KB, préférer une collection bâtie en `kb-scope=train`
+      # (son nom contient `__train__`) : une collection `__full__` contient tous
+      # les produits annotés, donc les réponses attendues, et l'accuracy serait
+      # gonflée sans qu'aucune étape n'échoue.
+      - name: classify-rag-notices-collection
+        value: ""
+      - name: classify-rag-annotations-collection
+        value: ""
       - name: run_id
         value: "{{workflow.name}}"
       - name: run_date
@@ -85,12 +109,15 @@ spec:
     # Les 4 classifieurs tournent en parallèle, puis une conciliation tranche.
     # `prune-codes` (post classify-regex) produit TOUS les artefacts prunés
     # (nomenclature, mapping, annotations train/test, suggester) ; l'aval ne fait que lire.
-    # Les 2 `index-*` sont skippables (paramètre skip-index).
+    #
+    # L'indexation des vector DB n'est PLUS ici : elle a ses propres workflows
+    # (argo/index-notices-pipeline.yaml, argo/index-annotations-pipeline.yaml),
+    # et les collections à interroger sont désignées par paramètre.
     #
     #   build-datasets ──→ classify-regex ─┬─→ classify-lcs ─────────────────────────────────────────────────────┐
     #                       (→ prune-codes)├─→ classify-ttc ─────────────────────────────────────────────────────┤
-    #                                      └─→ prune-codes ─┬─→ index-notices ─────→ classify-rag-notices ───────┤
-    #                                                        └─→ index-annotations ─→ classify-rag-annotations ──┘
+    #                                      └─→ prune-codes ─┬─→ classify-rag-notices ───────────────────────────┤
+    #                                                        └─→ classify-rag-annotations ──────────────────────┘
     #                                                                                                            │
     #                                                       ┌────────────────────────────────────────────────────┘
     #                                                       └─→ reconcile-llm  OU  reconcile-sirus   (exclusifs : paramètre conciliation)
@@ -152,49 +179,35 @@ spec:
                 - name: run_date
                   value: "{{workflow.parameters.run_date}}"
 
-          - name: index-notices
-            dependencies: [prune-codes]
-            template: index-notices
-            when: '"{{workflow.parameters.skip-index}}" != "true"'
-            arguments:
-              parameters:
-                - name: run_id
-                  value: "{{workflow.parameters.run_id}}"
-                - name: run_date
-                  value: "{{workflow.parameters.run_date}}"
-
-          - name: index-annotations
-            dependencies: [prune-codes]
-            template: index-annotations
-            when: '"{{workflow.parameters.skip-index}}" != "true"'
-            arguments:
-              parameters:
-                - name: run_id
-                  value: "{{workflow.parameters.run_id}}"
-                - name: run_date
-                  value: "{{workflow.parameters.run_date}}"
+          # L'indexation des vector DB ne fait plus partie de ce pipeline : elle
+          # a ses propres workflows (argo/index-notices-pipeline.yaml et
+          # argo/index-annotations-pipeline.yaml), au même titre que
+          # l'entraînement de classify-ttc et de reconcile-sirus. Les deux
+          # collections sont désignées par paramètre, ci-dessous.
 
           - name: classify-rag-notices
-            dependencies: [index-notices, prune-codes]
+            dependencies: [prune-codes]
             template: classify-rag-notices
             arguments:
               parameters:
                 - name: classify-rag-model
                   value: "{{workflow.parameters.classify-rag-model}}"
+                - name: collection-name
+                  value: "{{workflow.parameters.classify-rag-notices-collection}}"
                 - name: run_id
                   value: "{{workflow.parameters.run_id}}"
                 - name: run_date
                   value: "{{workflow.parameters.run_date}}"
 
           - name: classify-rag-annotations
-            dependencies: [index-annotations, prune-codes]
+            dependencies: [prune-codes]
             template: classify-rag-annotations
             arguments:
               parameters:
                 - name: classify-rag-model
                   value: "{{workflow.parameters.classify-rag-model}}"
-                - name: sample-annotations
-                  value: "{{workflow.parameters.sample-annotations}}"
+                - name: collection-name
+                  value: "{{workflow.parameters.classify-rag-annotations-collection}}"
                 - name: run_id
                   value: "{{workflow.parameters.run_id}}"
                 - name: run_date
@@ -253,9 +266,9 @@ spec:
 
           # Dépend des DEUX conciliations : la forme historique `dependencies:`
           # se développe en `Succeeded || Skipped || Daemoned`, donc l'étape
-          # skippée satisfait sa clause. Même mécanisme que index-notices →
-          # classify-rag-notices. Ne pas passer à `depends:` : le dépôt n'en utilise nulle
-          # part et mélanger les deux formes est un piège de maintenance.
+          # skippée satisfait sa clause. Ne pas passer à `depends:` : le dépôt
+          # n'en utilise nulle part et mélanger les deux formes est un piège de
+          # maintenance.
           - name: export-results
             dependencies: [reconcile-llm, reconcile-sirus]
             template: export-results
@@ -302,8 +315,10 @@ spec:
                   value: "{{workflow.parameters.reconcile-llm-concurrency}}"
                 - name: classify-ttc-model-uri
                   value: "{{workflow.parameters.classify-ttc-model-uri}}"
-                - name: skip-index
-                  value: "{{workflow.parameters.skip-index}}"
+                - name: classify-rag-notices-collection
+                  value: "{{workflow.parameters.classify-rag-notices-collection}}"
+                - name: classify-rag-annotations-collection
+                  value: "{{workflow.parameters.classify-rag-annotations-collection}}"
                 - name: skip-report
                   value: "{{workflow.parameters.skip-report}}"
                 - name: step-timings
@@ -337,7 +352,8 @@ spec:
         args:
           - |
             set -e
-            git clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/build-datasets
+            git clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo
+            cd repo/build-datasets
             uv sync --locked --no-dev
             ARGS="--run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}"
             # input_file vide => mode évaluation : ne pas passer --input-file ni les colonnes (sens uniquement en prédiction)
@@ -397,7 +413,8 @@ spec:
         args:
           - |
             set -e
-            git clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/classify-regex
+            git clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo
+            cd repo/classify-regex
             uv sync --locked --no-dev
             ARGS="--run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}"
             # input_file non vide => mode production (train=annotations_full, test=observations)
@@ -456,7 +473,8 @@ spec:
         args:
           - |
             set -e
-            git clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/classify-lcs
+            git clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo
+            cd repo/classify-lcs
             # Échantillonnage centralisé en amont (classify-regex) → pas de sampling ici.
             ARGS="--run-id={{inputs.parameters.run_id}} --run-date={{inputs.parameters.run_date}}"
             Rscript R/main.R $ARGS
@@ -510,7 +528,8 @@ spec:
         args:
           - |
             set -e
-            git clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/prune-codes
+            git clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo
+            cd repo/prune-codes
             uv sync --locked --no-dev
             uv run --locked --no-dev scripts/main.py --config {{inputs.parameters.config}} --run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}
         env:
@@ -541,80 +560,6 @@ spec:
           limits:
             memory: 50Gi
             cpu: 15000m
-
-    # -----------------------------------------------------------------------
-    # Step 2b: Create vector database
-    # -----------------------------------------------------------------------
-    - name: index-notices
-      inputs:
-        parameters:
-          - name: config
-            value: config/config.yaml
-          - name: run_id
-          - name: run_date
-      container:
-        image: inseefrlab/onyxia-vscode-python:py3.13.12
-        command: [sh, -c]
-        args:
-          - |
-            set -e
-            git clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/rag-notices
-            uv run --locked --no-dev scripts/0_create_vector_db.py --config {{inputs.parameters.config}} --run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}
-        env:
-          - name: AWS_ACCESS_KEY_ID
-            valueFrom:
-              secretKeyRef:
-                name: secret-codif-coicop-bdf
-                key: AWS_ACCESS_KEY_ID
-          - name: AWS_SECRET_ACCESS_KEY
-            valueFrom:
-              secretKeyRef:
-                name: secret-codif-coicop-bdf
-                key: AWS_SECRET_ACCESS_KEY
-          - name: AWS_SESSION_TOKEN
-            valueFrom:
-              secretKeyRef:
-                name: secret-codif-coicop-bdf
-                key: AWS_SESSION_TOKEN
-          - name: DDC_ENCRYPTION_KEY
-            valueFrom:
-              secretKeyRef:
-                name: secret-codif-coicop-bdf
-                key: DDC_ENCRYPTION_KEY
-          - name: LLMLAB_URL
-            valueFrom:
-              secretKeyRef:
-                name: secret-codif-coicop-bdf
-                key: LLMLAB_URL
-          - name: LLMLAB_API_KEY
-            valueFrom:
-              secretKeyRef:
-                name: secret-codif-coicop-bdf
-                key: LLMLAB_API_KEY
-          - name: QDRANT_URL
-            valueFrom:
-              secretKeyRef:
-                name: secret-codif-coicop-bdf
-                key: QDRANT_URL
-          - name: QDRANT_API_KEY
-            valueFrom:
-              secretKeyRef:
-                name: secret-codif-coicop-bdf
-                key: QDRANT_API_KEY
-          - name: QDRANT_API_PORT
-            valueFrom:
-              secretKeyRef:
-                name: secret-codif-coicop-bdf
-                key: QDRANT_API_PORT
-        resources:
-          requests:
-            memory: 2Gi
-            cpu: 100m
-          limits:
-            memory: 50Gi
-            cpu: 15000m
-
-    # -----------------------------------------------------------------------
     # Step 3: Run RAG pipeline
     # -----------------------------------------------------------------------
     - name: classify-rag-notices
@@ -623,6 +568,7 @@ spec:
           - name: config
             value: config/config.yaml
           - name: classify-rag-model
+          - name: collection-name
           - name: run_id
           - name: run_date
       container:
@@ -631,10 +577,22 @@ spec:
         args:
           - |
             set -e
-            git clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/rag-notices
+            # Garde AVANT le clone : Argo ne sait pas exprimer « paramètre
+            # requis », et l'idiome `[ -n ... ] && ARGS=...` du dépôt ferait
+            # retomber un nom vide sur un défaut de config. Échouer ici coûte
+            # quelques secondes ; échouer plus loin en coûte des heures.
+            if [ -z "{{inputs.parameters.collection-name}}" ]; then
+              echo "ERREUR : le paramètre 'classify-rag-notices-collection' est vide."
+              echo "Renseigner le nom de la collection Qdrant produite par"
+              echo "argo/index-notices-pipeline.yaml (son log de fin affiche la ligne à recopier)."
+              exit 1
+            fi
+            git clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo
+            cd repo/rag-notices
             mkdir -p logs prompts
 
             ARGS="--config {{inputs.parameters.config}} --run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}"
+            ARGS="$ARGS --collection_name {{inputs.parameters.collection-name}}"
 
             # Échantillonnage centralisé en amont (classify-regex) → pas de sampling ici.
             if [ -n "{{inputs.parameters.classify-rag-model}}" ]; then
@@ -725,95 +683,13 @@ spec:
           limits:
             memory: 50Gi
             cpu: 15000m
-
-    # -----------------------------------------------------------------------
-    # Step 2bis: Build the annotation vector DB (RAG on annotated examples)
-    # -----------------------------------------------------------------------
-    - name: index-annotations
-      inputs:
-        parameters:
-          - name: config
-            value: config/config.yaml
-          - name: run_id
-          - name: run_date
-      container:
-        image: inseefrlab/onyxia-vscode-python:py3.13.12
-        command: [sh, -c]
-        args:
-          - |
-            set -e
-            git clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/rag-annotations
-            # input_file vide => évaluation (skip-eval=false) ; non vide => production (skip-eval=true)
-            SKIP_EVAL=true
-            [ -z "{{workflow.parameters.input_file}}" ] && SKIP_EVAL=false
-            BUILD_ARGS="--config {{inputs.parameters.config}} --run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}} --skip-eval $SKIP_EVAL"
-            # Échantillon de la KB d'annotations indexée dans la vector DB.
-            [ -n "{{workflow.parameters.sample-annotations}}" ] && BUILD_ARGS="$BUILD_ARGS --sample-size {{workflow.parameters.sample-annotations}}"
-            uv run --locked --no-dev scripts/0_build_annotation_vector_db.py $BUILD_ARGS
-        env:
-          - name: AWS_ACCESS_KEY_ID
-            valueFrom:
-              secretKeyRef:
-                name: secret-codif-coicop-bdf
-                key: AWS_ACCESS_KEY_ID
-          - name: AWS_SECRET_ACCESS_KEY
-            valueFrom:
-              secretKeyRef:
-                name: secret-codif-coicop-bdf
-                key: AWS_SECRET_ACCESS_KEY
-          - name: AWS_SESSION_TOKEN
-            valueFrom:
-              secretKeyRef:
-                name: secret-codif-coicop-bdf
-                key: AWS_SESSION_TOKEN
-          - name: DDC_ENCRYPTION_KEY
-            valueFrom:
-              secretKeyRef:
-                name: secret-codif-coicop-bdf
-                key: DDC_ENCRYPTION_KEY
-          - name: LLMLAB_URL
-            valueFrom:
-              secretKeyRef:
-                name: secret-codif-coicop-bdf
-                key: LLMLAB_URL
-          - name: LLMLAB_API_KEY
-            valueFrom:
-              secretKeyRef:
-                name: secret-codif-coicop-bdf
-                key: LLMLAB_API_KEY
-          - name: QDRANT_URL
-            valueFrom:
-              secretKeyRef:
-                name: secret-codif-coicop-bdf
-                key: QDRANT_URL
-          - name: QDRANT_API_KEY
-            valueFrom:
-              secretKeyRef:
-                name: secret-codif-coicop-bdf
-                key: QDRANT_API_KEY
-          - name: QDRANT_API_PORT
-            valueFrom:
-              secretKeyRef:
-                name: secret-codif-coicop-bdf
-                key: QDRANT_API_PORT
-        resources:
-          requests:
-            memory: 2Gi
-            cpu: 100m
-          limits:
-            memory: 50Gi
-            cpu: 15000m
-
-    # -----------------------------------------------------------------------
-    # Step 3bis: Run the annotation-RAG (production mode — predictions only)
-    # -----------------------------------------------------------------------
     - name: classify-rag-annotations
       inputs:
         parameters:
           - name: config
             value: config/config.yaml
           - name: classify-rag-model
-          - name: sample-annotations
+          - name: collection-name
           - name: run_id
           - name: run_date
       container:
@@ -822,10 +698,20 @@ spec:
         args:
           - |
             set -e
-            git clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/rag-annotations
+            # Garde AVANT le clone : cf. classify-rag-notices.
+            if [ -z "{{inputs.parameters.collection-name}}" ]; then
+              echo "ERREUR : le paramètre 'classify-rag-annotations-collection' est vide."
+              echo "Renseigner le nom de la collection Qdrant produite par"
+              echo "argo/index-annotations-pipeline.yaml (son log de fin affiche la ligne à recopier)."
+              echo "Pour un run d'ÉVALUATION, utiliser une collection dont le nom contient '__eval__'."
+              exit 1
+            fi
+            git clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo
+            cd repo/rag-annotations
             mkdir -p logs
 
             ARGS="--config {{inputs.parameters.config}} --run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}"
+            ARGS="$ARGS --collection-name {{inputs.parameters.collection-name}}"
 
             # input_file vide => évaluation (--skip-eval false, calcule les métriques) ;
             # non vide => production (--skip-eval true, prédictions seules, pas de filtre source)
@@ -837,8 +723,6 @@ spec:
             if [ -n "{{inputs.parameters.classify-rag-model}}" ]; then
               ARGS="$ARGS --model_name {{inputs.parameters.classify-rag-model}}"
             fi
-            # sample-annotations non vide → collection Qdrant de test (suffix _test).
-            [ -n "{{inputs.parameters.sample-annotations}}" ] && ARGS="$ARGS --sample-annotations {{inputs.parameters.sample-annotations}}"
 
             uv run --locked --no-dev scripts/1_run_rag.py $ARGS
         env:
@@ -940,7 +824,8 @@ spec:
         args:
           - |
             set -e
-            git clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/classify-ttc
+            git clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo
+            cd repo/classify-ttc
             uv sync --locked --no-dev
 
             RUN_ROOT="s3://projet-budget-famille/data/workflow_runs/{{inputs.parameters.run_date}}/{{inputs.parameters.run_id}}"
@@ -1008,7 +893,8 @@ spec:
         args:
           - |
             set -e
-            git clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/reconcile-llm
+            git clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo
+            cd repo/reconcile-llm
             uv sync --locked --no-dev
 
             RUN_ROOT="s3://projet-budget-famille/data/workflow_runs/{{inputs.parameters.run_date}}/{{inputs.parameters.run_id}}"
@@ -1093,7 +979,8 @@ spec:
         args:
           - |
             set -e
-            git clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/reconcile-sirus
+            git clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo
+            cd repo/reconcile-sirus
             uv sync --locked --no-dev
 
             RUN_ROOT="s3://projet-budget-famille/data/workflow_runs/{{inputs.parameters.run_date}}/{{inputs.parameters.run_id}}"
@@ -1184,7 +1071,8 @@ spec:
         args:
           - |
             set -e
-            git clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/export-results
+            git clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo
+            cd repo/export-results
             uv sync --locked --no-dev
             ARGS="--run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}"
             # Quelle conciliation a produit le code final. Le chemin du parquet
@@ -1245,7 +1133,8 @@ spec:
           - name: reconcile-llm-model
           - name: reconcile-llm-concurrency
           - name: classify-ttc-model-uri
-          - name: skip-index
+          - name: classify-rag-notices-collection
+          - name: classify-rag-annotations-collection
           - name: skip-report
           - name: reconciliation
           - name: reconcile-sirus-model-uri
@@ -1256,14 +1145,16 @@ spec:
         args:
           - |
             set -e
-            git clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/report
+            git clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo
+            cd repo/report
             uv sync --locked --no-dev
 
             ARGS="--run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}} \
                   --experiment-name {{inputs.parameters.report-experiment}} \
                   --reconcile-llm-model {{inputs.parameters.reconcile-llm-model}} \
                   --reconcile-llm-concurrency {{inputs.parameters.reconcile-llm-concurrency}} \
-                  --skip-index {{inputs.parameters.skip-index}} \
+                  --classify-rag-notices-collection {{inputs.parameters.classify-rag-notices-collection}} \
+                  --classify-rag-annotations-collection {{inputs.parameters.classify-rag-annotations-collection}} \
                   --skip-report {{inputs.parameters.skip-report}}"
 
             [ -n "{{inputs.parameters.input_file}}" ]    && ARGS="$ARGS --input-file {{inputs.parameters.input_file}}"

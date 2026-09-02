@@ -41,7 +41,16 @@ suggester:
   s3_path_pruned: "s3://projet-budget-famille/data/workflow_runs/{run_date}/{run_id}/prune-codes/suggester_pruned.parquet"
 
 qdrant:
-  collection_name: "coicop_annotations_without_copain_2017"
+  # Racine du nom : le constructeur (0_build_annotation_vector_db.py) y ajoute
+  # le mode, la date et l'id de SON run pour obtenir un nom unique. Surtout pas
+  # `collection_name` — ce fichier est aussi lu par le consommateur
+  # (1_run_rag.py), à qui le nom complet est passé en argument ; une clé
+  # `collection_name` ici l'inciterait à retomber en silence sur l'ancienne
+  # collection partagée.
+  collection_base: "coicop_annotations"
+  # Manifeste écrit à côté de chaque collection : il porte le mode (prod/eval),
+  # le modèle d'embedding et le run source, que le nom ne peut pas tout contenir.
+  manifests_root: "s3://projet-budget-famille/data/vector_db_manifests"
   upload_batch_size: 56
 
 embedding:

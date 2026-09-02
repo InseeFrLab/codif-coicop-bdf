@@ -51,6 +51,7 @@ from rag_annotations.utils import (
     expand_paths,
     is_present,
 )
+from rag_annotations.vector_index import validate_collection
 
 
 def setup_argument_parser():
@@ -60,10 +61,14 @@ def setup_argument_parser():
     parser.add_argument("--run-date", required=True, help="Workflow run date (YYYY-MM-DD)")
     parser.add_argument("--sample_size", type=int, help="Limit number of products")
     parser.add_argument(
-        "--sample-annotations", type=int, default=None,
-        help="Taille de la KB d'annotations (doit correspondre à ce qui a été passé à "
-             "0_build_annotation_vector_db.py). Non vide → utilise la collection de test "
-             "(suffix '_test' sur collection_name).",
+        "--collection-name",
+        required=True,
+        help=(
+            "Nom complet de la collection Qdrant à interroger, produit par "
+            "index-annotations-pipeline.yaml. Obligatoire : il n'y a plus de nom "
+            "par défaut en config, précisément pour qu'un oubli échoue au lieu "
+            "de retomber en silence sur l'index d'un autre run."
+        ),
     )
     parser.add_argument("--model_name", type=str, help="LLM model name (overrides config)")
     parser.add_argument("--experiment_name", type=str, help="MLflow experiment (overrides config)")
@@ -93,8 +98,9 @@ def main():
     if args.experiment_name:
         config["mlflow"]["experiment_name"] = args.experiment_name
     config = expand_paths(config, run_id=args.run_id, run_date=args.run_date)
-    if args.sample_annotations:
-        config["qdrant"]["collection_name"] = config["qdrant"]["collection_name"] + "_test"
+    # Affecté après expand_paths : le nom vient d'Argo, pas de la config, et ne
+    # doit pas traverser str.format() (une accolade y lèverait un KeyError).
+    config["qdrant"]["collection_name"] = args.collection_name
 
     product_col = config["annotations"]["product_col"]
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -103,6 +109,49 @@ def main():
     # default = production (predictions only); `--skip-eval false` = evaluation mode.
     do_eval = str(args.skip_eval).lower() != "true"
     input_path = config["data"]["s3_path_input"]
+
+    # Valider l'index AVANT MLflow : échouer à l'intérieur d'un start_run
+    # laisserait un run FAILED dans l'expérience.
+    logger.info("Validation de la collection Qdrant...")
+    _con_validate = create_duckdb_connection()
+    _client_validate = QdrantClient(
+        url=os.environ["QDRANT_URL"],
+        api_key=os.environ["QDRANT_API_KEY"],
+        port=os.environ["QDRANT_API_PORT"],
+    )
+    index_manifest = validate_collection(
+        con=_con_validate,
+        client_qdrant=_client_validate,
+        collection_name=config["qdrant"]["collection_name"],
+        manifests_root=config["qdrant"]["manifests_root"],
+        expected_dim=config["embedding"]["model_len"],
+        expected_embedding_model=config["embedding"]["model_name"],
+        param_name="classify-rag-annotations-collection",
+        index_pipeline="argo/index-annotations-pipeline.yaml",
+    )
+    # Non bloquant (décision assumée) : on signale seulement. Une KB `full`
+    # contient tous les produits annotés, y compris ceux qu'un run d'évaluation
+    # s'apprête à coder si son jeu de test provient du même lot historique.
+    # Depuis que les nouveaux produits annotés fournissent un jeu de test
+    # indépendant, ce cas n'est plus la norme — d'où l'avertissement plutôt
+    # que le refus.
+    if do_eval and index_manifest.get("kb_scope") == "full":
+        logger.warning("=" * 72)
+        logger.warning(
+            "Run d'ÉVALUATION sur une collection bâtie en kb-scope=full (%s).",
+            config["qdrant"]["collection_name"],
+        )
+        logger.warning(
+            "Vérifier que le jeu de test de ce run est bien indépendant de la KB : "
+            "sinon le RAG y retrouve ses propres réponses et l'accuracy est gonflée."
+        )
+        logger.warning("=" * 72)
+    logger.info(
+        "✓ Collection validée : %s (%s points, kb_scope %s)",
+        config["qdrant"]["collection_name"],
+        index_manifest["point_count_live"],
+        index_manifest.get("kb_scope"),
+    )
 
     mlflow.set_tracking_uri(os.environ["MLFLOW_TRACKING_URI"])
     mlflow.set_experiment(config["mlflow"]["experiment_name"])
@@ -113,8 +162,15 @@ def main():
                     "EVALUATION" if do_eval else "PRODUCTION")
         logger.info("=" * 80)
 
+        # Provenance de l'index : deux runs bâtis sur des index différents
+        # seraient sinon indistinguables dans MLflow.
+        mlflow.set_tag("index.git_sha", str(index_manifest.get("git_sha")))
+        mlflow.set_tag("index.run_id", str(index_manifest.get("run_id")))
+        mlflow.set_tag("index.kb_scope", str(index_manifest.get("kb_scope")))
+
         mlflow.log_params({
             "collection_name": config["qdrant"]["collection_name"],
+            "index_point_count": index_manifest["point_count_live"],
             "model_name": config["llm"]["model_name"],
             "embedding_model": config["embedding"]["model_name"],
             "retrieval_size": config["retrieval"]["size"],

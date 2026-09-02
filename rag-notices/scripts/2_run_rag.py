@@ -25,6 +25,7 @@ import random
 
 from rag_notices.data.parsing import extract_json_from_response
 from rag_notices.utils import create_duckdb_connection, expand_paths, merge_eval_and_retreived, truncate_code
+from rag_notices.vector_index import validate_collection
 from rag_notices.eval.metrics import (
     compute_hierarchical_metrics,
     calculate_accuracy_at_level,
@@ -58,7 +59,40 @@ def main():
     config = merge_config_with_args(config, args)
     config = expand_paths(config, run_id=args.run_id, run_date=args.run_date)
 
+    # Affecté après expand_paths : le nom vient d'Argo, pas de la config, et ne
+    # doit pas traverser str.format() (cf. merge_config_with_args).
+    config['qdrant']['collection_name'] = args.collection_name
+
     logger.info(f"✓ Configuration loaded: {config['llm']['model_name']}")
+
+    # ---------------------------------------------------------------------------
+    # Valider l'index AVANT tout travail coûteux — et avant MLflow, pour ne pas
+    # laisser un run FAILED dans l'expérience si la collection est mauvaise.
+    # ---------------------------------------------------------------------------
+
+    logger.info("Validation de la collection Qdrant...")
+    _con_validate = create_duckdb_connection()
+    _client_validate = QdrantClient(
+        url=os.environ["QDRANT_URL"],
+        api_key=os.environ["QDRANT_API_KEY"],
+        port=os.environ["QDRANT_API_PORT"],
+    )
+    index_manifest = validate_collection(
+        con=_con_validate,
+        client_qdrant=_client_validate,
+        collection_name=config['qdrant']['collection_name'],
+        manifests_root=config['qdrant']['manifests_root'],
+        expected_dim=config["embedding"]["model_len"],
+        expected_embedding_model=config["embedding"]["model_name"],
+        expected_strategy=config["qdrant"]["strategy"],
+        param_name="classify-rag-notices-collection",
+        index_pipeline="argo/index-notices-pipeline.yaml",
+    )
+    logger.info(
+        f"✓ Collection validée : {config['qdrant']['collection_name']} "
+        f"({index_manifest['point_count_live']} points, "
+        f"bâtie le {index_manifest.get('run_date')} par {index_manifest.get('run_id')})"
+    )
 
     # Timestamp for MLflow run names and plots; no longer used in S3 paths
     # (run_id already uniquely identifies the run folder).
@@ -81,8 +115,14 @@ def main():
 
         
         # Log parameters
+        # Provenance de l'index : sans ça, deux runs aux métriques différentes
+        # mais bâtis sur des index différents sont indistinguables.
+        mlflow.set_tag("index.git_sha", str(index_manifest.get("git_sha")))
+        mlflow.set_tag("index.run_id", str(index_manifest.get("run_id")))
+
         mlflow.log_params({
             "collection_name": config['qdrant']['collection_name'],
+            "index_point_count": index_manifest["point_count_live"],
             "model_name": config["llm"]["model_name"],
             "embedding_model": config["embedding"]["model_name"],
             "temperature": config["llm"]["temperature"],
@@ -342,7 +382,13 @@ def setup_argument_parser():
     parser.add_argument(
         '--collection_name',
         type=str,
-        help='Qdrant collection name (overrides config)'
+        required=True,
+        help=(
+            'Nom complet de la collection Qdrant à interroger, produit par '
+            'index-notices-pipeline.yaml. Obligatoire : il n\'y a plus de nom '
+            'par défaut en config, précisément pour qu\'un oubli échoue au lieu '
+            'de retomber en silence sur l\'index d\'un autre run.'
+        ),
     )
     
     parser.add_argument(
@@ -408,9 +454,12 @@ def merge_config_with_args(config, args):
     if args.retrieval_size is not None:
         config['retrieval']['size'] = args.retrieval_size
         
-    if args.collection_name is not None:
-        config['qdrant']['collection_name'] = args.collection_name
-        
+    # `collection_name` n'est délibérément PAS traité ici : cette fonction
+    # tourne avant `expand_paths`, qui applique str.format() à toute chaîne de
+    # la config. Un nom contenant une accolade y lèverait un KeyError. Il est
+    # affecté après l'expansion, dans main().
+
+
     if args.nature_annotation is not None:
         config['annotations']['nature'] = args.nature_annotation
         

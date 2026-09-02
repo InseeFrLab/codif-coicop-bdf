@@ -1,0 +1,210 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: index-notices-
+spec:
+  entrypoint: pipeline
+  serviceAccountName: workflow
+
+  podSpecPatch: |
+    containers:
+      - name: main
+        env:
+          - name: AWS_DEFAULT_REGION
+            value: "us-east-1"
+
+  # ---------------------------------------------------------------------------
+  # Indexation de la vector DB des NOTICES COICOP — pipeline autonome.
+  #
+  # Pourquoi séparé du pipeline de classification : l'embedding de toute la
+  # nomenclature n'a aucune raison d'être repayé à chaque codification, et les
+  # collections ne doivent plus porter un nom fixe partagé par tous les runs
+  # (une réindexation détruisait la base que lisait un run concurrent).
+  # Même organisation que l'entraînement de classify-ttc et de reconcile-sirus :
+  # l'artefact coûteux est produit ici, son identifiant est recopié dans le
+  # fichier de paramètres du pipeline de classification.
+  #
+  # Autonome au sens strict : la nomenclature dérive d'un CSV statique, aucune
+  # donnée d'un run de classification n'y entre. D'où `prune-codes --only
+  # nomenclature`, qui s'arrête après l'étape 1 — les étapes 2 et 3 liraient des
+  # sorties `classify-regex` qui n'existent pas ici.
+  #
+  #   prune-codes (--only nomenclature) ──→ index-notices
+  #
+  # En fin d'exécution, le log d'`index-notices` affiche la ligne à recopier :
+  #     classify-rag-notices-collection: coicop_notices__<date>__<run_id>
+  # ---------------------------------------------------------------------------
+
+  arguments:
+    parameters:
+      # Branche clonée par tous les steps. Le YAML soumis et le code cloné
+      # doivent être sur le même commit.
+      - name: git-branch
+        value: main
+
+      - name: run_id
+        value: "{{workflow.name}}"
+      - name: run_date
+        value:
+          "{{workflow.creationTimestamp.Y}}-{{workflow.creationTimestamp.m}}-{{wor\
+          kflow.creationTimestamp.d}}"
+
+      # Échappatoire : forcer un nom de collection exact au lieu de le composer
+      # depuis `qdrant.collection_base` et l'identité de ce run. Vide = composé.
+      - name: collection-name
+        value: ""
+
+  templates:
+    - name: pipeline
+      dag:
+        tasks:
+          - name: prune-codes
+            template: prune-codes
+            arguments:
+              parameters:
+                - name: run_id
+                  value: "{{workflow.parameters.run_id}}"
+                - name: run_date
+                  value: "{{workflow.parameters.run_date}}"
+
+          - name: index-notices
+            dependencies: [prune-codes]
+            template: index-notices
+            arguments:
+              parameters:
+                - name: run_id
+                  value: "{{workflow.parameters.run_id}}"
+                - name: run_date
+                  value: "{{workflow.parameters.run_date}}"
+                - name: collection-name
+                  value: "{{workflow.parameters.collection-name}}"
+
+    # -----------------------------------------------------------------------
+    # Étape 1 : nomenclature prunée (code canonique), depuis le CSV statique.
+    # `--only nomenclature` : pas d'annotations ni de suggester ici.
+    # -----------------------------------------------------------------------
+    - name: prune-codes
+      inputs:
+        parameters:
+          - name: config
+            value: config/config.yaml
+          - name: run_id
+          - name: run_date
+      container:
+        image: inseefrlab/onyxia-vscode-python:py3.13.12
+        command: [sh, -c]
+        args:
+          - |
+            set -e
+            git clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo
+            cd repo/prune-codes
+            uv sync --locked --no-dev
+            uv run --locked --no-dev scripts/main.py --config {{inputs.parameters.config}} --run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}} --only nomenclature
+        env:
+          - name: AWS_ACCESS_KEY_ID
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_ACCESS_KEY_ID
+          - name: AWS_SECRET_ACCESS_KEY
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_SECRET_ACCESS_KEY
+          - name: AWS_SESSION_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_SESSION_TOKEN
+          - name: DDC_ENCRYPTION_KEY
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: DDC_ENCRYPTION_KEY
+        resources:
+          requests:
+            memory: 2Gi
+            cpu: 100m
+          limits:
+            memory: 50Gi
+            cpu: 15000m
+
+    # -----------------------------------------------------------------------
+    # Étape 2 : embedding des notices et création de la collection Qdrant.
+    # Écrit aussi un manifeste (modèle d'embedding, stratégie, CSV source,
+    # nombre de points) que le pipeline de classification relit au démarrage.
+    # -----------------------------------------------------------------------
+    - name: index-notices
+      inputs:
+        parameters:
+          - name: config
+            value: config/config.yaml
+          - name: run_id
+          - name: run_date
+          - name: collection-name
+      container:
+        image: inseefrlab/onyxia-vscode-python:py3.13.12
+        command: [sh, -c]
+        args:
+          - |
+            set -e
+            git clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo
+            cd repo/rag-notices
+            uv sync --locked --no-dev
+            ARGS="--config {{inputs.parameters.config}} --run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}"
+            # Vide = le script compose le nom depuis qdrant.collection_base.
+            [ -n "{{inputs.parameters.collection-name}}" ] && ARGS="$ARGS --collection-name {{inputs.parameters.collection-name}}"
+            uv run --locked --no-dev scripts/0_create_vector_db.py $ARGS
+        env:
+          - name: AWS_ACCESS_KEY_ID
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_ACCESS_KEY_ID
+          - name: AWS_SECRET_ACCESS_KEY
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_SECRET_ACCESS_KEY
+          - name: AWS_SESSION_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_SESSION_TOKEN
+          - name: DDC_ENCRYPTION_KEY
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: DDC_ENCRYPTION_KEY
+          - name: LLMLAB_URL
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: LLMLAB_URL
+          - name: LLMLAB_API_KEY
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: LLMLAB_API_KEY
+          - name: QDRANT_URL
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: QDRANT_URL
+          - name: QDRANT_API_KEY
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: QDRANT_API_KEY
+          - name: QDRANT_API_PORT
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: QDRANT_API_PORT
+        resources:
+          requests:
+            memory: 2Gi
+            cpu: 100m
+          limits:
+            memory: 50Gi
+            cpu: 15000m

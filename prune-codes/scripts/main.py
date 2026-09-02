@@ -70,6 +70,44 @@ def main():
     parser.add_argument("--config", default="config/config.yaml", help="Path to config YAML")
     parser.add_argument("--run-id", required=True, help="Workflow run identifier")
     parser.add_argument("--run-date", required=True, help="Workflow run date (YYYY-MM-DD)")
+    parser.add_argument(
+        "--only",
+        choices=["all", "nomenclature", "kb"],
+        default="all",
+        help=(
+            "Périmètre du pruning. 'all' (défaut) : tout, pour le pipeline de "
+            "classification. 'nomenclature' : l'étape 1 seule (nomenclature + mapping), "
+            "pour le pipeline d'indexation des notices. 'kb' : étape 1 + KB + suggester, "
+            "sans le jeu à coder — pour le pipeline d'indexation des annotations. "
+            "Toutes les variantes exécutent l'étape 1 : le mapping et la nomenclature "
+            "brute qu'elle calcule en mémoire sont consommés par les étapes suivantes, "
+            "qui ne peuvent donc pas s'en passer."
+        ),
+    )
+    parser.add_argument(
+        "--annotations-train",
+        default=None,
+        help=(
+            "Remplace la source de la KB (défaut : la clé `annotations_train` de la "
+            "config, soit la sortie de classify-regex). Le pipeline d'indexation des "
+            "annotations y met `build-datasets/annotations_full.parquet` : la KB, ce "
+            "sont les produits déjà annotés, et elle n'a pas à être filtrée par la regex."
+        ),
+    )
+    parser.add_argument(
+        "--suggester-path",
+        default=None,
+        help=(
+            "Remplace la source du suggester (défaut : la clé `suggester.s3_path`). "
+            "Le pipeline d'indexation y met `build-datasets/suggester.parquet`, "
+            "c'est-à-dire le suggester préprocessé plutôt que le CSV brut."
+        ),
+    )
+    parser.add_argument(
+        "--suggester-product-col",
+        default=None,
+        help="Colonne produit de la source suggester (défaut : `suggester.source_product_col`).",
+    )
     args = parser.parse_args()
 
     with open(args.config, "r") as f:
@@ -107,32 +145,53 @@ def main():
     logger.info(f"  ✓ {out['nomenclature_pruned']}")
     logger.info(f"  ✓ {out['mapping_lvl4']}")
 
+    if args.only == "nomenclature":
+        # Sortie anticipée : les étapes 2 et 3 liraient des sorties classify-regex
+        # qui n'existent pas dans un run d'indexation des notices. `cfg["features"]`
+        # et `cfg["suggester"]` ne sont donc pas lus non plus.
+        logger.info("=" * 80)
+        logger.info("PRUNING NOMENCLATURE TERMINÉ (--only nomenclature : étapes 2 et 3 ignorées)")
+        logger.info("=" * 80)
+        return
+
     # -----------------------------------------------------------------------
     # 2. Annotations : flux 'train' (KB) et flux 'test' (à coder)
     #    (le libellé est resynchronisé depuis la nomenclature brute, tous niveaux)
     # -----------------------------------------------------------------------
     features = cfg["features"]
 
-    logger.info("STEP 2a: pruning de la KB (kb_data)")
+    kb_source = args.annotations_train or cfg["annotations_train"]
+    logger.info(f"STEP 2a: pruning de la KB (kb_data) depuis {kb_source}")
     kb_data_pruned = prune_annotations_file(
-        con, cfg["annotations_train"], features, mapping_table, notices_raw, logger
+        con, kb_source, features, mapping_table, notices_raw, logger
     )
     _copy_to_parquet(con, kb_data_pruned, "annotations_train_pruned", out["annotations_train_pruned"])
     logger.info(f"  ✓ {out['annotations_train_pruned']} ({len(kb_data_pruned)} lignes)")
 
-    logger.info("STEP 2b: pruning des observations (à coder)")
-    observations_pruned = prune_annotations_file(
-        con, cfg["annotations_test"], features, mapping_table, notices_raw, logger
-    )
-    _copy_to_parquet(con, observations_pruned, "annotations_test_pruned", out["annotations_test_pruned"])
-    logger.info(f"  ✓ {out['annotations_test_pruned']} ({len(observations_pruned)} lignes)")
+    if args.only == "kb":
+        # Le jeu à coder n'a pas de sens ici : ce run construit une base
+        # d'exemples annotés, pas une codification. `cfg["annotations_test"]`
+        # pointe une sortie classify-regex que ce pipeline ne produit pas.
+        logger.info("STEP 2b ignorée (--only kb : pas de jeu à coder)")
+    else:
+        logger.info("STEP 2b: pruning des observations (à coder)")
+        observations_pruned = prune_annotations_file(
+            con, cfg["annotations_test"], features, mapping_table, notices_raw, logger
+        )
+        _copy_to_parquet(con, observations_pruned, "annotations_test_pruned", out["annotations_test_pruned"])
+        logger.info(f"  ✓ {out['annotations_test_pruned']} ({len(observations_pruned)} lignes)")
 
     # -----------------------------------------------------------------------
     # 3. Suggester
     # -----------------------------------------------------------------------
     logger.info("STEP 3: pruning du suggester")
+    sug_cfg = dict(cfg["suggester"])
+    if args.suggester_path:
+        sug_cfg["s3_path"] = args.suggester_path
+    if args.suggester_product_col:
+        sug_cfg["source_product_col"] = args.suggester_product_col
     suggester_pruned = load_and_prune_suggester(
-        con, cfg["suggester"], cfg["product_col"], mapping_table, notices_raw, logger
+        con, sug_cfg, cfg["product_col"], mapping_table, notices_raw, logger
     )
     _copy_to_parquet(con, suggester_pruned, "suggester_pruned", out["suggester_pruned"])
     logger.info(f"  ✓ {out['suggester_pruned']} ({len(suggester_pruned)} lignes)")

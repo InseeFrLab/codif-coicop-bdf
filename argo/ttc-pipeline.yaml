@@ -26,7 +26,8 @@ spec:
         args:
           - |
             set -e
-            git clone --branch main https://github.com/InseeFrLab/codif-coicop-bdf.git repo && cd repo/classify-ttc
+            git clone --branch main https://github.com/InseeFrLab/codif-coicop-bdf.git repo
+            cd repo/classify-ttc
             uv sync --locked --no-dev
 
             uv run --locked --no-dev main.py predict-basic \

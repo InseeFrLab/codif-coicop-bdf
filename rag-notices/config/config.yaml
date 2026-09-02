@@ -20,7 +20,15 @@ annotations:
 
 qdrant:
   strategy: "with_hierarchy"
-  collection_name: "coicop_lineage"
+  # Racine du nom : le constructeur (0_create_vector_db.py) y ajoute la date et
+  # l'id de SON run pour obtenir un nom unique. Surtout pas `collection_name` —
+  # ce fichier est aussi lu par le consommateur (2_run_rag.py), à qui le nom
+  # complet est passé en argument ; une clé `collection_name` ici l'inciterait
+  # à retomber silencieusement sur l'ancienne collection partagée.
+  collection_base: "coicop_notices"
+  # Manifeste écrit à côté de chaque collection : c'est lui qui porte le modèle
+  # d'embedding, la stratégie et le CSV source, que le nom ne peut pas contenir.
+  manifests_root: "s3://projet-budget-famille/data/vector_db_manifests"
   upload_batch_size: 56
 
 embedding:
