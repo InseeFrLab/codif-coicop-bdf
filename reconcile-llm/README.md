@@ -35,7 +35,7 @@ run précédent s'était arrêté.
 
 ## Installation / usage
 
-Python ≥ 3.13. Paquets via le proxy Nexus INSEE (`[tool.uv]`).
+Python ≥ 3.13. Aucun index de paquets n'est configuré dans le dépôt : uv résout contre PyPI.
 
 ```bash
 uv sync

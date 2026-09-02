@@ -20,7 +20,9 @@ La différence avec la [branche RAG notices](04-rag-notices.qmd) est fondamental
 
 - Code : [`rag-annotations/`](https://github.com/InseeFrLab/codif-coicop-bdf/tree/main/coicop-rag-annotations) ·
   config : `rag-annotations/config/config.yaml`
-- Deux sous-étapes Argo : `index-annotations` puis `classify-rag-annotations`.
+- Deux étapes Argo, dans **deux workflows distincts** : `index-annotations`
+  (`argo/index-annotations-pipeline.yaml`) construit la base vectorielle ;
+  `classify-rag-annotations` (`argo/codif-pipeline.yaml`) l'interroge.
 
 ## Une représentation textuelle unique
 
@@ -39,19 +41,59 @@ L'enseigne et le type de magasin sont ajoutés **quand ils sont disponibles** : 
 est un signal fort pour la COICOP (le même mot « menu » ne se code pas pareil au supermarché et
 au restaurant).
 
-## Étape 1 — construire la base vectorielle
+## Étape 1 — construire la base vectorielle (workflow autonome)
 
-`scripts/0_build_annotation_vector_db.py` indexe deux jeux, **déjà tronqués et élagués** par
-l'étape [`prune-codes`](prune-codes.qmd) (le module ne re-prune rien) :
+`argo/index-annotations-pipeline.yaml` est un workflow à part entière, hors du pipeline de
+codification :
+
+```text
+build-datasets ──→ prune-codes (--only kb) ──→ index-annotations
+```
+
+Ce qu'il indexe, ce sont les **produits déjà annotés** : `annotations_full` + `suggester` au
+sens de [`build-datasets`](01-build-datasets.qmd), rien d'autre.
+
+::: {.callout-important}
+## Il n'y a délibérément **aucun** paramètre `input_file` ici
+`input_file` désigne les produits *à classer*. Constituer une base d'exemples n'a rien à voir
+avec cela. Pour la même raison, **`classify-regex` n'est pas dans la chaîne** : la KB n'a
+aucune raison d'être amputée des produits que les regex savent coder — ce sont justement de
+bons exemples.
+:::
+
+| Paramètre | Défaut | Rôle |
+|---|---|---|
+| `git-branch` | `main` | branche clonée par les trois étapes |
+| `run_id` / `run_date` | calculés par Argo | identité du run d'indexation, reprise dans le nom de la collection |
+| `kb-scope` | `full` | quels produits annotés composent la KB (`full` ou `train`, cf. ci-dessous) |
+| `kb-sample-size` | *(vide)* | plafonne le nombre de points indexés, donc le temps d'embedding |
+| `collection-name` | *(vide)* | échappatoire : forcer un nom exact au lieu de le composer |
+
+`prune-codes --only kb` produit la nomenclature et le mapping (nécessaires au pruning des
+codes), puis la KB et le suggester, mais **pas** de jeu à coder — celui-ci n'a pas de sens
+dans un run d'indexation. Les deux sources lui sont passées explicitement
+(`--annotations-train`, `--suggester-path`, `--suggester-product-col`) et pointent sur
+`build-datasets`, pas sur `classify-regex` ni sur le CSV brut du suggester.
+
+`scripts/0_build_annotation_vector_db.py` indexe ensuite deux jeux, **déjà tronqués et
+élagués** par [`prune-codes`](prune-codes.qmd) (le module ne re-prune rien) :
 
 | Source indexée | Fichier |
 |---|---|
-| KB d'annotations (flux *train*) | `…/{run}/prune-codes/annotations_train_pruned.parquet` |
+| KB d'annotations | `…/{run}/prune-codes/annotations_train_pruned.parquet` |
 | Suggester | `…/{run}/prune-codes/suggester_pruned.parquet` |
 
-- Embeddings : **`qwen3-embedding-8b`** (`model_len` 4096, `batch_size` 64).
-- Collection Qdrant : **`coicop_annotations_without_copain_2017`**
-  (`upload_batch_size` 56).
+- Embeddings : **`qwen3-embedding-8b`** (`model_len` 4096, `batch_size` 64), `upload_batch_size` 56.
+- Collection Qdrant au **nom unique**, composé depuis `qdrant.collection_base`
+  (`coicop_annotations`), la portée de la KB et l'identité du run :
+  `coicop_annotations__{kb_scope}__{run_date}__{run_id}[__sampleN]`, p. ex.
+  `coicop_annotations__full__2026-09-02__index-annotations-b3x9q`.
+
+Le job se termine en imprimant la ligne à recopier dans `argo/params.yaml` :
+
+```
+classify-rag-annotations-collection: coicop_annotations__full__2026-09-02__index-annotations-b3x9q
+```
 
 ::: {.callout-note}
 Le suggester arrive au **niveau 5 et non pruné à la source** : c'est l'étape `prune-codes` qui lui
@@ -59,14 +101,47 @@ applique exactement le même `prune_annotation_lvl4` (troncature niveau 4 + mapp
 qu'aux annotations, pour que tous les candidats vivent dans le même espace de codes.
 :::
 
+### `kb-scope` : `full` ou `train`
+
+| Valeur | KB indexée | Profil de sources exclues |
+|---|---|---|
+| `full` (défaut) | `annotations_full` : tous les produits annotés | `exclude_sources_prod` |
+| `train` | `raw_train` : l'ancien split | `exclude_sources` |
+
+Le split train/test n'existait que **faute de jeu de test indépendant** : il fallait bien
+réserver des lignes pour mesurer. Les nouveaux produits annotés en fournissent un
+naturellement. `train` est donc **transitoire** et sera supprimé ; les deux listes de sources
+exclues sont d'ailleurs déjà identiques aujourd'hui, la distinction n'étant conservée que le
+temps de la transition.
+
+La portée est inscrite **dans le nom** de la collection, pas seulement dans le manifeste :
+c'est le champ qu'un humain confond le plus en recopiant, et interroger une KB `full` depuis
+un run d'évaluation dont le test set vient du même lot gonfle l'accuracy sans lever d'erreur.
+`1_run_rag.py` détecte ce cas et **avertit** (sans bloquer, cette configuration n'étant plus la
+norme).
+
+### Le manifeste
+
+À côté de chaque collection, l'indexation écrit un manifeste JSON sous
+`s3://projet-budget-famille/data/vector_db_manifests/{collection_name}.json` : `kb_scope`,
+modèle d'embedding, dimension, `sample_size`, nombre de points **recomptés auprès de Qdrant**
+(jamais `len(points)` : seule mesure qui atteste que les points sont bien arrivés), source des
+annotations, SHA du commit.
+
+`classify-rag-annotations` le relit **au démarrage**, avant tout travail coûteux et avant
+d'ouvrir un run MLflow, et refuse de continuer si la collection est absente, vide, ou bâtie
+avec une autre dimension ou un autre modèle d'embedding. Même dimension ne veut pas dire même
+espace vectoriel : sans cette garde, les résultats seraient silencieusement faux.
+
 ### Sources exclues de la KB
 
-Deux profils, choisis selon le mode (`--skip-eval`) :
+Deux profils, choisis par `--kb-scope` (et non plus par le mode prod/éval, qui n'a plus cours
+dans un workflow d'indexation) :
 
-| Clé de config | Mode | Valeur actuelle |
+| Clé de config | `kb-scope` | Valeur actuelle |
 |---|---|---|
-| `exclude_sources` | évaluation | `[bdf_2017, copain]` |
-| `exclude_sources_prod` | production | `[bdf_2017, copain]` |
+| `exclude_sources` | `train` | `[bdf_2017, copain]` |
+| `exclude_sources_prod` | `full` | `[bdf_2017, copain]` |
 
 - **`copain`** n'est de toute façon plus importé par le [build-datasets](01-build-datasets.qmd)
   depuis juin 2026 ; la mention est conservée par défense (sans effet si la source n'arrive
@@ -76,22 +151,28 @@ Deux profils, choisis selon le mode (`--skip-eval`) :
 - Si `suggester` figurait dans la liste, le bloc suggester ne serait pas indexé — même avec
   `suggester.enabled: true`.
 
-### Collection de test
+### Index d'essai
 
-Quand `sample-annotations` est renseigné (test sur échantillon), les deux scripts basculent sur
-une collection **suffixée `_test`** (`coicop_annotations_without_copain_2017_test`). La
-collection de production n'est donc jamais écrasée par une base vectorielle partielle.
+Pour construire vite une petite base et tester la chaîne, `kb-sample-size` plafonne le nombre
+de points indexés (échantillonnage sans remise, graine `eval.seed`, appliqué **après** la
+fusion annotations + suggester pour que le total indexé vaille exactement la valeur demandée) :
 
-::: {.callout-warning}
-La même valeur de `sample-annotations` doit être passée à `0_build_annotation_vector_db.py`
-**et** à `1_run_rag.py` : c'est elle qui détermine, de part et d'autre, quelle collection est
-visée.
-:::
+```bash
+argo submit argo/index-annotations-pipeline.yaml -p kb-sample-size=1000
+```
+
+La collection obtenue porte alors un suffixe `__sample1000` : sans lui, un index-jouet et un
+index complet auraient des noms de même forme, et rien ne signalerait qu'on vient de recopier
+le premier dans les paramètres de production. L'ancien mécanisme — une collection parallèle
+suffixée `_test`, dont la valeur de `sample-annotations` devait être passée à l'identique aux
+deux scripts pour qu'ils visent la même — a disparu avec les noms uniques.
 
 ## Étape 2 — codifier
 
-`scripts/1_run_rag.py`, pour chaque produit à coder
-(`…/{run}/prune-codes/annotations_test_pruned.parquet`) :
+`scripts/1_run_rag.py` (étape `classify-rag-annotations` du pipeline de codification) reçoit
+le nom de la collection par le paramètre **`classify-rag-annotations-collection`**,
+obligatoire et sans défaut : un nom vide fait échouer l'étape en quelques secondes. Pour
+chaque produit à coder (`…/{run}/prune-codes/annotations_test_pruned.parquet`) :
 
 1. **Embedding** de la représentation `build_location_text` du produit ;
 2. **Recherche** des `retrieval.size = 10` produits annotés les plus proches ;
@@ -129,7 +210,10 @@ restreint le test set aux sources `include_sources`
   (`threshold_confidence: 0.7`) ;
 - **fiabilité du drapeau `codable`** (lift du refus de coder).
 
-Métriques et rapport partent dans **MLflow**, expérience `classify-rag-annotations`.
+Métriques et rapport partent dans **MLflow**, expérience `rag-annotation`
+(`mlflow.experiment_name` dans `config.yaml`). S'y ajoutent les tags de provenance de l'index
+(`index.git_sha`, `index.run_id`, `index.kb_scope`) et le nombre de points de la collection
+interrogée : deux runs bâtis sur des index différents seraient sinon indistinguables.
 
 ## Sortie et intégration
 
@@ -137,10 +221,7 @@ Métriques et rapport partent dans **MLflow**, expérience `classify-rag-annotat
 |---|---|
 | `…/{run}/classify-rag-annotations/predictions.parquet` | `code_predict`, `codable`, `confidence`, `parsed`, `list_retrieved_codes`, `method="rag-annotations"` |
 
-::: {.callout-note}
-Le dossier de sortie s'appelle **`classify-rag-annotations`** (au singulier, sans `run-`), et non
-`classify-rag-annotations` comme le nom de l'étape Argo.
-:::
+Le dossier de sortie porte le nom de l'étape Argo, **`classify-rag-annotations`**.
 
 `reconcile-llm` renomme ces colonnes en `ragann_code`, `ragann_confidence`, `ragann_codable`,
 et les traite comme la quatrième prédiction candidate — y compris dans le

@@ -149,16 +149,53 @@ Cette fonction est par ailleurs peu défensive :
 | `'1.1.2.3.4'` | `'1.1.2.3'` | pas de normalisation du zéro non significatif (`01.1.2.3` attendu) |
 | `'Reprise manuelle'` | inchangé | aucune validation de forme (voulu ici, mais non typé) |
 
-### Index Qdrant persistant vs mapping recalculé
+### Index Qdrant épinglé vs mapping recalculé
 
-Les collections Qdrant portent des **noms fixes** (`coicop_lineage`,
-`coicop_annotations_without_copain_2017`) et sont réutilisées d'un run à l'autre quand
-`skip-index=true`, alors que `mapping_lvl4.parquet` est **recalculé à chaque run**. Si la
-nomenclature source change sans reconstruction de l'index, l'index décrit l'ancien espace de
-codes et le mapping le nouveau.
+*Le risque a changé de nature depuis que l'indexation est sortie du pipeline de classification.*
 
-**Règle pratique** : toute évolution de la nomenclature source impose un run avec
-`skip-index=false`.
+**Ce qui est réglé.** Les collections ne portent plus de nom fixe partagé. Auparavant,
+`coicop_lineage` et `coicop_annotations_without_copain_2017` étaient réutilisées par tous les
+runs et **détruites puis recréées** à chaque indexation : réindexer cassait la base que lisait un
+run concurrent, et le défaut `skip-index=true` faisait coder contre une vector DB dont personne
+ne connaissait la provenance. Chaque build crée désormais une collection au nom unique, désignée
+explicitement au lancement.
+
+**Ce qui subsiste.** L'index est bâti une fois et réutilisé, alors que `mapping_lvl4.parquet` est
+**recalculé à chaque run de classification** à partir du CSV de nomenclature. Si ce CSV est
+modifié **en place**, l'index épinglé décrit l'ancien espace de codes et le mapping le nouveau,
+sans que rien ne le signale.
+
+Le manifeste de chaque collection enregistre pour cela le chemin de la nomenclature source ; le
+rapprocher du CSV courant permet de détecter l'écart après coup.
+
+**Règle pratique** : toute évolution de la nomenclature impose de relancer
+`argo/index-notices-pipeline.yaml` et de reporter le nouveau nom de collection dans
+`argo/params.yaml`. Publier une nomenclature révisée sous un **nouveau nom de fichier** plutôt
+que d'écraser l'ancien rend l'écart visible au lieu de silencieux.
+
+### Fuite train/test possible sur la KB d'annotations
+
+L'indexation étant désormais découplée, rien n'empêche mécaniquement d'évaluer le pipeline
+contre une KB qui contient les réponses attendues.
+
+Une collection bâtie en `kb-scope=full` contient **tous** les produits annotés. Si le jeu de test
+d'un run d'évaluation provient du même lot historique, le RAG y retrouve ses propres réponses et
+l'accuracy est gonflée — **sans qu'aucune étape n'échoue**.
+
+Le `kb_scope` est inscrit dans le nom de la collection (`__full__` / `__train__`) et dans son
+manifeste, et `classify-rag-annotations` émet un avertissement en cas de discordance. Le choix
+assumé est de **ne pas bloquer** : depuis que les nouveaux produits annotés fournissent un jeu de
+test indépendant, une KB `full` est le cas normal et non une erreur.
+
+C'est aussi pourquoi `kb-scope=train` est conservé le temps de la transition : il permet une
+évaluation honnête sur l'ancien lot.
+
+### Accumulation des collections Qdrant
+
+Les noms étant uniques, **rien ne supprime les anciennes collections** : chaque indexation en
+laisse une de plus, de quelques centaines de points pour les notices à plusieurs dizaines de
+milliers pour les annotations. Le nettoyage est manuel et doit vérifier qu'aucun run ne référence
+encore la collection visée — supprimer celle qu'utilise un run de production le casse.
 
 ### `filter_nomenclature` sans repli quand toutes les prédictions sont au niveau 1
 

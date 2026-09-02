@@ -5,15 +5,19 @@ title: "3. Prune — troncature & élagage"
 ## Rôle de l'étape
 
 L'étape `prune-codes` (module dédié [`prune-codes/`](https://github.com/InseeFrLab/codif-coicop-bdf/tree/main/prune-codes), entrée
-`prune-codes/scripts/main.py`, exécutée après `classify-regex`) définit **l'espace de codes commun** à
-tout le pipeline : elle tronque la nomenclature au niveau 4 et replie les hiérarchies
-linéaires sur un code canonique, puis produit **tous** les artefacts prunés que l'aval se
-contente de lire. Un seul algorithme, un seul point de vérité.
+`prune-codes/scripts/main.py`) définit **l'espace de codes commun** à tout le pipeline : elle
+tronque la nomenclature au niveau 4 et replie les hiérarchies linéaires sur un code canonique,
+puis produit les artefacts prunés que l'aval se contente de lire. Un seul algorithme, un seul
+point de vérité.
+
+C'est la seule étape présente dans les **trois** workflows Argo. Elle y tourne à chaque fois,
+avec un périmètre différent — voir [le drapeau `--only`](#le-drapeau-only) ci-dessous.
 
 ::: {.callout-note}
-Cette étape n'est **jamais** sautée (contrairement aux `index-*`) : elle produit à
-chaque run le jeu à coder pruné et la table de mapping dont dépendent `classify-rag-notices`,
-`classify-rag-annotations`, `reconcile-llm` et `export-results`.
+Dans le pipeline de codification, cette étape s'exécute **après `classify-regex`** et n'est
+jamais sautée : elle produit à chaque run le jeu à coder pruné et la table de mapping dont
+dépendent `classify-rag-notices`, `classify-rag-annotations`, `reconcile-llm` et
+`export-results`.
 :::
 
 ## La nomenclature source
@@ -92,17 +96,48 @@ la même normalisation que la nomenclature :
 
 Le suggester (codes au niveau 5, non prunés à la source) reçoit le même traitement.
 
+## Le drapeau `--only` {#le-drapeau-only}
+
+Les trois workflows n'ont pas besoin des mêmes artefacts, et surtout n'ont pas les mêmes
+entrées disponibles. Le drapeau `--only {all,nomenclature,kb}` (défaut `all`, comportement
+historique inchangé) découpe l'étape en conséquence :
+
+| Valeur | Workflow | Ce qui est produit | Pourquoi s'arrêter là |
+|---|---|---|---|
+| `all` | `codif-pipeline.yaml` | tout | le pipeline de codification a besoin du jeu à coder pruné et du mapping |
+| `nomenclature` | `index-notices-pipeline.yaml` | nomenclature prunée + mapping | les étapes suivantes liraient des sorties de `classify-regex`, qui n'existent pas dans un run d'indexation autonome |
+| `kb` | `index-annotations-pipeline.yaml` | nomenclature + mapping + KB + suggester | un run d'indexation construit une base d'exemples, pas une codification : le « jeu à coder » n'y a pas de sens |
+
+Les trois variantes exécutent **toujours** l'étape 1 : la nomenclature brute et la table de
+mapping qu'elle calcule en mémoire sont consommées par les étapes suivantes, qui ne peuvent
+donc pas s'en passer.
+
+Trois options complètent le drapeau, utilisées par le pipeline d'indexation des annotations :
+
+| Option | Défaut | Rôle |
+|---|---|---|
+| `--annotations-train` | `classify-regex/raw_train_without_regex.parquet` | source de la KB. L'indexation y met `build-datasets/annotations_full.parquet` : la KB, ce sont les produits déjà annotés, et elle n'a pas à être filtrée par les regex |
+| `--suggester-path` | le CSV brut COPAIN | source du suggester. L'indexation y met `build-datasets/suggester.parquet`, déjà préprocessé |
+| `--suggester-product-col` | `suggester.source_product_col` | colonne texte de cette source (`l_pr_product` pour le suggester préprocessé) |
+
 ## Sorties
 
 Par run, sous `…/{run}/prune-codes/` :
 
-| Fichier | Contenu | Consommé par |
-|---|---|---|
-| `nomenclature_pruned.parquet` | nomenclature prunée (niveaux 1 à 4, 420 codes) | `index-notices` |
-| `mapping_lvl4.parquet` | table `code → code_parent_equivalent` | `classify-rag-notices` (re-pruning), `reconcile-llm` (normalisation), `export-results` (garde-fou) |
-| `annotations_train_pruned.parquet` | KB d'annotations prunées | `index-annotations` |
-| `annotations_test_pruned.parquet` | jeu **à coder** pruné | `classify-rag-notices` et `classify-rag-annotations` |
-| `suggester_pruned.parquet` | suggester pruné | `index-annotations` |
+| Fichier | Contenu | Produit avec | Consommé par |
+|---|---|---|---|
+| `nomenclature_pruned.parquet` | nomenclature prunée (niveaux 1 à 4, 420 codes) | `all`, `nomenclature`, `kb` | `index-notices` |
+| `mapping_lvl4.parquet` | table `code → code_parent_equivalent` | `all`, `nomenclature`, `kb` | `classify-rag-notices` (re-pruning), `reconcile-llm` (normalisation), `export-results` (garde-fou) |
+| `annotations_train_pruned.parquet` | KB d'annotations prunées | `all`, `kb` | `index-annotations` |
+| `annotations_test_pruned.parquet` | jeu **à coder** pruné | `all` | `classify-rag-notices` et `classify-rag-annotations` |
+| `suggester_pruned.parquet` | suggester pruné | `all`, `kb` | `index-annotations` |
+
+::: {.callout-note}
+Dans le pipeline de codification, l'étape tourne en `--only all` : elle y écrit donc aussi
+`annotations_train_pruned.parquet` et `suggester_pruned.parquet`, que plus aucune étape de ce
+workflow ne lit depuis la sortie de l'indexation. Ces deux fichiers ne coûtent presque rien et
+gardent le comportement par défaut de l'étape identique à ce qu'il était.
+:::
 
 ## Réapplications en aval
 

@@ -76,8 +76,9 @@ uv run python main.py serve --model checkpoints/hierarchical/hierarchical_model
 ## Key Conventions
 
 - Python 3.13 required (`.python-version`)
-- PyPI packages fetched through INSEE Nexus proxy (configured in `pyproject.toml` `[tool.uv]`)
-- PyTorch is installed from a CPU-only index (`pytorch-cpu`)
+- No package index is configured in the repo — uv resolves against PyPI directly,
+  PyTorch included (`uv.lock` records `torch` from `https://pypi.org/simple`, i.e. the
+  default build with CUDA wheels, not a CPU-only index)
 - Langchain dependencies are optional: install with `uv sync --extra synth`
 - Training data format: parquet with columns `product` (text), `code` (COICOP code), `coicop` (description)
 - COICOP codes are dot-separated hierarchical strings (e.g., "01.1.2.3.4")

@@ -3,8 +3,8 @@
 Depuis la scission de l'indexation en pipelines Argo autonomes, chaque build
 produit une collection au **nom unique** au lieu d'écraser un nom fixe partagé
 par tous les runs. Le nom seul ne peut pas porter tout ce qui détermine la
-validité d'un index (modèle d'embedding, stratégie de découpage, mode
-prod/éval, CSV source) : deux collections de même dimension bâties avec des
+validité d'un index (modèle d'embedding, stratégie de découpage, périmètre
+de la KB, CSV source) : deux collections de même dimension bâties avec des
 réglages différents sont indistinguables, et interroger la mauvaise ne lève
 aucune erreur — le RAG rend juste de moins bons résultats. D'où le manifeste,
 écrit à côté de la collection et relu par le consommateur au démarrage.
@@ -41,10 +41,10 @@ def build_collection_name(
 
     Forme : ``{base}[__{mode}]__{run_date}__{run_id}[__sample{N}]``
 
-    `mode` ('prod' ou 'eval') n'est renseigné que pour les annotations, dont le
-    contenu en dépend réellement : une KB de production contient *toutes* les
-    annotations. Les notices dérivent d'un CSV statique et n'ont pas de mode —
-    y mettre 'prod' ou 'eval' serait mensonger.
+    `mode` porte le périmètre de la KB — 'full' (tous les produits annotés) ou
+    'train' (l'ancien split, transitoire) — et n'est renseigné que pour les
+    annotations, dont le contenu en dépend réellement. Les notices dérivent d'un
+    CSV statique et n'ont pas de périmètre : leur en inventer un serait mensonger.
 
     `sample_size` ajoute un suffixe visible : sans lui, un index de test à 100
     points et un index complet portent des noms de même forme, et rien ne

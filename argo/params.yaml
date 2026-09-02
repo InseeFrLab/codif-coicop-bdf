@@ -23,20 +23,14 @@ budget_column: MONT_DEP     # amount column
 # source_column: ""         # optional
 
 # --- Volume / debugging ---------------------------------------------------
-# Deux curseurs d'échantillonnage (vide = tout) :
-#   sample-annotations  : nb d'observations à coder en mode ÉVALUATION.
-#                         (N'a plus rien à voir avec la taille de la KB indexée :
-#                         l'indexation est sortie de ce pipeline. Pour plafonner
-#                         la KB, utiliser `kb-sample-size` du pipeline
-#                         argo/index-annotations-pipeline.yaml.)
-#   sample-observations : nb d'observations à coder, mode prod uniquement.
-# Le sampling des observations est CENTRALISÉ à l'étape classify-regex : un seul jeu
-# est tiré et hérité par tous les classifieurs (lcs, rag, rag-annotations, ttc),
-# garantissant qu'ils codent exactement les mêmes lignes.
-# En évaluation, les observations = split test des annotations → on utilise
-# sample-annotations (sample-observations est ignoré).
-sample-annotations: ""        # ex. "500"
-sample-observations: ""       # ex. "50" (prod)
+# Nombre de libellés à coder (vide = tout), en production comme en évaluation.
+# Le tirage est CENTRALISÉ à l'étape classify-regex : un seul jeu est tiré et
+# hérité par tous les classifieurs (lcs, rag, rag-annotations, ttc), qui codent
+# donc exactement les mêmes lignes.
+#
+# Pour plafonner la KB indexée dans la vector DB, ce n'est plus ici :
+# c'est `kb-sample-size` de argo/index-annotations-pipeline.yaml.
+sample-observations: ""       # ex. "100"
 
 # --- LLM models -----------------------------------------------------------
 classify-rag-model: gemma4-26b-moe          # classify-rag-notices model
@@ -47,17 +41,19 @@ classify-ttc-model-uri: "mlflow-artifacts:/10/cacf2603514b4887bbfb77e2654c9bc1/a
 # --- Vector DB : OBLIGATOIRES ---------------------------------------------
 # Collections Qdrant à interroger. Produites HORS de ce pipeline :
 #   argo submit argo/index-notices-pipeline.yaml
-#   argo submit argo/index-annotations-pipeline.yaml -p input_file=""
+#   argo submit argo/index-annotations-pipeline.yaml
 # Chacun affiche en fin d'exécution la ligne exacte à recopier ci-dessous.
 # Laissées vides, les étapes classify-rag-* échouent en quelques secondes avec
 # un message nommant le pipeline à lancer — plutôt que de retomber en silence
 # sur l'index d'un autre run.
 #
-# ⚠️  Run d'ÉVALUATION → collection d'annotations bâtie en évaluation (nom
-# contenant `__eval__`). Une collection de production contient toutes les
-# annotations, y compris le split test : l'accuracy serait gonflée.
+# ⚠️  Le nom de la collection d'annotations porte le périmètre de la KB :
+# `__full__` (tous les produits annotés, le défaut) ou `__train__` (ancien
+# split, transitoire). Pour un run d'ÉVALUATION dont le jeu de test provient
+# du même lot historique que la KB, une collection `__full__` contient les
+# réponses attendues et l'accuracy serait gonflée.
 classify-rag-notices-collection: ""       # ex. "coicop_notices__2026-09-02__index-notices-a7k2p"
-classify-rag-annotations-collection: ""   # ex. "coicop_annotations__eval__2026-09-02__index-annotations-b3x9q"
+classify-rag-annotations-collection: ""   # ex. "coicop_annotations__full__2026-09-02__index-annotations-b3x9q"
 
 # --- Optional steps -------------------------------------------------------
 skip-report: "false"        # "true" to skip the Quarto report

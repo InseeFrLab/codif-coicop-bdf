@@ -4,22 +4,37 @@ Pipeline d'orchestration pour la codification automatique des produits de l'enqu
 
 ## Pipeline
 
-Le pipeline est orchestré via Argo Workflows (`argo/codif-pipeline.yaml`) selon le DAG suivant :
+Le projet compte **trois workflows Argo**. La construction des bases vectorielles, coûteuse et
+rarement à refaire, est sortie du pipeline de classification : elle a ses propres workflows, et
+les collections produites sont désignées par paramètre au lancement — même organisation que
+l'entraînement de `classify-ttc` et de `reconcile-sirus`.
 
 ```
-build-datasets  (input_file : production / évaluation)
-  └─→ classify-regex ─┬─→ classify-lcs ────────────────────────────────────────────────────┐
-                      ├─→ classify-ttc ────────────────────────────────────────────────────┤
-                      └─→ prune-codes ─┬─→ index-notices ─────→ classify-rag-notices ──────┤
-                                       └─→ index-annotations ─→ classify-rag-annotations ──┘
-                                                                                           │
-                                                       ┌───────────────────────────────────┘
-                                                       │  les 4 classifieurs convergent
-                                                       └─→ reconcile-llm  OU  reconcile-sirus   (exclusifs : paramètre `reconciliation`)
-                                                               └─→ export-results ─→ report  (opt-in)
+① argo/index-notices-pipeline.yaml
+   prune-codes (--only nomenclature) ─→ index-notices          → collection Qdrant, nom unique
+
+② argo/index-annotations-pipeline.yaml
+   build-datasets ─→ prune-codes (--only kb) ─→ index-annotations   → collection Qdrant, nom unique
+
+        └── les deux noms sont recopiés dans argo/params.yaml ──┐
+                                                                ▼
+③ argo/codif-pipeline.yaml   (input_file : production / évaluation)
+
+build-datasets
+  └─→ classify-regex ─┬─→ classify-lcs ─────────────────────────────┐
+                      ├─→ classify-ttc ─────────────────────────────┤
+                      └─→ prune-codes ─┬─→ classify-rag-notices ────┤
+                                       └─→ classify-rag-annotations ┘
+                                                                    │
+                                       ┌────────────────────────────┘
+                                       │  les 4 classifieurs convergent
+                                       └─→ reconcile-llm  OU  reconcile-sirus   (exclusifs : paramètre `reconciliation`)
+                                               └─→ export-results ─→ report  (skip-report)
 ```
 
-Le **mode** est dérivé d'`input_file` : non vide ⇒ **production** (on code ces observations), vide ⇒ **évaluation** (on code le split test des annotations). L'étape **`prune-codes`** centralise tout le pruning et produit les artefacts lus par l'aval.
+Le **mode** du pipeline ③ est dérivé d'`input_file` : non vide ⇒ **production** (on code ces observations), vide ⇒ **évaluation** (on code le split test des annotations). L'étape **`prune-codes`** centralise tout le pruning et produit les artefacts lus par l'aval.
+
+Les pipelines ① et ②, eux, n'ont pas de mode : ils ne construisent pas de codification mais une base d'exemples. ② n'a d'ailleurs **pas** de paramètre `input_file` — celui-ci désigne les produits *à classer*, ce qui ne concerne pas la constitution d'une base de produits déjà annotés.
 
 ### build-datasets
 
@@ -35,19 +50,27 @@ Construit le dataset d'annotations à partir des sources brutes (COPAIN, histori
 - Code dans [`prune-codes/`](./prune-codes/) (`scripts/main.py`)
 - Sorties : `nomenclature_pruned`, `mapping_lvl4`, `annotations_train_pruned` (KB), `annotations_test_pruned` (à coder), `suggester_pruned`
 
-### index-notices *(skippable)*
+### index-notices *(workflow ① — hors pipeline de classification)*
 
 Encode les notices COICOP **prunées** dans une base vectorielle Qdrant.
 
 - Code dans [`rag-notices/`](./rag-notices/) (`scripts/0_create_vector_db.py`)
 - Lit `prune-codes/nomenclature_pruned.parquet` ; embeddings via VLLM, index Qdrant
+- Autonome : la nomenclature dérive d'un CSV statique, donc `prune-codes --only nomenclature` suffit — ni `build-datasets` ni `classify-regex`
 
-### index-annotations *(skippable)*
+### index-annotations *(workflow ② — hors pipeline de classification)*
 
-Encode la **KB d'annotations** prunée (+ suggester) dans une vector DB Qdrant, pour la RAG sur exemples annotés.
+Encode la **KB d'annotations** (+ suggester) dans une vector DB Qdrant, pour la RAG sur exemples annotés.
 
 - Code dans [`rag-annotations/`](./rag-annotations/) (`scripts/0_build_annotation_vector_db.py`)
-- Lit `prune-codes/annotations_train_pruned.parquet` et `prune-codes/suggester_pruned.parquet`
+- La KB, ce sont les **produits déjà annotés** : `annotations_full` + `suggester` au sens de `build-datasets`, prunés. `classify-regex` n'est pas dans la chaîne — la KB n'a pas à être filtrée des produits que la regex sait coder
+- `kb-scope` : `full` (défaut, tous les produits annotés) ou `train` (l'ancien split, **transitoire**). Ce split n'existait que faute de jeu de test indépendant ; les nouveaux produits annotés en fournissent un, donc l'option disparaîtra
+
+### Les collections Qdrant
+
+Chaque indexation crée une collection au **nom unique** — `{base}[__{kb_scope}]__{run_date}__{run_id}[__sampleN]` — et un manifeste JSON à côté (modèle d'embedding, dimension, stratégie, nombre de points, sha git), que les étapes `classify-rag-*` relisent au démarrage pour valider ce qu'elles interrogent.
+
+Auparavant deux noms fixes (`coicop_lineage`, `coicop_annotations_without_copain_2017`) étaient partagés par tous les runs et détruits/recréés à chaque indexation : une réindexation cassait la base que lisait un run concurrent.
 
 ### classify-regex
 
@@ -100,12 +123,12 @@ Arbitrage final des prédictions par un LLM-as-judge : fusionne les sorties de `
 - Filtrage de nomenclature : seules les sections COICOP pertinentes sont envoyées au prompt (réduction ×4–10 du nombre de tokens)
 - Reprise automatique : relancer l'étape avec le même `run_id`/`run_date` reprend les observations non traitées depuis le fichier de sortie existant
 
-### report *(opt-in)*
+### report
 
 Rapport d'exactitude Quarto (HTML auto-contenu) sur la sortie de `reconcile-llm`.
 
 - Code dans [`report/`](./report/) — Quarto + Python (pandas, duckdb, matplotlib, seaborn)
-- Déclenché par `skip-report=false` ; désactivé par défaut
+- **Activé par défaut** : le YAML pose `skip-report: "false"`, c'est-à-dire « ne pas sauter ». Passer `-p skip-report=true` pour s'en dispenser
 - Entrée : `s3://.../reconcile-llm/predictions.parquet`
 - Sortie : `s3://.../report/report.html`
 - Contenu :
@@ -122,17 +145,17 @@ Ce dépôt rassemble le code de toutes les étapes du pipeline, auparavant dispe
 
 | Dossier | Origine | Rôle |
 |---|---|---|
-| [`argo/`](./argo/) | — | Workflows Argo (`codif-pipeline.yaml`, `ttc-pipeline.yaml`, `rbac.yaml`) |
+| [`argo/`](./argo/) | — | Workflows Argo : `codif-pipeline.yaml` (classification), `index-notices-pipeline.yaml` et `index-annotations-pipeline.yaml` (bases vectorielles), `ttc-pipeline.yaml`, `rbac.yaml` |
 | [`build-datasets/`](./build-datasets/) | `construction-dataset` | Étape `build-datasets` |
 | [`classify-regex/`](./classify-regex/) | `regex_codif` | Étape `classify-regex` |
 | [`prune-codes/`](./prune-codes/) | — | Étape `prune-codes` (pruning unifié) |
-| [`rag-notices/`](./rag-notices/) | `coicop-rag` | Étapes `index-notices`, `classify-rag-notices` |
-| [`rag-annotations/`](./rag-annotations/) | — | Étapes `index-annotations`, `classify-rag-annotations` |
+| [`rag-notices/`](./rag-notices/) | `coicop-rag` | Étape `index-notices` (workflow ①) et `classify-rag-notices` (workflow ③) |
+| [`rag-annotations/`](./rag-annotations/) | — | Étape `index-annotations` (workflow ②) et `classify-rag-annotations` (workflow ③) |
 | [`classify-lcs/`](./classify-lcs/) | `stats-annotations` | Étape `classify-lcs` (R) |
 | [`classify-ttc/`](./classify-ttc/) | `coicop_bdf_classifier` | Étape `classify-ttc` |
 | [`reconcile-llm/`](./reconcile-llm/) | — | Étape `reconcile-llm` (arbitrage LLM) |
 | [`export-results/`](./export-results/) | — | Étape `export-results` (livrable utilisateur) |
-| [`report/`](./report/) | — | Rapport Quarto d'exactitude (étape `report`, opt-in) |
+| [`report/`](./report/) | — | Rapport Quarto d'exactitude (étape `report`, activée par défaut) |
 
 Chaque sous-dossier Python conserve son propre `pyproject.toml` (ses dépendances lui
 appartiennent), mais tous sont membres d'un même **workspace `uv`**.
@@ -187,28 +210,38 @@ LLMLAB_API_KEY, LLMLAB_URL   # requis pour reconcile-llm (LLMLAB_URL optionnel)
 
 ### Avec la CLI Argo
 
+**Préalable, une fois** : construire les deux bases vectorielles. Chaque workflow affiche en fin
+d'exécution la ligne exacte à recopier dans [`argo/params.yaml`](./argo/params.yaml).
+
 ```bash
-# Pipeline complet (mode prod si input_file est fourni dans le YAML, sinon éval)
-argo submit argo/codif-pipeline.yaml
+argo submit argo/index-notices-pipeline.yaml --watch
+argo submit argo/index-annotations-pipeline.yaml --watch
+```
+
+Puis la classification :
+
+```bash
+# Pipeline complet (les noms de collections viennent de params.yaml)
+argo submit argo/codif-pipeline.yaml --parameter-file argo/params.yaml
 
 # Lancer en production sur un fichier d'observations à coder
-argo submit argo/codif-pipeline.yaml \
+argo submit argo/codif-pipeline.yaml --parameter-file argo/params.yaml \
   -p input_file=s3://.../workflow_inputs/mon_fichier.csv \
   -p text_column=NAT_DEP -p shop_column=MAG_DEP -p budget_column=MONT_DEP
 
 # Limiter le volume pour tester (sampling centralisé à classify-regex, hérité par tous
-# les classifieurs ; en prod, -p sample-observations=100)
-argo submit argo/codif-pipeline.yaml -p sample-annotations=100
+# les classifieurs) — vaut en production comme en évaluation
+argo submit argo/codif-pipeline.yaml --parameter-file argo/params.yaml -p sample-observations=100
 
 # Modèle spécifique pour classify-rag-notices
-argo submit argo/codif-pipeline.yaml -p classify-rag-model=openai/gpt-oss-120b
+argo submit argo/codif-pipeline.yaml --parameter-file argo/params.yaml -p classify-rag-model=openai/gpt-oss-120b
 
-# Sauter la (re)construction des vector DB (déjà construites)
-argo submit argo/codif-pipeline.yaml -p skip-index=true
-
-# Activer le rapport d'exactitude (désactivé par défaut)
-argo submit argo/codif-pipeline.yaml -p skip-report=false
+# Désactiver le rapport d'exactitude (activé par défaut dans le YAML)
+argo submit argo/codif-pipeline.yaml --parameter-file argo/params.yaml -p skip-report=true
 ```
+
+> `argo submit` accepte **en silence** un nom de paramètre inconnu : une faute de frappe dans un
+> `-p` ne produit ni erreur ni effet.
 
 Voir aussi la fiche [`argo/argo_helper.md`](./argo/argo_helper.md) et le fichier de paramètres [`argo/params.yaml`](./argo/params.yaml).
 
@@ -217,10 +250,10 @@ Voir aussi la fiche [`argo/argo_helper.md`](./argo/argo_helper.md) et le fichier
 | Paramètre | Défaut | Description |
 |---|---|---|
 | `input_file` | *(csv BDF)* | Non vide ⇒ **production** (code ces observations) ; vide ⇒ **évaluation** (code le split test des annotations). Pilote le mode partout. |
-| `sample-annotations` | *(vide)* | Plafonne la KB d'annotations indexée (vector DB). En éval, sert aussi de cap au jeu à coder. |
-| `sample-observations` | *(vide)* | Plafonne le jeu à coder (production). Échantillonné **une fois** à `classify-regex`, hérité par tous les classifieurs. |
+| `sample-observations` | *(vide)* | Plafonne le jeu à coder, en production **comme** en évaluation. Échantillonné **une fois** à `classify-regex`, hérité par tous les classifieurs. Pour plafonner la KB indexée, c'est `kb-sample-size` du workflow ②. |
+| `classify-rag-notices-collection` | *(vide)* | **Obligatoire.** Collection Qdrant produite par `index-notices-pipeline.yaml`. |
+| `classify-rag-annotations-collection` | *(vide)* | **Obligatoire.** Collection Qdrant produite par `index-annotations-pipeline.yaml`. |
 | `classify-rag-model` | `gemma4-26b-moe` | Modèle LLM pour `classify-rag-notices` / `classify-rag-annotations` |
-| `skip-index` | `true` | Si `true`, saute `index-notices` et `index-annotations` |
 | `reconcile-llm-model` | `gemma4-26b-moe` | Modèle LLM utilisé par `reconcile-llm` |
 | `reconcile-llm-concurrency` | `5` | Nombre d'appels LLM parallèles de `reconcile-llm` |
 | `skip-report` | `false` | Si `false`, génère le rapport Quarto après `export-results` |

@@ -17,15 +17,22 @@ class TestBuildCollectionName:
             base="coicop_notices", run_date="2026-09-02", run_id="index-notices-a7k2p"
         ) == "coicop_notices__2026-09-02__index-notices-a7k2p"
 
-    def test_annotations_carry_their_mode(self):
-        """Le mode est dans le nom parce qu'une KB de production contient
-        toutes les annotations : c'est le champ qu'on confond en recopiant."""
+    def test_annotations_carry_their_kb_scope(self):
+        """Le périmètre de la KB est dans le nom parce qu'une collection `full`
+        contient tous les produits annotés : c'est le champ qu'on confond en
+        recopiant, et le seul qui distingue deux collections du même jour."""
         assert build_collection_name(
             base="coicop_annotations",
             run_date="2026-09-02",
             run_id="index-anno-b3x9q",
-            mode="eval",
-        ) == "coicop_annotations__eval__2026-09-02__index-anno-b3x9q"
+            mode="full",
+        ) == "coicop_annotations__full__2026-09-02__index-anno-b3x9q"
+        assert build_collection_name(
+            base="coicop_annotations",
+            run_date="2026-09-02",
+            run_id="index-anno-b3x9q",
+            mode="train",
+        ) == "coicop_annotations__train__2026-09-02__index-anno-b3x9q"
 
     def test_sample_size_is_visible_in_the_name(self):
         """Sans ce suffixe, un index jouet de 100 points et un index complet
@@ -34,7 +41,7 @@ class TestBuildCollectionName:
             base="coicop_annotations",
             run_date="2026-09-02",
             run_id="index-anno-b3x9q",
-            mode="eval",
+            mode="full",
             sample_size=100,
         )
         assert name.endswith("__sample100")
@@ -52,7 +59,7 @@ class TestBuildCollectionName:
             base="coicop_annotations",
             run_date="2026-09-02",
             run_id="index-anno-b3x9q",
-            mode="prod",
+            mode="full",
             sample_size=50,
         )
         assert not set(name) & set(":/ ?#")

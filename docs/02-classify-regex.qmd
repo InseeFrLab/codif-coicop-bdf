@@ -29,10 +29,18 @@ Les chemins dépendent du mode (sélectionné par `--input-file`, cf.
 | `paths.test_set_prod` | production | `…/{run}/build-datasets/observations.parquet` (lignes à coder) |
 | `paths.train_set_prod` | production | `…/{run}/build-datasets/annotations_full.parquet` (KB complète) |
 
-C'est aussi ici qu'a lieu l'**échantillonnage centralisé** du pipeline : si
-`sample-annotations` (éval) ou `sample-observations` (prod) est renseigné, le jeu à coder est
-échantillonné une seule fois (`random_state=42`) et tous les classifieurs aval héritent des
-mêmes lignes via `raw_test_without_regex.parquet`.
+C'est aussi ici qu'a lieu l'**échantillonnage centralisé** du pipeline : si le paramètre
+`sample-observations` est renseigné — il vaut dans les deux modes, production comme
+évaluation —, le jeu à coder est échantillonné une seule fois (`random_state=42`) et tous les
+classifieurs aval héritent des mêmes lignes via `raw_test_without_regex.parquet` ; leurs
+prédictions restent donc comparables entre elles.
+
+::: {.callout-note}
+`sample-observations` est le **seul** curseur d'échantillonnage du pipeline de codification.
+L'ancien `sample-annotations` a disparu : il plafonnait aussi la base vectorielle
+d'annotations, laquelle est maintenant construite par un workflow séparé où le curseur
+s'appelle `kb-sample-size` (cf. [RAG sur annotations](09-rag-annotations.qmd)).
+:::
 
 ## Traitement
 

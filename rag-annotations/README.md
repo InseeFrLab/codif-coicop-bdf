@@ -10,6 +10,18 @@ Idée : pour coder un produit, on récupère dans une base vectorielle les produ
 
 ## Architecture
 
+Les deux scripts vivent dans **deux pipelines Argo distincts** : l'indexation est
+sortie du pipeline de classification.
+
+```
+argo/index-annotations-pipeline.yaml
+  build-datasets ──→ prune-codes (--only kb) ──→ index-annotations
+                                                  (0_build_annotation_vector_db.py)
+
+argo/codif-pipeline.yaml
+  … ──→ classify-rag-annotations  (1_run_rag.py)
+```
+
 ```
 0_build_annotation_vector_db.py        1_run_rag.py
    lit la KB déjà prunée                   charge le test set déjà pruné
@@ -18,6 +30,38 @@ Idée : pour coder un produit, on récupère dans une base vectorielle les produ
    embed → Qdrant                          prompt few-shot → LLM → parse → éval
 ```
 
+Pourquoi séparés : embedder toute la KB n'a pas à être repayé à chaque codification, et
+tant que la collection portait un nom fixe partagé, une réindexation détruisait la base
+que lisait un run concurrent. Même organisation que l'entraînement de `classify-ttc` et
+de `reconcile-sirus` : l'artefact coûteux est produit à part, son identifiant est
+recopié dans `argo/params.yaml` (clé `classify-rag-annotations-collection`). Le log de
+fin d'`index-annotations` affiche la ligne exacte à recopier.
+
+**Ce qu'indexe le pipeline d'indexation** : les *produits déjà annotés*, c'est-à-dire
+`annotations_full` + `suggester` au sens de `build-datasets`. Rien d'autre. Il n'y a
+donc **aucun paramètre `input_file`** : ce paramètre désigne les produits *à classer*,
+ce qui n'a rien à voir avec la constitution d'une base d'exemples. Et `classify-regex`
+n'est pas dans la chaîne : la KB n'a pas à être filtrée des produits que la regex sait
+coder.
+
+**`kb-scope`** (paramètre Argo, `--kb-scope` côté script) :
+
+| Valeur | KB | Statut |
+|---|---|---|
+| `full` (défaut) | `build-datasets/annotations_full.parquet` — tous les produits annotés | régime cible |
+| `train` | `build-datasets/raw_train.parquet` — l'ancien split | **transitoire, destiné à disparaître** |
+
+`train` n'existait que faute de jeu de test indépendant ; les nouveaux produits annotés
+en fournissent un naturellement. `kb-scope` sélectionne aussi le profil de sources
+exclues (`annotations.exclude_sources` pour `train`, `exclude_sources_prod` pour `full`
+— listes identiques aujourd'hui, la distinction ne survit que le temps de la
+transition).
+
+En mode évaluation, `1_run_rag.py` **avertit** (sans bloquer) si la collection a été
+bâtie en `kb-scope=full` : une telle KB contient tous les produits annotés, donc
+potentiellement les réponses attendues. L'avertissement plutôt que le refus, parce que
+ce cas n'est plus la norme.
+
 Le pruning (troncature niveau 4 + mapping) est centralisé dans le module
 [`prune-codes/`](../prune-codes/) ; ce module **lit** les artefacts prunés et ne prune plus lui-même.
 
@@ -25,13 +69,19 @@ Le pruning (troncature niveau 4 + mapping) est centralisé dans le module
   (`prune-codes/annotations_train_pruned.parquet`), ajoute optionnellement le **suggester**
   **déjà pruné** (`prune-codes/suggester_pruned.parquet`), embed **toutes** les descriptions
   et les charge dans Qdrant. Filtrage des sources via `exclude_sources` /
-  `exclude_sources_prod` selon le mode (`--skip-eval`) ; échantillonnage optionnel de la
-  KB via `--sample-size`.
+  `exclude_sources_prod` selon `--kb-scope` ; échantillonnage optionnel de la KB via
+  `--sample-size` (appliqué **après** la fusion avec le suggester, pour que le total de
+  points indexés vaille exactement `sample-size`). Écrit enfin un **manifeste** JSON plat
+  sous `s3://projet-budget-famille/data/vector_db_manifests/{collection_name}.json`
+  (`qdrant.manifests_root`) : `kb_scope`, modèle d'embedding et dimension, `sample_size`,
+  nombre de points **compté auprès de Qdrant**, run source et SHA git.
 - `scripts/1_run_rag.py` — codifie l'input (`prune-codes/annotations_test_pruned.parquet`) et
   exporte les prédictions. En mode **évaluation** (`--skip-eval false`), calcule en plus
   accuracy + recall de retrieval par niveau COICOP (MLflow + `report.txt`) et filtre le
   test set par `include_sources`. En **production** (défaut), prédictions seulement, pas
-  de filtre source.
+  de filtre source. Exige `--collection-name` et **valide la collection avant MLflow**
+  (existence, dimension, modèle d'embedding, collection non vide), en relisant le
+  manifeste écrit par le constructeur.
 - `prompts/annotation_rag.md` — template de prompt (sections `<<<SYSTEM>>>` /
   `<<<USER>>>`). Source de vérité locale ; peut être migré vers Langfuse.
 - `src/rag_annotations/` — utilitaires (embeddings, génération LLM
@@ -55,16 +105,46 @@ Tout est dans `config/config.yaml`. Paramètres clés :
 
 | Clé | Rôle |
 |---|---|
-| `annotations.s3_path` | annotations **train** à indexer (sortie de classify-regex) |
+| `annotations.s3_path` | KB **prunée** à indexer (`prune-codes/annotations_train_pruned.parquet`) |
 | `annotations.product_col` | colonne texte à embedder (`l_pr_product`) |
+| `annotations.exclude_sources` / `exclude_sources_prod` | sources exclues de l'index, respectivement pour `--kb-scope train` et `full` |
 | `suggester.enabled` | ajouter les exemples du suggester à l'index |
-| `suggester.s3_path` + `*_col` | source du suggester et noms de colonnes |
-| `qdrant.collection_name` | collection Qdrant (`coicop_annotations`) |
+| `suggester.s3_path_pruned` | suggester déjà pruné (`prune-codes/suggester_pruned.parquet`) |
+| `qdrant.collection_base` | **racine** du nom de collection (`coicop_annotations`) — voir ci-dessous |
+| `qdrant.manifests_root` | où sont écrits/relus les manifestes de collection |
 | `retrieval.size` | nombre d'exemples annotés récupérés par produit |
 | `llm.use_langfuse` | `false` → prompt local ; `true` → Langfuse |
 | `data.s3_path_input` | produits à codifier (test labellisé en éval, données prod sinon) |
 | `data.s3_path_predictions` | sortie : prédictions du RAG |
 | `eval.levels` | profondeur d'évaluation (niveaux 1..levels) |
+
+### Nommage des collections Qdrant
+
+Il n'y a plus de collection au nom fixe (`coicop_annotations_without_copain_2017` a
+disparu, tout comme le suffixe `_test` que le constructeur et le consommateur
+s'accordaient par convention). Chaque build compose un nom **unique** :
+
+```
+{qdrant.collection_base}__{kb_scope}__{run_date}__{run_id}[__sample{N}]
+# ex. coicop_annotations__full__2026-09-02__index-annotations-b3x9q
+```
+
+Le `kb_scope` est dans le **nom**, pas seulement dans le manifeste : c'est le champ
+qu'un humain confond le plus en recopiant, et interroger une KB `full` depuis un run
+d'évaluation gonfle l'accuracy sans lever d'erreur. Le suffixe `__sampleN` est visible
+pour la même raison : sans lui, un index jouet de 100 points et un index complet
+portent des noms de même forme.
+
+La clé de config est `qdrant.collection_base`, et surtout **pas** `collection_name` :
+ce fichier est lu par le constructeur *et* par le consommateur, et une clé
+`collection_name` inciterait le consommateur à retomber en silence sur une collection
+périmée. Le nom complet lui est donc passé en argument, obligatoirement.
+
+Le nom seul ne peut pas porter tout ce qui détermine la validité d'un index (modèle
+d'embedding, `kb_scope`, run source) : deux collections de même dimension bâties
+différemment sont indistinguables et interroger la mauvaise ne lève aucune erreur — le
+RAG rend juste de moins bons résultats. D'où le manifeste, écrit à côté de la collection
+et relu au démarrage du consommateur.
 
 ## Exécution (Onyxia, secrets via Vault)
 
@@ -79,15 +159,30 @@ cd rag-annotations
 uv sync
 mkdir -p logs
 
-# 1. Construire la base vectorielle (index = annotations train + suggester)
-uv run scripts/0_build_annotation_vector_db.py --run-id <ID> --run-date <YYYY-MM-DD>
+# 1. Construire la base vectorielle — RUN D'INDEXATION, identité propre.
+#    index = KB (annotations_full par défaut) + suggester
+uv run scripts/0_build_annotation_vector_db.py \
+  --run-id <INDEX_ID> --run-date <YYYY-MM-DD> --kb-scope full
+#    → journalise : classify-rag-annotations-collection: coicop_annotations__full__<date>__<INDEX_ID>
+#    options : --sample-size N (KB plafonnée), --collection-name (forcer un nom exact)
 
 # 2a. PRODUCTION (défaut) : codifie l'input, exporte les prédictions, pas d'évaluation
-uv run scripts/1_run_rag.py --run-id <ID> --run-date <YYYY-MM-DD>
+#     --collection-name est OBLIGATOIRE
+uv run scripts/1_run_rag.py --run-id <ID> --run-date <YYYY-MM-DD> \
+  --collection-name coicop_annotations__full__<date>__<INDEX_ID>
 
 # 2b. ÉVALUATION (opt-in) : idem + métriques vs labels (input labellisé requis)
-uv run scripts/1_run_rag.py --run-id <ID> --run-date <YYYY-MM-DD> --skip-eval false
+uv run scripts/1_run_rag.py --run-id <ID> --run-date <YYYY-MM-DD> \
+  --collection-name coicop_annotations__train__<date>__<INDEX_ID> \
+  --skip-eval false
 ```
+
+`--collection-name` est **optionnel côté indexation** (vide = nom composé) et
+**obligatoire côté classification** : il n'y a plus de nom par défaut en config,
+précisément pour qu'un oubli échoue en quelques secondes au lieu de retomber en silence
+sur l'index d'un autre run. Les deux runs ont des identités **distinctes** : le
+`--run-id` / `--run-date` de l'indexation sert à nommer la collection, celui de la
+classification à localiser les entrées et sorties du run de codification.
 
 ### Modes production / évaluation
 
@@ -97,17 +192,27 @@ L'**évaluation** (accuracy + recall par niveau) est **opt-in** via `--skip-eval
 booléen string, testé par `!= "true"`). En production, l'input n'a pas de labels et
 l'évaluation est ignorée (un garde-fou la saute aussi s'il manque la colonne `code`).
 
-Le couple `--run-id` / `--run-date` doit correspondre à un run pour lequel les sorties
-de l'étape `prune-codes` (KB, suggester, input à codifier) existent déjà sur S3.
-
 ## Prérequis upstream
 
-Tous produits par l'étape `prune-codes` (module [`prune-codes/`](../prune-codes/)) :
+Tous produits par l'étape `prune-codes` (module [`prune-codes/`](../prune-codes/)),
+sous le `run_date`/`run_id` du run concerné.
 
-- KB d'annotations **prunée** (`prune-codes/annotations_train_pruned.parquet`) → indexée ;
-- suggester **pruné** (`prune-codes/suggester_pruned.parquet`) si `suggester.enabled` ;
-- input à codifier **pruné** (`prune-codes/annotations_test_pruned.parquet`) : split test labellisé
-  en mode évaluation, observations à codifier en production.
+Pour **`0_build_annotation_vector_db.py`** (run d'indexation, `prune-codes --only kb`) :
+
+- KB d'annotations **prunée** (`prune-codes/annotations_train_pruned.parquet`) → indexée.
+  Dans `argo/index-annotations-pipeline.yaml`, sa source est surchargée via
+  `prune-codes --annotations-train` et pointe sur `build-datasets/annotations_full.parquet`
+  (ou `raw_train.parquet` si `kb-scope=train`), **pas** sur une sortie `classify-regex` ;
+- suggester **pruné** (`prune-codes/suggester_pruned.parquet`) si `suggester.enabled` —
+  source surchargée sur `build-datasets/suggester.parquet` (le suggester préprocessé, qui
+  porte déjà `l_pr_product`) plutôt que sur le CSV brut.
+
+Pour **`1_run_rag.py`** (run de classification) :
+
+- input à codifier **pruné** (`prune-codes/annotations_test_pruned.parquet`) : split test
+  labellisé en mode évaluation, observations à codifier en production ;
+- une collection Qdrant **déjà construite** avec son manifeste, dont le nom est passé en
+  argument.
 
 ## Rapport d'évaluation (mode `--skip-eval false`)
 

@@ -31,31 +31,59 @@ chaque ligne est un libellé **court et bruité** à rattacher à la nomenclatur
 ```{mermaid}
 flowchart LR
   input[/"CSV d'entrée"/] --> PRE[build-datasets]
-  PRE -- raw_test.parquet --> REG[classify-regex]
+  PRE -- "raw_test / observations" --> REG[classify-regex]
   PRE -.->|"suggester.parquet"| LCS
-  PRE -.-> PC[prune-coicop]
-  PC -.-> VDB[index-notices]
-  VDB -.->|"collection Qdrant"| RAG
   REG -- raw_test_without_regex --> LCS[classify-lcs]
-  REG -- raw_test_without_regex --> PA[prune-annotations]
+  REG -- raw_test_without_regex --> PRU[prune-codes]
   REG -- raw_test_without_regex --> TTC[classify-ttc]
-  PA --> RAG[classify-rag-notices]
-  LCS -- raw_test_LCS --> DEC[reconcile-llm]
+  PRU -- annotations_test_pruned --> RAG[classify-rag-notices]
+  PRU -- annotations_test_pruned --> RAGA[classify-rag-annotations]
+  VDB[/"collection Qdrant notices"/] -.-> RAG
+  VDBA[/"collection Qdrant annotations"/] -.-> RAGA
+  LCS -- raw_test_LCS --> DEC[reconcile-llm / reconcile-sirus]
   RAG -- predictions --> DEC
+  RAGA -- predictions --> DEC
   TTC -- predictions --> DEC
   DEC -- predictions --> FIN[export-results]
   REG -- REGEX_pred --> FIN
   DEC --> REP[report]
   FIN --> out[/"CSV livré"/]
   REP --> html[/report.html/]
-  style PC stroke-dasharray: 5 5
   style VDB stroke-dasharray: 5 5
+  style VDBA stroke-dasharray: 5 5
 ```
 
-- **Argo Workflows** ; chaque étape = un conteneur qui `git clone` (branche `codif-pipeline`) + `uv sync`
+- **Argo Workflows** ; chaque étape = un conteneur qui `git clone` (paramètre `git-branch`, défaut `main`) + `uv sync --locked`
 - Un dossier S3 par run : `…/workflow_runs/{run_date}/{run_id}/<étape>/` ; `run_id`/`run_date` passés en CLI partout
-- **Deux workflows** : `codif-pipeline.yaml` (prédiction, avec `export-results`) et `pipeline.yaml` (évaluation, entrée annotée)
-- `prune-coicop` / `index-notices` : sorties **partagées entre runs**, sautées par défaut (`skip-index=true`)
+- **Trois workflows** : `codif-pipeline.yaml` (codification, modes prod/éval via `input_file`),
+  `index-notices-pipeline.yaml` et `index-annotations-pipeline.yaml` (construction des collections Qdrant)
+- Les nœuds en pointillé ne sont **pas** des étapes : ce sont des collections bâties à l'avance,
+  désignées par les paramètres **obligatoires** `classify-rag-*-collection`
+
+## Pourquoi l'indexation est sortie du pipeline {.smaller}
+
+Avant : `index-notices` / `index-annotations` étaient deux étapes du DAG, sautables par
+`skip-index=true`, écrivant dans des collections au **nom fixe** (`coicop_lineage`,
+`coicop_annotations_without_copain_2017`).
+
+. . .
+
+Deux problèmes :
+
+- **coût** — l'embedding de toute la nomenclature (et de toute la base d'exemples) repayé à
+  chaque codification, d'où le `skip-index` : un contournement, pas une solution ;
+- **corruption silencieuse** — une réindexation détruisait la base que lisait un run
+  concurrent, et rien n'indiquait quelle version était embarquée.
+
+. . .
+
+Après : deux workflows autonomes, une collection au **nom unique** par indexation
+(`{base}[__{kb_scope}]__{run_date}__{run_id}[__sampleN]`), un **manifeste JSON** à côté
+(modèle d'embedding, dimension, stratégie, points, SHA git) que `classify-rag-*` relit et
+**valide au démarrage**. `skip-index` n'existe plus : il n'y a plus rien à sauter.
+
+C'est le patron déjà en place pour `classify-ttc-model-uri` et `reconcile-sirus-model-uri` :
+artefact coûteux produit hors du pipeline, identifiant recopié dans `argo/params.yaml`.
 
 ## La logique de conception
 
@@ -103,17 +131,23 @@ $$\text{distance} = 1 - \frac{maxlen}{\max(n_1, n_2)}$$
 
 ⚠ La couverture dépend du pool : un libellé loin de tout COPAIN n'a pas de bon candidat.
 
-## Branche RAG {.smaller}
+## Branches RAG {.smaller}
 
-Quatre scripts dans `rag-notices/` :
+**`prune-codes`** (module dédié, dans les trois workflows, drapeau `--only {all,nomenclature,kb}`) —
+supprime le niveau 5, replie les hiérarchies linéaires sur un **code canonique** (+ table de
+mapping) ; produit tous les artefacts prunés, l'aval ne fait que lire.
 
-1. **prune-coicop** — supprime le niveau 5, replie les hiérarchies linéaires sur un
-   **code canonique** (+ table de mapping) — partagé entre runs
-2. **index-notices** — notices COICOP encodées par `qwen3-embedding-8b` (dim 4096)
-   → Qdrant, collection `coicop_lineage` (cosinus), **recréée à chaque exécution**
-3. **prune-annotations** — aligne le jeu à coder sur la nomenclature prunée
-4. **classify-rag-notices** — embedding de `l_pr_product` → top-**10** Qdrant → prompt
-   (enseigne + prix + candidats) → `gemma4-26b-moe`, T=0.1, **32 appels parallèles**
+**Indexation** (hors pipeline de codification) — `qwen3-embedding-8b` (dim 4096) → Qdrant,
+cosinus, collection au nom unique + manifeste JSON :
+
+- `index-notices-pipeline.yaml` → notices COICOP prunées (`coicop_notices__…`)
+- `index-annotations-pipeline.yaml` → produits déjà annotés + suggester
+  (`coicop_annotations__{full|train}__…`) ; **aucun `input_file`** : la KB, ce sont les
+  produits *annotés*, pas les produits *à classer* — d'où l'absence de `classify-regex` dans la chaîne
+
+**Codification** — `classify-rag-notices` / `classify-rag-annotations` : embedding de
+`l_pr_product` → top-**10** Qdrant → prompt (enseigne + prix + candidats) → `gemma4-26b-moe`,
+T=0.1, **32 appels parallèles**
 
 - ⚠ Le **gabarit de prompt n'est pas dans le dépôt** : géré dans Langfuse (`prompt-multi-level` v12)
 - `retrieved_codes.parquet` permet d'auditer le retrieval **indépendamment** de la génération
@@ -124,7 +158,8 @@ Classifieur neuronal **plat** (`coicop-bdf-classifier/`, package *torchTextClass
 
 - tokenisation **n-grammes de caractères** (type fastText) — robuste aux abréviations
 - entraîné sur des **données de caisses** (grande distribution), fine-tuné sur le **test BDF 2024**
-  (sous-commandes `train-basic` / `fine-tune-basic`, workflow `argo/ttc-pipeline.yaml`)
+  — sous-commandes `train-basic` / `fine-tune-basic`, lancées **à la main, hors Argo**
+  (⚠ `argo/ttc-pipeline.yaml` est un workflow de *prédiction*, et il ne passe pas `argo lint`)
 - prédiction sur `l_pr_product`, renvoie `ttc_code_1..10` + `ttc_conf_1..10`
 - modèle chargé depuis **MLflow** : paramètre de workflow `classify-ttc-model-uri`
   (URI d'artefact, propagé au rapport pour traçabilité)
@@ -168,17 +203,22 @@ Pour chaque ligne en désaccord :
 
 ```text
 s3://projet-budget-famille/data/workflow_runs/{run_date}/{run_id}/
-├── build-datasets/      raw_test.parquet · suggester.parquet
-├── classify-regex/        REGEX_pred.parquet · raw_test_without_regex.parquet
-├── classify-lcs/          raw_test_LCS.parquet          (lcs_code, distance, substring, prop)
-├── prune-annotations/  raw_test_without_regex_pruned.parquet
-├── classify-rag-notices/            predictions.parquet (rag_code, confidence, codable)
-│                       retrieved_codes.parquet       (audit du retrieval)
-├── classify-ttc/            predictions.parquet           (ttc_code_1..10, ttc_conf_1..10)
-├── reconcile-llm/      predictions.parquet           (llm_code, llm_confiance 1–5,
-│                                                      llm_model, llm_error, tokens, latence)
-├── export-results/       {nom_du_fichier_d_entrée}     ← le livrable
-└── report/             report.html
+├── build-datasets/            raw_test.parquet · suggester.parquet
+├── classify-regex/            REGEX_pred.parquet · raw_test_without_regex.parquet
+├── classify-lcs/              raw_test_LCS.parquet     (lcs_code, distance, substring, prop)
+├── prune-codes/               nomenclature_pruned · mapping_lvl4 ·
+│                              annotations_{train,test}_pruned · suggester_pruned
+├── classify-rag-notices/      predictions.parquet      (rag_code, confidence, codable)
+│                              retrieved_codes.parquet  (audit du retrieval)
+├── classify-rag-annotations/  predictions.parquet      (code_predict, confidence, codable)
+├── classify-ttc/              predictions.parquet      (ttc_code_1..10, ttc_conf_1..10)
+├── reconcile-llm/             predictions.parquet      (llm_code, llm_confiance 1–5,
+│                                                        llm_model, llm_error, tokens, latence)
+├── export-results/            {nom_du_fichier_d_entrée}  ← le livrable
+└── report/                    report.html
+
+s3://projet-budget-famille/data/vector_db_manifests/{collection_name}.json
+                                                   ← un manifeste par collection Qdrant
 ```
 
 Tout est inspectable en place (DuckDB `read_parquet('s3://…')`) — premier réflexe de debug.
@@ -205,13 +245,18 @@ en mode évaluation : accuracy par niveau/groupe, confusion, calibration.
 ## Opérations courantes {.smaller}
 
 ```bash
-# Pipeline complet (test rapide : -p sample_size=100)
-argo submit argo/codif-pipeline.yaml -p input_file=s3://…/mon_fichier.csv \
-  -p text_column=NAT_DEP -p shop_column=MAG_DEP -p budget_column=MONT_DEP
+# 1. Construire les collections Qdrant (une fois, ou quand les sources changent).
+#    Chacune imprime la ligne à recopier dans argo/params.yaml.
+argo submit argo/index-notices-pipeline.yaml
+argo submit argo/index-annotations-pipeline.yaml       # kb-scope=full par défaut
+
+# 2. Pipeline complet (test rapide : -p sample-observations=100)
+argo submit argo/codif-pipeline.yaml --parameter-file argo/params.yaml
 
 # Relancer UNE étape : --entrypoint + run_id/run_date du run d'origine (sinon dossier S3 vide !)
 argo submit argo/codif-pipeline.yaml --entrypoint reconcile-llm \
-  -p run_id=codif-abc12 -p run_date=2026-03-20 -p model=gemma4-26b-moe -p concurrency=5
+  -p run_id=codif-abc12 -p run_date=2026-03-20 \
+  -p reconcile-llm-model=gemma4-26b-moe -p reconcile-llm-concurrency=5
 
 # Reprendre le DAG là où il a échoué
 argo retry codif-abc12
@@ -219,8 +264,13 @@ argo retry codif-abc12
 
 Pièges connus :
 
-- `reconcile-llm` attend les inputs **`model`/`concurrency`** (pas `reconcile-llm-model`/`reconcile-llm-concurrency`) ;
-  `report` attend **`experiment-name`** + `step-timings` — valider avec `--dry-run`
+- `classify-rag-*-collection` sont **obligatoires** (défaut vide) : oubliés, l'étape échoue en
+  quelques secondes — voulu, plutôt qu'un repli silencieux sur l'index d'un autre run
+- en `--entrypoint`, l'input du template RAG s'appelle **`collection-name`** ; `report` réclame
+  en plus **`step-timings`** — valider avec `--dry-run`
+- `-p skip-index=...` et `-p sample-annotations=...` **n'existent plus**. Argo n'en dit rien :
+  un `-p` inconnu est accepté et ignoré. Le run part donc sans échantillonnage, ou en
+  réindexant… rien. Utiliser `sample-observations` et les workflows d'indexation
 - chaque étape est aussi exécutable **en local** (uv / Rscript) avec les bonnes variables d'env
 
 → guide complet : [« Lancer une étape individuellement »](../../09-lancer-une-etape.qmd)
@@ -237,12 +287,18 @@ Constats vérifiés dans le code, à garder en tête :
   la ligne en échec ; la « relance manuelle + reprise checkpoint » fait office de retry
 - **Prompt RAG hors dépôt** (Langfuse v12) : une modif de prompt n'est ni versionnée
   ni revue avec le code
-- **Branches git incohérentes** : `classify-ttc` clone `main`, les autres étapes `codif-pipeline`
-  (déjà fusionnée dans `main`) — risque de drift silencieux
-- **MLflow éclaté** : classify-rag-notices loggue dans l'expérience `test`, report dans `codif-coicop-eval`
-- **Collection Qdrant unique**, écrasée par `index-notices` : pas de versionnage de la
-  nomenclature embarquée ; un run en cours pendant une recréation lirait un index incohérent
-- **README en retard** sur le code (image pré-construite `classify-ttc`, DAG sans `export-results`)
+- **MLflow éclaté** : classify-rag-notices loggue dans l'expérience `test`, classify-rag-annotations
+  dans `rag-annotation`, report dans `codif-coicop-eval`
+- **`argo/ttc-pipeline.yaml` invalide et mal nommé** : workflow de prédiction, échoue à `argo lint`
+- **`vector_index.py` dupliqué à l'identique** dans `rag_notices` et `rag_annotations` (pas de
+  module `common/`) : toute modification doit être reportée dans les deux copies, sous peine de
+  casser la validation au démarrage
+- **`kb-scope=train` transitoire** : reliquat de l'époque sans jeu de test indépendant, à supprimer
+
+. . .
+
+Réglés depuis : collection Qdrant unique écrasée à chaque run (→ noms uniques + manifestes),
+branches git incohérentes (→ paramètre `git-branch` partout).
 
 ## Pistes — fiabilité
 
@@ -269,16 +325,16 @@ Constats vérifiés dans le code, à garder en tête :
 
 ## Pistes — méthode
 
-1. **Jeu d'évaluation permanent** : un échantillon annoté stable + un run
-   `pipeline.yaml` (mode évaluation) **à chaque changement** de modèle, prompt ou règle —
-   comparaison directe dans MLflow (l'infra existe déjà)
-2. **Versionner la collection Qdrant** : nom suffixé du hash de la nomenclature
-   (`coicop_lineage_<hash>`), bascule atomique au lieu d'écrasement
+1. **Jeu d'évaluation permanent** : un échantillon annoté stable + un run de
+   `codif-pipeline.yaml` en mode évaluation (`input_file` vide) **à chaque changement** de
+   modèle, prompt ou règle — comparaison directe dans MLflow (l'infra existe déjà)
+2. **Sortir `kb-scope=train`** une fois la transition faite : le jeu de test indépendant
+   fourni par les nouveaux produits annotés rend le split historique inutile
 3. **Vendoriser une copie du prompt Langfuse** dans le dépôt (fallback + revue de code)
 4. **Remplacer le littéral `Reprise manuelle`** par un code technique dédié (ex. `97.x`)
    pour garder `predicted_code` typé « code »
-5. Reprendre les éléments *out of scope* de `harmonize-io-plan.md` : purge/cycle de vie
-   des dossiers `workflow_runs/`, paramètre `source_run_id` pour `ttc-pipeline.yaml`
+5. Purge / cycle de vie des dossiers `workflow_runs/` — et des collections Qdrant, dont le
+   nombre croît maintenant d'une par indexation (les manifestes sur S3 donnent l'inventaire)
 
 ## Pour contribuer
 

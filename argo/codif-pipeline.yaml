@@ -31,16 +31,15 @@ spec:
         value: ""
       - name: source_column
         value: ""
-      # Sampling — deux curseurs, tous deux sur le jeu À CODER :
-      #   sample-annotations : nb d'observations à coder en mode ÉVALUATION.
-      #     (Ne plafonne plus la KB indexée : l'indexation est sortie de ce
-      #      pipeline. Pour ça, voir `kb-sample-size` du pipeline
-      #      argo/index-annotations-pipeline.yaml.)
-      #   sample-observations : plafonne le jeu à coder (inférence lcs/rag/rag-annotations).
-      # En mode évaluation, l'inférence porte sur le split test des annotations →
-      # elle utilise sample-annotations (sample-observations n'a pas de sens en éval).
-      - name: sample-annotations
-        value: ""
+      # Plafonne le jeu À CODER, dans les deux modes (vide = tout).
+      # Échantillonnage CENTRALISÉ à classify-regex : un seul tirage, hérité par
+      # les quatre classifieurs, qui codent donc exactement les mêmes lignes.
+      #
+      # Il y avait ici un second curseur, `sample-annotations`, qui plafonnait la
+      # KB indexée dans la vector DB. Il a disparu avec l'indexation, qui est
+      # sortie de ce pipeline : pour plafonner la KB, c'est `kb-sample-size` de
+      # argo/index-annotations-pipeline.yaml. Le jeu à coder en évaluation, lui,
+      # relève de ce paramètre-ci comme en production — c'est le même concept.
       - name: sample-observations
         value: ""
       - name: classify-rag-model
@@ -128,8 +127,8 @@ spec:
     #                                                        └─→ classify-rag-annotations ──────────────────────┘
     #                                                                                                            │
     #                                                       ┌────────────────────────────────────────────────────┘
-    #                                                       └─→ reconcile-llm  OU  reconcile-sirus   (exclusifs : paramètre conciliation)
-    #                                                               └─→ export-results ─→ report  (opt-in)
+    #                                                       └─→ reconcile-llm  OU  reconcile-sirus   (exclusifs : paramètre reconciliation)
+    #                                                               └─→ export-results ─→ report  (skip-report)
     # -----------------------------------------------------------------------
     - name: pipeline
       dag:
@@ -427,11 +426,9 @@ spec:
             ARGS="--run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}"
             # input_file non vide => mode production (train=annotations_full, test=observations)
             [ -n "{{workflow.parameters.input_file}}" ] && ARGS="$ARGS --input-file {{workflow.parameters.input_file}}"
-            # Sampling CENTRALISÉ des observations (unique point) : sample-observations en prod,
-            # sample-annotations en éval. Tous les classifieurs aval héritent de ce jeu.
-            SAMPLE_OBS="{{workflow.parameters.sample-observations}}"
-            [ -z "{{workflow.parameters.input_file}}" ] && SAMPLE_OBS="{{workflow.parameters.sample-annotations}}"
-            [ -n "$SAMPLE_OBS" ] && ARGS="$ARGS --sample-size $SAMPLE_OBS"
+            # Sampling CENTRALISÉ du jeu à coder (unique point du pipeline) :
+            # tous les classifieurs aval héritent de ce tirage.
+            [ -n "{{workflow.parameters.sample-observations}}" ] && ARGS="$ARGS --sample-size {{workflow.parameters.sample-observations}}"
             uv run --locked --no-dev src/main.py $ARGS
         env:
           - name: AWS_ACCESS_KEY_ID
@@ -711,7 +708,7 @@ spec:
               echo "ERREUR : le paramètre 'classify-rag-annotations-collection' est vide."
               echo "Renseigner le nom de la collection Qdrant produite par"
               echo "argo/index-annotations-pipeline.yaml (son log de fin affiche la ligne à recopier)."
-              echo "Pour un run d'ÉVALUATION, utiliser une collection dont le nom contient '__eval__'."
+              echo "Le nom porte le périmètre de la KB : '__full__' (tous les produits annotés) ou '__train__' (ancien split)."
               exit 1
             fi
             git -c http.version=HTTP/1.1 clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo
@@ -1166,10 +1163,8 @@ spec:
                   --skip-report {{inputs.parameters.skip-report}}"
 
             [ -n "{{inputs.parameters.input_file}}" ]    && ARGS="$ARGS --input-file {{inputs.parameters.input_file}}"
-            # Échantillon observations (pour le rapport) : sample-observations en prod, sample-annotations en éval.
-            SAMPLE_OBS="{{workflow.parameters.sample-observations}}"
-            [ -z "{{workflow.parameters.input_file}}" ] && SAMPLE_OBS="{{workflow.parameters.sample-annotations}}"
-            [ -n "$SAMPLE_OBS" ]                         && ARGS="$ARGS --sample-size $SAMPLE_OBS"
+            # Même échantillon que celui tiré par classify-regex.
+            [ -n "{{workflow.parameters.sample-observations}}" ] && ARGS="$ARGS --sample-size {{workflow.parameters.sample-observations}}"
             [ -n "{{inputs.parameters.classify-rag-model}}" ]    && ARGS="$ARGS --classify-rag-model {{inputs.parameters.classify-rag-model}}"
             [ -n "{{inputs.parameters.classify-ttc-model-uri}}" ] && ARGS="$ARGS --classify-ttc-model-uri {{inputs.parameters.classify-ttc-model-uri}}"
             # Détermine quel parquet de conciliation le rapport lit.

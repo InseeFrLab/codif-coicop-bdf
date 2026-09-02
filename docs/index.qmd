@@ -50,8 +50,8 @@ Les travaux de mise en place d'un pipeline de codification automatique ont débu
 
 ## Le pipeline étape par étape
 
-Le pipeline est un **DAG Argo** (`argo/codif-pipeline.yaml`). Chaque étape lit/écrit sur S3
-dans un dossier propre au run :
+Le pipeline de codification est un **DAG Argo** (`argo/codif-pipeline.yaml`). Chaque étape
+lit/écrit sur S3 dans un dossier propre au run :
 
 ```
 s3://projet-budget-famille/data/workflow_runs/{run_date}/{run_id}/<étape>/
@@ -67,12 +67,11 @@ flowchart LR
   REG -- raw_test_without_regex.parquet --> PRU[prune-codes]
   REG -- raw_test_without_regex.parquet --> LCS[classify-lcs]
   REG -- raw_test_without_regex.parquet --> TTC[classify-ttc]
-  PRU -- nomenclature_pruned.parquet --> VDB[index-notices]
-  PRU -- "annotations_train_pruned<br/>+ suggester_pruned" --> VDBA[index-annotations]
-  VDB -.->|"collection Qdrant"| RAG[classify-rag-notices]
-  VDBA -.->|"collection Qdrant"| RAGA[classify-rag-annotations]
+  VDB[/"collection Qdrant notices<br/>(classify-rag-notices-collection)"/] -.-> RAG[classify-rag-notices]
+  VDBA[/"collection Qdrant annotations<br/>(classify-rag-annotations-collection)"/] -.-> RAGA[classify-rag-annotations]
   PRU -- annotations_test_pruned.parquet --> RAG
   PRU -- annotations_test_pruned.parquet --> RAGA
+  PRU -- mapping_lvl4.parquet --> RAG
   LCS -- raw_test_LCS.parquet --> DEC[reconcile-llm]
   RAG -- predictions.parquet --> DEC
   RAGA -- predictions.parquet --> DEC
@@ -87,20 +86,35 @@ flowchart LR
   style VDBA stroke-dasharray: 5 5
 ```
 
-Seuls les deux nœuds en pointillé (`index-notices`, `index-annotations`) sont
-**skippables** (`-p skip-index=true`) : les collections Qdrant sont réutilisées d'un run à
-l'autre. L'étape `prune-codes`, elle, n'est **jamais** sautée : elle produit à chaque run le jeu à
-coder pruné et la table de mapping dont l'aval a besoin.
+Les deux nœuds en pointillé ne sont **pas** des étapes de ce workflow : ce sont des
+**collections Qdrant construites à l'avance**, par deux workflows d'indexation autonomes, et
+désignées ici par leur nom via les paramètres `classify-rag-notices-collection` et
+`classify-rag-annotations-collection`. L'étape `prune-codes`, elle, tourne à chaque run : elle
+produit le jeu à coder pruné et la table de mapping dont l'aval a besoin.
 
 ::: {.callout-note}
-## Un seul workflow, deux modes
-Le dépôt contient un unique workflow de codification, **`argo/codif-pipeline.yaml`**, qui
-fonctionne en deux modes selon le paramètre `input_file` : **production** (`input_file` non
-vide — le fichier externe est codifié et livré par `export-results`) ou **évaluation**
-(`input_file` vide — c'est le split test des annotations qui est codifié, et le rapport mesure
-l'exactitude). Chaque étape clone le dépôt sur la branche donnée par le paramètre
-**`git-branch`** (défaut : `main`). `argo/ttc-pipeline.yaml` est un workflow séparé, dédié à
-l'entraînement du classifieur TTC.
+## Trois workflows Argo, et pourquoi
+Le dépôt contient **trois** workflows :
+
+| Workflow | Ce qu'il produit |
+|---|---|
+| `argo/index-notices-pipeline.yaml` | une collection Qdrant des **notices** COICOP prunées (`prune-codes --only nomenclature` → `index-notices`) |
+| `argo/index-annotations-pipeline.yaml` | une collection Qdrant des **produits déjà annotés** (`build-datasets` → `prune-codes --only kb` → `index-annotations`) |
+| `argo/codif-pipeline.yaml` | la **codification** proprement dite, qui interroge ces deux collections |
+
+L'indexation a été sortie du pipeline de codification pour deux raisons. D'abord, embarquer
+toute la nomenclature (et toute la base d'exemples) n'a aucune raison d'être repayé à chaque
+codification. Ensuite et surtout, tant que les collections portaient un nom fixe partagé par
+tous les runs, une réindexation détruisait la base que lisait un run concurrent. Chaque
+indexation crée désormais une collection au **nom unique** ; on recopie ce nom dans le fichier
+de paramètres du pipeline de codification — même pratique que `classify-ttc-model-uri` et
+`reconcile-sirus-model-uri`.
+
+Le pipeline de codification fonctionne en deux modes selon le paramètre `input_file` :
+**production** (`input_file` non vide — le fichier externe est codifié et livré par
+`export-results`) ou **évaluation** (`input_file` vide — c'est le split test des annotations
+qui est codifié, et le rapport mesure l'exactitude). Chaque étape des trois workflows clone le
+dépôt sur la branche donnée par le paramètre **`git-branch`** (défaut : `main`).
 :::
 
 | # | Étape | Rôle | Page |
@@ -110,8 +124,8 @@ l'entraînement du classifieur TTC.
 | 3 | `prune-codes` | Troncature niveau 4 + élagage des hiérarchies linéaires : produit tous les artefacts prunés | [→](prune-codes.qmd) |
 | 4 | `classify-lcs` | Code par similarité de chaîne (LCS) sur un pool de référence | [→](03-classify-lcs.qmd) |
 | 5 | `classify-ttc` | Classifieur neuronal basique (caisses + fine-tuning BDF 2024) | [→](05-classify-ttc.qmd) |
-| 6 | `index-notices` / `classify-rag-notices` | Codification sémantique par RAG sur les notices COICOP prunées | [→](04-rag-notices.qmd) |
-| 7 | `index-annotations` / `classify-rag-annotations` | Codification par RAG sur exemples déjà codifiés (few-shot) | [→](09-rag-annotations.qmd) |
+| 6 | `classify-rag-notices` | Codification sémantique par RAG sur les notices COICOP prunées (collection bâtie par `index-notices`) | [→](04-rag-notices.qmd) |
+| 7 | `classify-rag-annotations` | Codification par RAG sur exemples déjà codifiés, few-shot (collection bâtie par `index-annotations`) | [→](09-rag-annotations.qmd) |
 | 8 | `reconcile-llm` | Arbitrage final LLM-as-judge entre LCS / RAG notices / RAG annotations / TTC | [→](06-reconcile-llm.qmd) |
 | 9 | `export-results` | Assemble le résultat utilisateur (regex + décision LLM) | [→](07-export-results.qmd) |
 | 10 | `report` | Rapport Quarto (qualité ou suivi de prédiction) | [→](08-report.qmd) |
@@ -149,23 +163,38 @@ fil rouge · Sorties**.
 
 
 ```bash
-# Pipeline complet en mode évaluation (input_file vide)
+# 1. (une fois, ou quand la nomenclature / la base d'annotations change)
+#    Construire les deux collections Qdrant. Chacune affiche en fin d'exécution
+#    la ligne exacte à recopier dans argo/params.yaml.
+argo submit argo/index-notices-pipeline.yaml
+argo submit argo/index-annotations-pipeline.yaml            # kb-scope=full par défaut
+
+# 2. Pipeline complet en mode évaluation (input_file vide dans params.yaml)
 argo submit argo/codif-pipeline.yaml --parameter-file argo/params.yaml
 
 # Mode production : sur un fichier d'entrée et son mappage de colonnes
 argo submit argo/codif-pipeline.yaml \
   -p input_file=s3://projet-budget-famille/data/workflow_inputs/mon_fichier.csv \
-  -p text_column=NAT_DEP -p shop_column=MAG_DEP -p budget_column=MONT_DEP
+  -p text_column=NAT_DEP -p shop_column=MAG_DEP -p budget_column=MONT_DEP \
+  -p classify-rag-notices-collection=coicop_notices__2026-09-02__index-notices-a7k2p \
+  -p classify-rag-annotations-collection=coicop_annotations__full__2026-09-02__index-annotations-b3x9q
 
-# Limiter le test à N observations (sampling centralisé à classify-regex, hérité
-# par tous les classifieurs) : en mode évaluation
-argo submit argo/codif-pipeline.yaml -p sample-annotations=100
-# ... et en mode production (input_file non vide)
-argo submit argo/codif-pipeline.yaml -p input_file=... -p sample-observations=100
+# Limiter le jeu à coder à N observations (sampling centralisé à classify-regex,
+# hérité par les quatre classifieurs) — vaut en production comme en évaluation
+argo submit argo/codif-pipeline.yaml --parameter-file argo/params.yaml -p sample-observations=100
 
-# Réutiliser les collections Qdrant existantes (pas de reconstruction)
-argo submit argo/codif-pipeline.yaml -p skip-index=true
+# Plafonner la BASE indexée, elle, se fait au moment de l'indexation :
+argo submit argo/index-annotations-pipeline.yaml -p kb-sample-size=1000
 ```
+
+::: {.callout-important}
+`classify-rag-notices-collection` et `classify-rag-annotations-collection` sont
+**obligatoires** et n'ont pas de valeur par défaut. Argo ne sait pas exprimer « paramètre
+requis » : la garde est donc faite deux fois, dans le script du conteneur et dans l'argparse
+Python, et un nom manquant fait échouer l'étape en quelques secondes. C'est délibéré — mieux
+vaut cet échec immédiat qu'un repli silencieux sur l'index d'un autre run, ou qu'un plantage
+après deux heures de calcul.
+:::
 
 Pour relancer ou déboguer **une seule étape** (via Argo ou en local), voir
 [Lancer une étape individuellement](09-lancer-une-etape.qmd). Les termes et colonnes du

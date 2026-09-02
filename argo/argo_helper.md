@@ -38,6 +38,26 @@ argo version    # verify
 > Tip: check the server version with `argo version` once it works, or in the
 > Argo Workflows UI, and keep client and server aligned.
 
+## Prerequisite: the two vector DBs
+
+Since indexing left this pipeline, `codif-pipeline.yaml` **does not build the Qdrant
+collections** — it queries existing ones, named by parameter. Build them once with their own
+workflows (see [`index_annotations_helper.md`](./index_annotations_helper.md)):
+
+```bash
+argo submit index-notices-pipeline.yaml --watch
+argo submit index-annotations-pipeline.yaml --watch
+```
+
+Each prints, at the end, the exact line to paste into `params.yaml`:
+
+```
+classify-rag-notices-collection: coicop_notices__2026-09-02__index-notices-a7k2p
+classify-rag-annotations-collection: coicop_annotations__full__2026-09-02__index-annotations-b3x9q
+```
+
+They are reusable: rebuild them only when the nomenclature or the annotation base changes.
+
 ## Launch
 
 ```bash
@@ -60,8 +80,12 @@ argo submit codif-pipeline.yaml --parameter-file params.yaml --watch
 For a one-off override, without touching `params.yaml`:
 
 ```bash
-argo submit codif-pipeline.yaml -p sample-annotations=500 -p skip-report=false --watch
+argo submit codif-pipeline.yaml -p sample-observations=500 -p skip-report=true --watch
 ```
+
+> ⚠️ `argo submit` **silently accepts an unknown parameter name** — it just registers a new one
+> that nothing reads. A typo in `-p` or in `params.yaml` produces no error and no effect. This
+> is how `rereconciliation:` sat dead in `params.yaml` from its own commit.
 
 > ⚠️ Never pass `run_id` / `run_date`: they are computed automatically and keep
 > the S3 paths `workflow_runs/{run_date}/{run_id}/` consistent across steps.
@@ -92,13 +116,22 @@ argo resubmit @latest   # rerun as-is
 | `text_column` | `NAT_DEP` | label column to classify |
 | `shop_column` / `budget_column` | `MAG_DEP` / `MONT_DEP` | shop / amount |
 | `annee_column` / `source_column` | `""` | optional |
-| `sample-annotations` | `""` | cap the annotation KB indexed in the vector DB (empty = all) |
-| `sample-observations` | `""` | cap the to-codify set, prod only (empty = all); sampled **once** at `classify-regex` so all classifiers code the same rows; in eval, inference uses `sample-annotations` |
+| `sample-observations` | `""` | cap the to-codify set, in **both** modes (empty = all); sampled **once** at `classify-regex` so all classifiers code the same rows. To cap the indexed KB instead, that is `kb-sample-size` of `index-annotations-pipeline.yaml` |
+| `classify-rag-notices-collection` | `""` | **required** — Qdrant collection from `index-notices-pipeline.yaml` |
+| `classify-rag-annotations-collection` | `""` | **required** — Qdrant collection from `index-annotations-pipeline.yaml` |
 | `classify-rag-model` / `reconcile-llm-model` | `gemma4-26b-moe` | LLM models |
 | `reconcile-llm-concurrency` | `5` | arbitration parallelism |
 | `classify-ttc-model-uri` | `mlflow-artifacts:/10/…/model` | TTC model (MLflow) |
-| `skip-index` | `true` | skip Qdrant rebuild |
-| `skip-report` | `false` | generate the Quarto report |
+| `skip-report` | `false` | `"true"` skips the Quarto report (it runs by default) |
 | `report-experiment` | `codif-coicop-eval` | report's MLflow experiment |
-| `conciliation` | `llm` | which step decides the final code: `llm` (`reconcile-llm`) or `sirus` (`reconcile-sirus`). **Mutually exclusive** — the other is skipped |
-| `reconcile-sirus-model-uri` | `""` | SIRUS model (MLflow), required when `conciliation: sirus`. Produced out of pipeline by `reconcile-sirus/train.sh` |
+| `reconciliation` | `llm` | which step decides the final code: `llm` (`reconcile-llm`) or `sirus` (`reconcile-sirus`). **Mutually exclusive** — the other is skipped |
+| `reconcile-sirus-model-uri` | `""` | SIRUS model (MLflow), required when `reconciliation: sirus`. Produced out of pipeline by `reconcile-sirus/train.sh` |
+
+The two `*-collection` parameters have no default **on purpose**. Argo cannot express a required
+parameter, so the guard is written twice — a `[ -z ] && exit 1` in the container script and
+`required=True` in argparse. An unset name fails in seconds with a message naming the workflow
+to run, instead of silently querying some other run's index.
+
+> The parameter is spelled `reconciliation`. Older docs and `params.yaml` said `conciliation`
+> or `rereconciliation`; since an unknown key is accepted in silence, those commands ran with
+> the `llm` default even when `sirus` was requested.

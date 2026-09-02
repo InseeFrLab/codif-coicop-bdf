@@ -9,35 +9,83 @@ sémantique : on encode la nomenclature COICOP dans une base vectorielle, on ré
 chaque produit les codes les plus proches, et on demande à un LLM de choisir parmi cette
 courte liste de candidats.
 
-Elle se compose de deux sous-étapes :
+Elle se compose de deux traitements, désormais répartis dans **deux workflows distincts** :
 
-| Sous-étape | Code | Rôle |
-|---|---|---|
-| `index-notices` | `rag-notices/scripts/0_create_vector_db.py` | encode la nomenclature prunée dans Qdrant |
-| `classify-rag-notices` | `rag-notices/scripts/2_run_rag.py` | recherche vectorielle + génération LLM |
+| Traitement | Workflow | Code | Rôle |
+|---|---|---|---|
+| `index-notices` | `argo/index-notices-pipeline.yaml` | `rag-notices/scripts/0_create_vector_db.py` | encode la nomenclature prunée dans Qdrant |
+| `classify-rag-notices` | `argo/codif-pipeline.yaml` | `rag-notices/scripts/2_run_rag.py` | recherche vectorielle + génération LLM |
 
 - Code : [`rag-notices/`](https://github.com/InseeFrLab/codif-coicop-bdf/tree/main/coicop-rag) · config : `rag-notices/config/config.yaml`
 
-::: {.callout-note}
-`index-notices` reste **skippable** via `skip-index=true` (la collection Qdrant est
-réutilisée d'un run à l'autre). Les artefacts prunés qu'elle consomme (nomenclature, jeu à
-coder, mapping) sont produits par l'étape [`prune-codes`](prune-codes.qmd), qui n'est **pas** skippable
-et qui applique la troncature niveau 4 + l'élagage des hiérarchies linéaires pour tout le
-pipeline. Voir [3. Prune — troncature & élagage](prune-codes.qmd).
-:::
+## index-notices — un workflow autonome
 
-## index-notices — encoder dans Qdrant
+`argo/index-notices-pipeline.yaml` enchaîne deux étapes seulement :
 
-Chaque notice COICOP **prunée** (lue directement depuis `prune-codes/nomenclature_pruned.parquet`,
-sans re-traitement) est mise en forme en texte (code, libellé FR, notes générales, contenu
-central, exclusions, lignage des parents) puis encodée en vecteur :
+```text
+prune-codes (--only nomenclature) ──→ index-notices
+```
+
+Il est **autonome au sens strict** : la nomenclature dérive d'un CSV statique, aucune donnée
+issue d'un run de classification n'y entre. D'où le drapeau `--only nomenclature`, qui arrête
+`prune-codes` après l'étape 1 — les étapes suivantes liraient des sorties de `classify-regex`
+qui n'existent pas ici.
+
+| Paramètre | Défaut | Rôle |
+|---|---|---|
+| `git-branch` | `main` | branche clonée par les deux étapes |
+| `run_id` / `run_date` | calculés par Argo | identité du run d'indexation, reprise dans le nom de la collection |
+| `collection-name` | *(vide)* | échappatoire : forcer un nom exact au lieu de le composer |
+
+Chaque notice COICOP **prunée** (lue depuis `prune-codes/nomenclature_pruned.parquet`, sans
+re-traitement) est mise en forme en texte (code, libellé FR, notes générales, contenu central,
+exclusions, lignage des parents) puis encodée en vecteur :
 
 - Modèle d'embedding : **`qwen3-embedding-8b`** (dimension **4096**), via l'API
   OpenAI-compatible de llm.lab (`LLMLAB_URL` / `LLMLAB_API_KEY`).
-- Base vectorielle : **Qdrant**, collection **`coicop_lineage`** (distance cosinus),
-  recréée à chaque exécution.
+- Base vectorielle : **Qdrant**, distance cosinus. La collection porte un **nom unique**
+  composé depuis `qdrant.collection_base` (`coicop_notices`) et l'identité du run
+  d'indexation : `coicop_notices__{run_date}__{run_id}`, p. ex.
+  `coicop_notices__2026-09-02__index-notices-a7k2p`.
+
+::: {.callout-note}
+## Pourquoi des noms uniques
+L'ancienne collection s'appelait `coicop_lineage`, un nom fixe partagé par tous les runs :
+réindexer détruisait la base que lisait un run concurrent, et rien ne permettait de savoir
+quelle version de la nomenclature était embarquée. La clé de config a été renommée
+`collection_base` (et non `collection_name`) exprès : le consommateur reçoit le nom complet en
+argument, et une clé homonyme dans la config l'inciterait à retomber en silence sur l'ancienne
+collection partagée.
+:::
+
+À côté de la collection, l'étape écrit un **manifeste JSON** sous
+`s3://projet-budget-famille/data/vector_db_manifests/{collection_name}.json` : modèle
+d'embedding, dimension, stratégie de découpage (`with_hierarchy`), CSV source, nombre de
+points effectivement comptés dans Qdrant, SHA du commit. Le nom ne peut pas porter tout cela,
+et deux collections de même dimension bâties avec des réglages différents sont sinon
+indistinguables.
+
+Le job se termine en imprimant la ligne à recopier :
+
+```
+classify-rag-notices-collection: coicop_notices__2026-09-02__index-notices-a7k2p
+```
 
 ## classify-rag-notices — recherche + génération
+
+Cette étape appartient au pipeline de codification. Le nom de la collection à interroger lui
+est passé par le paramètre **`classify-rag-notices-collection`**, obligatoire et sans valeur
+par défaut : un nom vide fait échouer l'étape en quelques secondes (garde dans le conteneur,
+avant même le `git clone`, et `required=True` en argparse).
+
+**Validation de l'index avant tout travail coûteux.** Le script relit le manifeste et vérifie
+que la collection existe, n'est pas vide, n'est pas en statut RED, et qu'elle a bien la
+dimension, le modèle d'embedding et la stratégie que ce run attend. Deux détails de
+conception : la validation a lieu **avant** `mlflow.set_experiment`, pour ne pas laisser un run
+FAILED polluant l'expérience ; et chaque message d'erreur nomme le paramètre fautif et le
+workflow à relancer. Le SHA git et le `run_id` de l'index sont ensuite loggués comme tags
+MLflow — sans quoi deux runs aux métriques différentes mais bâtis sur des index différents
+seraient indistinguables.
 
 Pour chaque libellé à coder (`rag-notices/scripts/2_run_rag.py`) :
 

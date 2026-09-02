@@ -52,9 +52,22 @@ libellé, sans cascade par niveaux. Architecture
   retrait du bruit et des stopwords) avant tokenisation.
 
 L'entraînement et le fine-tuning ont leurs propres sous-commandes (`train-basic`,
-`fine-tune-basic` dans `classify-ttc/main.py`) et leur propre workflow Argo
-(`argo/ttc-pipeline.yaml`) ; le modèle entraîné est stocké dans **MLflow** et référencé par
-l'URI `classify-ttc-model-uri`. À noter : les codes des données d'entraînement sont **tronqués au
+`fine-tune-basic` dans `classify-ttc/main.py`) et se lancent **à la main, hors Argo** — comme
+l'entraînement de [SIRUS](06b-reconcile-sirus.qmd), et pour la même raison : le modèle est
+destiné à des runs *futurs*, son URI doit être connue au moment du `argo submit`, ce qui rend
+la fuite train-sur-test impossible par construction. Le modèle entraîné est stocké dans
+**MLflow** et référencé par l'URI `classify-ttc-model-uri`.
+
+::: {.callout-warning}
+## `argo/ttc-pipeline.yaml` n'est **pas** le workflow d'entraînement
+Malgré son nom, ce fichier décrit un workflow de **prédiction** (`main.py predict-basic` sur un
+parquet figé, avec une URI de modèle codée en dur). Il est de surcroît **invalide en l'état** :
+`argo lint` échoue sur `inputs.parameters.sample_size was not supplied`, son unique tâche de
+DAG ne passant aucun argument aux inputs du template. Ne pas s'y fier ; l'entraînement passe
+par les sous-commandes `train-*` ci-dessus.
+:::
+
+À noter : les codes des données d'entraînement sont **tronqués au
 niveau 4** (`classify-ttc/src/data/build_training_data.py`), mais sans l'élagage des hiérarchies
 linéaires — le modèle peut donc prédire un code replié (ex. `11.2.0`) ; c'est la
 normalisation de [`reconcile-llm`](06-reconcile-llm.qmd) qui le ramène au code canonique.

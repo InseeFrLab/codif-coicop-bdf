@@ -10,34 +10,95 @@ nomenclature COICOP en combinant plusieurs classifieurs complémentaires, puis e
 arbitrant via un LLM (*LLM-as-judge*). Il est orchestré par **Argo Workflows**
 (`argo/codif-pipeline.yaml`).
 
-## Le DAG du pipeline
+## Trois workflows
+
+Le dépôt contient trois manifestes Argo, et cette séparation est une décision de conception,
+pas un accident d'organisation :
+
+| Workflow | Chaîne | Produit |
+|---|---|---|
+| `argo/index-notices-pipeline.yaml` | `prune-codes (--only nomenclature)` → `index-notices` | une collection Qdrant des notices COICOP prunées |
+| `argo/index-annotations-pipeline.yaml` | `build-datasets` → `prune-codes (--only kb)` → `index-annotations` | une collection Qdrant des produits déjà annotés (+ suggester) |
+| `argo/codif-pipeline.yaml` | le DAG de codification ci-dessous | les codes COICOP prédits, le livrable et le rapport |
+
+Deux raisons à la scission. D'une part, l'embedding de toute la nomenclature et de toute la
+base d'exemples est coûteux et n'a aucune raison d'être repayé à chaque codification. D'autre
+part — et c'est le motif décisif — tant que les collections portaient un **nom fixe partagé**
+(`coicop_lineage`, `coicop_annotations_without_copain_2017`), une réindexation détruisait la
+base que lisait un run concurrent. Chaque indexation crée maintenant une collection au nom
+unique, et le pipeline de codification **désigne par paramètre** celle qu'il interroge.
+
+C'est exactement le schéma déjà en place pour `classify-ttc-model-uri` et
+`reconcile-sirus-model-uri` : l'artefact coûteux est produit hors du pipeline qui le consomme,
+son identifiant est recopié dans le fichier de paramètres.
+
+## Le DAG du pipeline de codification
 
 Schéma Excalidraw du [pipeline](https://link.excalidraw.com/l/9vLymO4fSxN/3JjfZov3UgX).
 
 ```text
 build-datasets  (input_file : production / évaluation)
-  └─→ classify-regex ─┬─→ classify-lcs ────────────────────────────────────────────────────┐
-                      ├─→ classify-ttc ────────────────────────────────────────────────────┤
-                      └─→ prune-codes ─┬─→ index-notices ─────→ classify-rag-notices ──────┤
-                                       └─→ index-annotations ─→ classify-rag-annotations ──┘
-                                                                                           │
-                                                       ┌───────────────────────────────────┘
-                                                       │  les 4 classifieurs convergent
-                                                       └─→ reconcile-llm  OU  reconcile-sirus   (exclusifs : paramètre `reconciliation`)
-                                                               └─→ export-results ─→ report  (opt-in)
+  └─→ classify-regex ─┬─→ classify-lcs ──────────────────────────────────────────┐
+                      ├─→ classify-ttc ──────────────────────────────────────────┤
+                      └─→ prune-codes ─┬─→ classify-rag-notices ─────────────────┤
+                                       └─→ classify-rag-annotations ─────────────┤
+                                                                                 │
+        collection Qdrant notices ······› classify-rag-notices                   │
+        collection Qdrant annotations ··› classify-rag-annotations               │
+        (bâties hors pipeline, désignées par paramètre)                          │
+                                                                                 │
+                                     ┌───────────────────────────────────────────┘
+                                     │  les 4 classifieurs convergent
+                                     └─→ reconcile-llm  OU  reconcile-sirus   (exclusifs : paramètre `reconciliation`)
+                                             └─→ export-results ─→ report  (opt-in)
 ```
 
 Points à retenir sur cette topologie :
 
 - **`prune-codes` dépend de `classify-regex`** (et non de `build-datasets`) : il a besoin du jeu à coder
-  déjà débarrassé des lignes captées par les regex. Cette étape n'est **jamais** sautée.
-- Seules les deux étapes `index-notices*` sont **skippables** (`-p skip-index=true`) :
-  les collections Qdrant survivent d'un run à l'autre.
+  déjà débarrassé des lignes captées par les regex. Cette étape tourne à chaque run.
+- **Les étapes `index-*` ne sont plus dans ce DAG.** Les deux collections Qdrant sont bâties à
+  l'avance et passées par nom (`classify-rag-notices-collection`,
+  `classify-rag-annotations-collection`). Il n'y a donc plus de paramètre `skip-index` : il n'y
+  a plus rien à sauter.
 - `reconcile-llm` attend les quatre classifieurs ; `report` dépend de toutes les étapes
   précédentes (il en loggue les durées).
 
 Chaque étape lit et écrit sur S3 dans un dossier propre au run :
 `s3://projet-budget-famille/data/workflow_runs/{run_date}/{run_id}/<étape>/`.
+
+## Désigner les collections Qdrant
+
+Les deux paramètres de collection sont **obligatoires** et leur défaut est vide,
+délibérément. Argo n'a pas de mécanisme de « paramètre requis » : la garde est donc doublée,
+dans le script du conteneur (`echo` + `exit 1`, avant même le `git clone`) et dans l'argparse
+Python (`required=True`). Un nom absent fait échouer l'étape en quelques secondes plutôt que
+de retomber en silence sur l'index d'un autre run — ou de planter après deux heures.
+
+```yaml
+# argo/params.yaml
+classify-rag-notices-collection: coicop_notices__2026-09-02__index-notices-a7k2p
+classify-rag-annotations-collection: coicop_annotations__full__2026-09-02__index-annotations-b3x9q
+```
+
+Ces deux lignes sont **imprimées telles quelles** en fin d'exécution du pipeline d'indexation
+correspondant : il n'y a rien à reconstituer depuis les logs, seulement à copier.
+
+Le nom d'une collection suit la forme `{base}[__{kb_scope}]__{run_date}__{run_id}[__sampleN]`.
+Il porte ce qu'un humain doit voir d'un coup d'œil (la portée de la KB, la date, le run, un
+éventuel échantillonnage) ; tout le reste — modèle d'embedding, dimension, stratégie de
+découpage, nombre de points, SHA git — vit dans un **manifeste JSON** écrit à côté :
+
+```
+s3://projet-budget-famille/data/vector_db_manifests/{collection_name}.json
+```
+
+Les étapes `classify-rag-*` relisent ce manifeste **au démarrage**, avant tout travail
+coûteux et avant même d'ouvrir un run MLflow, et refusent de continuer si la collection
+n'existe pas, est vide, ou a été bâtie avec une autre dimension ou un autre modèle
+d'embedding. Le motif : deux collections de même dimension bâties avec des réglages
+différents sont indistinguables, et interroger la mauvaise ne lève aucune erreur — le RAG rend
+simplement de moins bons résultats.
 
 ## Les classifieurs
 
@@ -57,8 +118,8 @@ autres** produisent chacun une prédiction candidate sur les mêmes observations
 
 ## Modes prod / éval
 
-Un **seul** workflow (`argo/codif-pipeline.yaml`) couvre les deux usages. Le commutateur est le
-paramètre **`input_file`** :
+Un **seul** workflow de codification (`argo/codif-pipeline.yaml`) couvre les deux usages. Le
+commutateur est le paramètre **`input_file`** :
 
 | | Mode **production** | Mode **évaluation** |
 |---|---|---|
@@ -84,6 +145,19 @@ la sortie de `reconcile-llm`. Un seul code non nul dans un fichier de production
 faire basculer le rapport en mode évaluation.
 :::
 
+::: {.callout-warning}
+## En évaluation, attention à la portée de la collection d'annotations
+Une collection bâtie en `kb-scope=full` contient **tous** les produits annotés. Si le jeu de
+test d'un run d'évaluation provient du même lot historique, le RAG y retrouve ses propres
+réponses et l'accuracy est gonflée — sans qu'aucune étape n'échoue. Dans ce cas, viser une
+collection bâtie en `kb-scope=train` (son nom contient `__train__`).
+
+`classify-rag-annotations` détecte la situation et **avertit** dans ses logs, sans bloquer :
+depuis que les nouveaux produits annotés fournissent un jeu de test indépendant, ce n'est plus
+la norme. Le mode `train` n'existait d'ailleurs que faute d'un tel jeu de test ; il est
+conservé le temps de la transition et **destiné à disparaître**.
+:::
+
 Le mappage de colonnes (mode production) se fait par paramètres Argo, le pipeline n'imposant
 aucun nom de colonne en entrée :
 
@@ -102,25 +176,42 @@ point unique : `classify-regex`**. Le jeu à coder y est échantillonné une seu
 (`random_state=42`), et tous les classifieurs aval héritent des mêmes lignes via
 `raw_test_without_regex.parquet` — les prédictions restent donc comparables entre elles.
 
-| Paramètre | Mode | Effet |
+| Paramètre | Workflow | Effet |
 |---|---|---|
-| `sample-observations` | production | limite le nombre d'observations à codifier |
-| `sample-annotations` | évaluation | limite le jeu à codifier **et** la taille de la KB d'annotations indexée par `index-annotations` |
+| `sample-observations` | `codif-pipeline.yaml` | limite le nombre de libellés **à coder**, en production comme en évaluation |
+| `kb-sample-size` | `index-annotations-pipeline.yaml` | limite le nombre de points **indexés** dans la collection d'annotations (donc le temps d'embedding) |
 
-::: {.callout-important}
-En évaluation, `sample-annotations` fait aussi basculer `classify-rag-annotations` sur une
-collection Qdrant **suffixée `_test`**, pour ne pas écraser la collection de production avec
-une base vectorielle partielle.
+::: {.callout-note}
+## Un seul curseur pour le jeu à coder
+Il y avait auparavant deux paramètres, `sample-observations` (production) et
+`sample-annotations` (évaluation). Le second plafonnait à la fois le jeu à coder et la KB
+indexée — deux choses sans rapport. L'indexation étant sortie du pipeline, le curseur de KB l'a
+suivie (`kb-sample-size`), et le jeu à coder en évaluation relève désormais du même
+`sample-observations` qu'en production : c'est le même concept.
+
+La collection échantillonnée porte un suffixe `__sampleN` visible dans son nom, précisément
+pour qu'on ne recopie pas par mégarde un index-jouet dans les paramètres de production.
+L'ancien suffixe `_test` a disparu avec les noms de collection fixes.
+:::
+
+::: {.callout-warning}
+Argo **n'échoue pas** sur un `-p` dont le nom n'existe pas : il l'ajoute aux arguments du
+workflow, où personne ne le lit. Un `-p sample-annotations=100` ou un `-p skip-index=true`
+hérité d'un ancien script part donc sans un mot, et le run tourne sur le jeu complet. Les
+paramètres disparus sont à traquer dans les scripts d'appel, pas à attendre du `submit`.
 :::
 
 ```bash
-# évaluation sur 100 libellés
-argo submit argo/codif-pipeline.yaml -p sample-annotations=100
+# 100 libellés à coder, en évaluation
+argo submit argo/codif-pipeline.yaml --parameter-file argo/params.yaml -p sample-observations=100
 
 # production sur 100 libellés d'un fichier réel
-argo submit argo/codif-pipeline.yaml \
+argo submit argo/codif-pipeline.yaml --parameter-file argo/params.yaml \
   -p input_file=s3://projet-budget-famille/data/workflow_inputs/mon_fichier.csv \
   -p sample-observations=100
+
+# petite base vectorielle d'annotations, pour tester la chaîne d'indexation
+argo submit argo/index-annotations-pipeline.yaml -p kb-sample-size=1000
 ```
 
 ## Le fichier d'entrée et son mappage
