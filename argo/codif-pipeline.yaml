@@ -102,6 +102,14 @@ spec:
       - name: reconcile-sirus-model-uri
         value: ""
 
+  # `git -c http.version=HTTP/1.1` sur tous les clones : NE PAS RETIRER.
+  # Le git de l'image (2.54.0, lié à libcurl3-gnutls) n'arrive pas à lire la
+  # réponse HTTP/2 de GitHub — il échoue sur « expected flush after ref
+  # listing » puis réclame un Username, ce qui fait croire à tort à un problème
+  # d'authentification. GitHub répond pourtant 200 avec le bon content-type
+  # (vérifié en trace GIT_CURL_VERBOSE). Forcer HTTP/1.1 neutralise la couche
+  # de transport fautive en conservant le protocole git v2.
+
   templates:
     # -----------------------------------------------------------------------
     # Main pipeline: DAG with parallelism
@@ -352,7 +360,7 @@ spec:
         args:
           - |
             set -e
-            git clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo
+            git -c http.version=HTTP/1.1 clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo
             cd repo/build-datasets
             uv sync --locked --no-dev
             ARGS="--run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}"
@@ -413,7 +421,7 @@ spec:
         args:
           - |
             set -e
-            git clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo
+            git -c http.version=HTTP/1.1 clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo
             cd repo/classify-regex
             uv sync --locked --no-dev
             ARGS="--run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}"
@@ -473,7 +481,7 @@ spec:
         args:
           - |
             set -e
-            git clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo
+            git -c http.version=HTTP/1.1 clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo
             cd repo/classify-lcs
             # Échantillonnage centralisé en amont (classify-regex) → pas de sampling ici.
             ARGS="--run-id={{inputs.parameters.run_id}} --run-date={{inputs.parameters.run_date}}"
@@ -528,7 +536,7 @@ spec:
         args:
           - |
             set -e
-            git clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo
+            git -c http.version=HTTP/1.1 clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo
             cd repo/prune-codes
             uv sync --locked --no-dev
             uv run --locked --no-dev scripts/main.py --config {{inputs.parameters.config}} --run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}
@@ -587,7 +595,7 @@ spec:
               echo "argo/index-notices-pipeline.yaml (son log de fin affiche la ligne à recopier)."
               exit 1
             fi
-            git clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo
+            git -c http.version=HTTP/1.1 clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo
             cd repo/rag-notices
             mkdir -p logs prompts
 
@@ -706,7 +714,7 @@ spec:
               echo "Pour un run d'ÉVALUATION, utiliser une collection dont le nom contient '__eval__'."
               exit 1
             fi
-            git clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo
+            git -c http.version=HTTP/1.1 clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo
             cd repo/rag-annotations
             mkdir -p logs
 
@@ -824,7 +832,7 @@ spec:
         args:
           - |
             set -e
-            git clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo
+            git -c http.version=HTTP/1.1 clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo
             cd repo/classify-ttc
             uv sync --locked --no-dev
 
@@ -893,7 +901,7 @@ spec:
         args:
           - |
             set -e
-            git clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo
+            git -c http.version=HTTP/1.1 clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo
             cd repo/reconcile-llm
             uv sync --locked --no-dev
 
@@ -979,7 +987,7 @@ spec:
         args:
           - |
             set -e
-            git clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo
+            git -c http.version=HTTP/1.1 clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo
             cd repo/reconcile-sirus
             uv sync --locked --no-dev
 
@@ -1071,7 +1079,7 @@ spec:
         args:
           - |
             set -e
-            git clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo
+            git -c http.version=HTTP/1.1 clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo
             cd repo/export-results
             uv sync --locked --no-dev
             ARGS="--run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}"
@@ -1145,7 +1153,7 @@ spec:
         args:
           - |
             set -e
-            git clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo
+            git -c http.version=HTTP/1.1 clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo
             cd repo/report
             uv sync --locked --no-dev
 

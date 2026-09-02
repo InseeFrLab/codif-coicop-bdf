@@ -6,6 +6,14 @@ spec:
   entrypoint: pipeline
   serviceAccountName: workflow
 
+  # `git -c http.version=HTTP/1.1` sur tous les clones : NE PAS RETIRER.
+  # Le git de l'image (2.54.0, lié à libcurl3-gnutls) n'arrive pas à lire la
+  # réponse HTTP/2 de GitHub — il échoue sur « expected flush after ref
+  # listing » puis réclame un Username, ce qui fait croire à tort à un problème
+  # d'authentification. GitHub répond pourtant 200 avec le bon content-type
+  # (vérifié en trace GIT_CURL_VERBOSE). Forcer HTTP/1.1 neutralise la couche
+  # de transport fautive en conservant le protocole git v2.
+
   templates:
     - name: pipeline
       dag:
@@ -26,7 +34,7 @@ spec:
         args:
           - |
             set -e
-            git clone --branch main https://github.com/InseeFrLab/codif-coicop-bdf.git repo
+            git -c http.version=HTTP/1.1 clone --branch main https://github.com/InseeFrLab/codif-coicop-bdf.git repo
             cd repo/classify-ttc
             uv sync --locked --no-dev
 
