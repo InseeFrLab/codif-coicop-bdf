@@ -23,10 +23,14 @@ Ce document sert à reprendre le travail dans une autre session ou par une autre
 |---|---|---|
 | 3 | Cohérence des dépendances (workspace uv) | **fait** — commit `b40d349` |
 | 5a | Vocabulaire unique des étapes, modules, paquets, paramètres | **fait** — commit `3ccacf8` |
+| 2 | Contrat de données entre étapes | **fait** — `common/`, `contracts.yaml`, validation aux frontières (2026-09-03) |
 | 1 | Reproductibilité de l'exécution | partiel |
+| 4 | CI et tests | partiel — contrôles de cohérence en place, tests métier écartés |
 | 5b | YAML déclaratif, homogénéité des modules | à faire |
-| 2 | Contrat de données entre étapes | à faire |
-| 4 | CI et tests | à faire |
+
+Hors plan initial, faits depuis : l'**indexation Qdrant sortie du pipeline** en deux workflows
+autonomes avec collections à nom unique (2026-09-02), et un **smoke run bloquant** qui précède
+chaque run de codification (2026-09-02).
 
 ### Vocabulaire en vigueur depuis `3ccacf8`
 
@@ -179,7 +183,23 @@ les chemins des 10 étapes sans filet.
 
 ---
 
-## Chantier 4 — CI et tests *(à faire)*
+## Chantier 4 — CI et tests *(partiel)*
+
+> **Traité le 2026-09-03** : `.github/workflows/checks.yml` + `scripts/check_pipeline.py`.
+> Quatre contrôles mécaniques à chaque envoi, en moins d'une minute : verrou des
+> dépendances, noms utilisés sans être déclarés (`ruff`, jeu `E9,F63,F7,F82`), cohérence
+> des workflows Argo, validité du schéma Argo. Vérifié en réintroduisant les trois pannes
+> réelles de la semaine : les trois sont refusées.
+>
+> **Écarté volontairement**, après discussion : le job de mise en forme (`ruff format`) et
+> le rendu de documentation — aucune des trois pannes n'aurait été vue par eux. Et les
+> **tests métier**, à reprendre plus tard : sans eux la CI n'installe aucune dépendance
+> lourde. Conséquence à connaître, les deux fichiers de tests cassés de `rag-notices` ne
+> seront toujours pas signalés.
+>
+> **Deux exclusions nominatives et commentées**, à lever le jour où ces fichiers sont
+> réparés ou supprimés : `rag-notices/scripts/eval.py` (script-notebook obsolète) et
+> `argo/ttc-pipeline.yaml` (refusé par `argo lint`, donc non soumissible).
 
 ### Où on en est
 

@@ -69,3 +69,25 @@ dev = [
     "pytest>=9.0.2",
     "ruff>=0.15.1",
 ]
+
+# --- ruff : chasse aux vrais défauts, pas au style -----------------------------
+# Volontairement PAS un linter complet. La mise en forme du code n'a jamais fait
+# échouer une étape ; ces règles-ci si :
+#   E9  erreurs de syntaxe          F7  constructions invalides
+#   F63 comparaisons toujours vraies F82 nom utilisé sans être défini
+#
+# F82 est celle qui compte. Elle attrape le cas où un fichier utilise quelque
+# chose qu'il n'a jamais importé — invisible à un simple `--help`, puisque le
+# nom n'est évalué qu'à l'exécution de la fonction qui s'en sert. C'est ce qui a
+# fait échouer l'étape `report` après 8 minutes de smoke run.
+[tool.ruff.lint]
+select = ["E9", "F63", "F7", "F82"]
+
+[tool.ruff]
+exclude = [
+    # Script d'analyse en style notebook (cellules `# %%`), 309 lignes, qui lit
+    # des colonnes n'existant plus. Déjà signalé obsolète dans
+    # docs/limites-vigilance.qmd. Exclusion à retirer le jour où il est réparé
+    # ou supprimé — c'est le seul fichier exclu, et il doit le rester.
+    "rag-notices/scripts/eval.py",
+]

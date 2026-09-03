@@ -141,6 +141,25 @@ Rapport d'exactitude Quarto (HTML auto-contenu) sur la sortie de `reconcile-llm`
   - Consensus vs désaccord des sources amont : apport de l'arbitrage LLM
 - Méthodologie *accuracy par niveau* : tronquer `code` et la prédiction aux `k` premiers segments ; les observations dont la vérité a moins de `k` niveaux sont exclues du dénominateur à ce niveau
 
+## Contrôles automatiques
+
+Quatre vérifications mécaniques tournent à chaque envoi sur GitHub
+([`.github/workflows/checks.yml`](./.github/workflows/checks.yml)), en moins d'une minute.
+Elles répondent à une seule question : *quelqu'un a-t-il renommé quelque chose en oubliant
+un endroit ?* Les mêmes en local :
+
+```bash
+uv lock --check                                    # verrou à jour (sinon TOUTES les étapes Argo échouent)
+uv run --with ruff ruff check .                    # nom utilisé sans être déclaré
+uv run --with pyyaml python scripts/check_pipeline.py .   # cohérence des workflows et des paramètres
+argo lint --offline argo/codif-pipeline.yaml       # validité du schéma Argo
+```
+
+Ce ne sont **pas** des tests métier : elles ne disent rien de la qualité de la
+codification. Elles attrapent le code ou la configuration qui *ne peut pas fonctionner* —
+un import manquant, une clé de paramètre mal orthographiée qu'`argo submit` accepterait en
+silence, un `pyproject.toml` modifié sans relancer `uv lock`.
+
 ## Structure du dépôt
 
 Ce dépôt rassemble le code de toutes les étapes du pipeline, auparavant dispersé dans plusieurs repos.
