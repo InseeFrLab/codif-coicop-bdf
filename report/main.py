@@ -13,6 +13,9 @@ import boto3
 import duckdb
 import pandas as pd
 
+from codif_common.contracts import artifact, run_root as contracts_run_root
+from codif_common.s3 import connect_secret, resolve_endpoint as s3_endpoint
+
 from coicop_metrics import (
     CANONICAL_LEVELS,
     LEVELS,
