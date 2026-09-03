@@ -71,20 +71,60 @@ smoke (≈8 min, 100 lignes)  ──→  full (≈2 h)
 ```
 
 It costs ~8 min measured in production on the real CSV — about 7% of a full run — which
-is what makes gating every run bearable. `argo get` shows both passes as `smoke` and
-`full`; their S3 outputs live under `…/{run_id}-smoke/` and `…/{run_id}/`, and the smoke
-logs to its own MLflow experiment (`codif-coicop-smoke`) so its 100-row metrics never mix
-with real ones.
+is what makes gating every run bearable.
 
-**Escape hatch.** A false-positive smoke must not immobilise production:
+### There is nothing to launch
+
+The smoke pass is **not a separate command**. Your usual submit already does it:
+
+```bash
+argo submit codif-pipeline.yaml --parameter-file params.yaml --watch
+```
+
+`argo get` then shows two passes under the workflow:
+
+```
+STEP        TEMPLATE   DURATION
+ ├─ smoke   pipeline   8m      ← 100 rows
+ └─ full    pipeline   2h      ← starts only if smoke succeeded
+```
+
+Their S3 outputs live under `…/{run_id}-smoke/` and `…/{run_id}/`, so they never mix, and
+the smoke logs to its own MLflow experiment (`codif-coicop-smoke`) so its 100-row metrics
+are never mistaken for real ones.
+
+### Two switches
+
+**Smoke only** — check a branch in ~8 min without committing to the 2-hour run. The `full`
+pass shows as `Skipped`:
+
+```bash
+argo submit codif-pipeline.yaml --parameter-file params.yaml \
+  -p smoke-only=true -p git-branch=<your-branch> --watch
+```
+
+**Skip the smoke** — a false-positive must not immobilise production. The `smoke` pass shows
+as `Skipped` and `full` runs anyway:
 
 ```bash
 argo submit codif-pipeline.yaml --parameter-file params.yaml -p skip-smoke=true --watch
 ```
 
-The smoke task then shows as `Skipped`, and `full` runs anyway — the legacy `dependencies:`
-form expands to `Succeeded || Skipped || Daemoned`, so a skipped task satisfies it while a
+Both rely on the same mechanism: the legacy `dependencies:` form expands to
+`Succeeded || Skipped || Daemoned`, so a **skipped** task satisfies the gate while a
 **failed** one does not.
+
+### Reading a failure
+
+If the smoke fails, `full` never starts and the workflow stops. Find which step broke:
+
+```bash
+argo get  @latest              # which step is ✖
+argo logs @latest -f           # its logs
+```
+
+The smoke's artifacts stay under `…/{run_id}-smoke/` for inspection — a failed smoke leaves
+everything it managed to produce.
 
 **What it does not catch**: volume-related failures (OOM, rate limits, timeouts that only
 appear at 16 000 rows), and a deliverable that is produced but wrong — the success criterion
@@ -144,11 +184,13 @@ argo resubmit @latest   # rerun as-is
 
 | Parameter | Default | Role |
 |---|---|---|
+| `git-branch` | `main` | branch every step clones. **Your local changes are invisible until pushed** — the pods clone from GitHub, not from your disk |
 | `input_file` | `s3://…/BDF_data_…_a_codif.csv` | input CSV file on S3 |
 | `text_column` | `NAT_DEP` | label column to classify |
 | `shop_column` / `budget_column` | `MAG_DEP` / `MONT_DEP` | shop / amount |
 | `annee_column` / `source_column` | `""` | optional |
 | `skip-smoke` | `"false"` | `"true"` runs the real pass without the smoke gate |
+| `smoke-only` | `"false"` | `"true"` runs the smoke pass and stops there |
 | `smoke-observations` | `"100"` | size of the smoke sample |
 | `smoke-experiment` | `codif-coicop-smoke` | MLflow experiment of the smoke pass |
 | `sample-observations` | `""` | cap the to-codify set, in **both** modes (empty = all); sampled **once** at `classify-regex` so all classifiers code the same rows. To cap the indexed KB instead, that is `kb-sample-size` of `index-annotations-pipeline.yaml` |

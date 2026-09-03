@@ -77,6 +77,10 @@ spec:
       # volume ni un livrable produit mais faux.
       - name: skip-smoke
         value: "false"
+      # N'exécuter QUE la passe smoke, sans enchaîner sur le vrai run : pour
+      # vérifier une branche en ~8 min. Le pendant de skip-smoke.
+      - name: smoke-only
+        value: "false"
       - name: smoke-observations
         value: "100"
       # Sans expérience dédiée, les métriques du smoke (100 lignes) seraient
@@ -144,6 +148,7 @@ spec:
           - name: full
             dependencies: [smoke]
             template: pipeline
+            when: '"{{workflow.parameters.smoke-only}}" != "true"' 
             arguments:
               parameters:
                 - name: run_id
