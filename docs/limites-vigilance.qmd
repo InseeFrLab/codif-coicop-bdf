@@ -123,9 +123,10 @@ code existant.
 Le risque théorique reste entier pour un **changement de millésime** : toutes les sources sont
 supposées en ECOICOP v2 (COICOP 2018), y compris les annotations BdF 2017 (converties en
 amont). Un code ECOICOP **v1** qui fuiterait serait tronqué en un code v2 faux dans ~76 % des
-cas, les deux arborescences ne coïncidant pas. Une table de passage v1→v2 existe dans le dépôt
-(`classify-ttc/data/table_passage_coicop.csv`) mais **n'est utilisée par aucun code**, et rien ne
-détecte un code v1 en entrée.
+cas, les deux arborescences ne coïncidant pas. Une table de passage v1→v2 a existé dans le dépôt
+(`classify-ttc/data/table_passage_coicop.csv`) sans être utilisée par le moindre code ; elle a
+été supprimée le 2026-09-02 et reste récupérable dans l'historique git. Rien ne détecte un code
+v1 en entrée.
 
 **Piste** : logguer (ou faire échouer) les codes dont la troncature niveau 4 n'existe pas dans
 `nomenclature_pruned`, hors codes techniques `98.x`/`99.x`.

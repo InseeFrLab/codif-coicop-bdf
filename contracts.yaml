@@ -1,0 +1,150 @@
+# Registre des artefacts échangés entre étapes.
+#
+# POURQUOI CE FICHIER
+# Chaque étape réécrivait elle-même où trouver les fichiers des autres. Sept
+# mécanismes différents coexistaient — clé de config, shell dans le YAML Argo,
+# f-string Python, `glue` R, variable d'environnement, défaut d'argparse — et le
+# même fichier pouvait être désigné 7 fois de 4 façons. Résultat : renommer une
+# étape a demandé 162 modifications dans 29 fichiers, et un décalage de chemin
+# entre `build-datasets` et `classify-lcs` est passé inaperçu pendant des mois.
+#
+# EN YAML, PAS EN PYTHON : `classify-lcs` est en R et doit pouvoir le lire.
+# La syntaxe `{run_date}` / `{run_id}` est comprise telle quelle par
+# `str.format()` côté Python et par `glue::glue()` côté R — aucun préprocesseur.
+#
+# BUCKET ET CHEMIN SÉPARÉS : `aws.s3::s3write_using` les veut distincts, là où
+# les configs Python attendent une URI complète. Les accesseurs des deux langages
+# recomposent ce dont ils ont besoin.
+
+bucket: projet-budget-famille          # surchargeable par $COICOP_BUCKET
+run_root: data/workflow_runs/{run_date}/{run_id}
+
+# Entrées venues d'ailleurs : ni produites ni versionnées par un run.
+external:
+  nomenclature_coicop: data/coicop-2018_envoi_rmes_20251022.csv
+  suggester_source:    data/input-annotation/liste_produits_fr_copain.csv
+  shops_mapping:       data/input-annotation/liste_magasins.csv
+  annotations_2024:    data/codification-manuelle-anterieure/annotations_test_2024.csv
+  annotations_2017:    data/codification-manuelle-anterieure/annotations_BDF_2017.csv
+  uncodable_products:  data/codification-manuelle-anterieure/produit_non_annotable.csv
+  vector_db_manifests: data/vector_db_manifests
+
+# Chemins relatifs à `run_root`. `inputs` référence des sorties par
+# `étape.clé` : c'est ce qui rend « qui consomme quoi » lisible, et ce qu'un
+# test vérifie (toute entrée doit désigner une sortie déclarée).
+steps:
+
+  build-datasets:
+    outputs:
+      annotations_full: build-datasets/annotations_full.parquet
+      raw_train:        build-datasets/raw_train.parquet
+      raw_test:         build-datasets/raw_test.parquet
+      suggester:        build-datasets/suggester.parquet
+      # Écrit uniquement en mode production (input_file non vide).
+      observations:     build-datasets/observations.parquet
+      qa_multiple_codes:            build-datasets/qa/annotations_with_multiple_codes.parquet
+      qa_multiple_codes_hors_copain: build-datasets/qa/annotations_hors_copain_with_multiple_codes.parquet
+
+  classify-regex:
+    inputs:
+      # Le flux « train » est annotations_full en production, raw_train en
+      # évaluation ; le flux « test » est observations ou raw_test.
+      - build-datasets.annotations_full
+      - build-datasets.raw_train
+      - build-datasets.raw_test
+      - build-datasets.observations
+    outputs:
+      predictions:        classify-regex/REGEX_pred.parquet
+      test_without_regex: classify-regex/raw_test_without_regex.parquet
+      train_without_regex: classify-regex/raw_train_without_regex.parquet
+      errors:             classify-regex/error_regex_pred.parquet
+
+  prune-codes:
+    inputs:
+      - classify-regex.test_without_regex
+      - classify-regex.train_without_regex
+    outputs:
+      nomenclature:      prune-codes/nomenclature_pruned.parquet
+      mapping_lvl4:      prune-codes/mapping_lvl4.parquet
+      annotations_train: prune-codes/annotations_train_pruned.parquet
+      annotations_test:  prune-codes/annotations_test_pruned.parquet
+      suggester:         prune-codes/suggester_pruned.parquet
+
+  classify-lcs:
+    inputs:
+      - classify-regex.test_without_regex
+      - classify-regex.train_without_regex
+    outputs:
+      predictions: classify-lcs/raw_test_LCS.parquet
+      analyse:     classify-lcs/analyse_codif_LCS.parquet
+      eval_dir:    classify-lcs/eval
+
+  classify-ttc:
+    inputs:  [classify-regex.test_without_regex]
+    outputs:
+      predictions: classify-ttc/predictions.parquet
+
+  classify-rag-notices:
+    inputs:
+      - prune-codes.annotations_test
+      - prune-codes.mapping_lvl4
+    outputs:
+      predictions:     classify-rag-notices/predictions.parquet
+      retrieved_codes: classify-rag-notices/retrieved_codes.parquet
+
+  classify-rag-annotations:
+    inputs:  [prune-codes.annotations_test]
+    outputs:
+      predictions: classify-rag-annotations/predictions.parquet
+
+  reconcile-llm:
+    inputs:
+      - classify-lcs.predictions
+      - classify-rag-notices.predictions
+      - classify-rag-annotations.predictions
+      - classify-ttc.predictions
+      - prune-codes.mapping_lvl4
+    outputs:
+      predictions: reconcile-llm/predictions.parquet
+
+  reconcile-sirus:
+    inputs:
+      - classify-lcs.predictions
+      - classify-rag-notices.predictions
+      - classify-rag-annotations.predictions
+      - classify-ttc.predictions
+      - classify-regex.test_without_regex
+      - prune-codes.mapping_lvl4
+    outputs:
+      predictions: reconcile-sirus/predictions.parquet
+
+  export-results:
+    inputs:
+      - classify-regex.predictions
+      - reconcile-llm.predictions
+      - reconcile-sirus.predictions
+      - prune-codes.mapping_lvl4
+    outputs:
+      # Le nom du fichier est celui du CSV d'entrée en production, d'où le
+      # gabarit : c'est le seul artefact non déductible du couple run_date/run_id.
+      deliverable: export-results/{filename}
+      predictions: export-results/predictions.parquet   # mode évaluation
+
+  report:
+    inputs:
+      - reconcile-llm.predictions
+      - reconcile-sirus.predictions
+    outputs:
+      html: report/report.html
+
+  # --- Étapes des deux pipelines d'indexation (run_id distinct) -------------
+
+  index-notices:
+    inputs:  [prune-codes.nomenclature]
+    outputs: {}     # produit une collection Qdrant + un manifeste, pas un fichier de run
+
+  index-annotations:
+    inputs:
+      - prune-codes.annotations_train
+      - prune-codes.suggester
+    outputs: {}

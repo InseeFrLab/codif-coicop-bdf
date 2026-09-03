@@ -1,0 +1,38 @@
+# Socle partagé par les modules du pipeline.
+#
+# Pourquoi un module à part plutôt que des copies : `expand_paths` existait en 4
+# exemplaires, `truncate_code` en 4, `vector_index.py` en 2 — recopiés à
+# l'identique, donc voués à diverger sans que personne ne s'en aperçoive.
+#
+# Ce module ne dépend d'AUCUN autre membre du workspace, et ne doit jamais en
+# dépendre : c'est ce qui garantit l'absence de cycle. Tous les autres peuvent
+# donc en dépendre librement.
+#
+# Le paquet importable s'appelle `codif_common` et non `common` : ce dernier est
+# trop générique dans le site-packages du consommateur, et un module
+# `common.logging` masquerait celui de la bibliothèque standard.
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/codif_common"]
+
+[tool.hatch.build.targets.editable]
+packages = ["src/codif_common"]
+
+[project]
+name = "codif-common"
+version = "0.1.0"
+description = "Socle partagé du pipeline de codification COICOP : chemins, codes, connexion S3, contrats"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "duckdb>=1.4.3",
+    "pandas>=2.3",
+    "pyyaml>=6.0",
+]
+
+# `tests/` existe : pytest ici pour que `uv sync --group dev` suffise.
+[dependency-groups]
+dev = ["pytest>=9.0.2"]

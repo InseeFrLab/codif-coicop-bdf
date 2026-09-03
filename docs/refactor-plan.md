@@ -271,9 +271,15 @@ Coût : appels LLM + GPU, marginal sur 100 observations mais non nul.
    alors que `build-datasets` et `classify-regex` tournaient en 3.0.x avant l'unification. Le jour
    où mlflow supporte pandas 3 : `uv lock --upgrade-package pandas`. Raison consignée dans le
    `pyproject.toml` racine.
-5. **CSV de 100 Mo dans git** : `classify-ttc/data/synthetic+gtin.csv`, utilisé seulement pour
-   l'entraînement, jamais par le pipeline. Le sortir (S3 ou git-LFS) allège les clones ; réécrire
-   l'historique est une décision à part (casse les forks et les PR en cours).
+5. **~109 Mo de CSV morts dans git** — *traité le 2026-09-02*. Quatre fichiers référencés par
+   aucun code ont été supprimés : `synthetic+gtin.csv` (100 Mo), `synthetic_data_9899.csv`
+   (8,1 Mo), `20260203-liste_produits_copain.csv`, `table_passage_coicop.csv`. Conservés parce
+   qu'ils servent réellement : `synthetic_data.csv` (entraînement) et les trois
+   `data/annotated/*.csv`, lus **par glob** et non par nom — `evaluation_report.py:123` fait
+   `directory.glob("*.csv")`, ce qu'une recherche par nom de fichier ne voit pas.
+   Reste ouvert : l'historique git porte toujours ces 109 Mo, donc un clone complet les
+   télécharge. Les purger exige de réécrire l'historique — décision à part, qui casse les forks
+   et les PR en cours. `git clone --depth 1`, ce que fait déjà le pipeline, l'évite.
 6. **Aucun run Argo depuis le workspace et le renommage.** C'est le préalable à tout le reste.
 
 ---

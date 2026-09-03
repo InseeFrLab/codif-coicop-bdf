@@ -10,7 +10,9 @@ dependencies = [
     "pyarrow>=16",
     "s3fs>=2024",
     "prune-codes",
+    "codif-common",
 ]
 
 [tool.uv.sources]
+codif-common = { workspace = true }
 prune-codes = { workspace = true }

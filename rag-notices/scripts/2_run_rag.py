@@ -25,7 +25,7 @@ import random
 
 from rag_notices.data.parsing import extract_json_from_response
 from rag_notices.utils import create_duckdb_connection, expand_paths, merge_eval_and_retreived, truncate_code
-from rag_notices.vector_index import validate_collection
+from codif_common.vector_index import validate_collection
 from rag_notices.eval.metrics import (
     compute_hierarchical_metrics,
     calculate_accuracy_at_level,

@@ -74,9 +74,20 @@ if DECIDE_PATH:
     df_decide = con.sql(f"SELECT * FROM read_parquet('{DECIDE_PATH}')").df()
 
 n_total = len(df)
-n_regex = int((df["prediction_source"] == "regex").sum()) if "prediction_source" in df.columns else 0
-n_consensus = int((df["prediction_source"] == "consensus").sum()) if "prediction_source" in df.columns else 0
-n_llm = int((df["prediction_source"] == "llm").sum()) if "prediction_source" in df.columns else 0
+# `prediction_source` vaut consensus|llm|regex en conciliation LLM, et
+# sirus|regex en conciliation SIRUS. Ne compter que les valeurs LLM affichait
+# « 0 % consensus, 0 % arbitrées » pour un run SIRUS parfaitement sain — un
+# chiffre faux, pas une erreur.
+_src = df["prediction_source"] if "prediction_source" in df.columns else None
+def _count(value):
+    return int((_src == value).sum()) if _src is not None else 0
+
+n_regex = _count("regex")
+n_consensus = _count("consensus")
+n_llm = _count("llm")
+n_sirus = _count("sirus")
+# Ce qu'a tranché la conciliation, quelle qu'elle soit.
+n_arbitre = n_llm + n_sirus
 n_errors = int(df_decide["llm_error"].notna().sum()) if df_decide is not None and "llm_error" in df_decide.columns else 0
 source_input_file = (
     df_decide["_source_input_file"].iloc[0]
@@ -190,7 +201,7 @@ def skip_judge_section():
 | Classifieurs amont | `{python} ", ".join(PREDICTORS) if PREDICTORS else "—"` |
 | Classées par regex | `{python} f"{n_regex:,} ({n_regex/n_total*100:.1f} %)".replace(",", " ") if n_total else "—"` |
 | Consensus automatique | `{python} f"{n_consensus:,} ({n_consensus/n_total*100:.1f} %)".replace(",", " ") if n_total else "—"` |
-| Arbitrées par le LLM | `{python} f"{n_llm:,} ({n_llm/n_total*100:.1f} %)".replace(",", " ") if n_total else "—"` |
+| Arbitrées par la conciliation | `{python} f"{n_arbitre:,} ({n_arbitre/n_total*100:.1f} %)".replace(",", " ") if n_total else "—"` |
 | Erreurs LLM | `{python} n_errors` |
 
 ## Distribution des prédictions par niveau COICOP
@@ -233,9 +244,9 @@ for lvl in LEVELS:
 fig, axes = plt.subplots(1, 2, figsize=(10, 4))
 
 # Left: 3-way source distribution
-src_labels = ["Regex", "Consensus", "LLM"]
-src_values = [n_regex, n_consensus, n_llm]
-src_colors = ["#FF9800", "#4CAF50", "#2196F3"]
+src_labels = ["Regex", "Consensus", "LLM", "SIRUS"]
+src_values = [n_regex, n_consensus, n_llm, n_sirus]
+src_colors = ["#FF9800", "#4CAF50", "#2196F3", "#9C27B0"]
 non_zero = [(l, v, c) for l, v, c in zip(src_labels, src_values, src_colors) if v > 0]
 if non_zero:
     lz, vz, cz = zip(*non_zero)

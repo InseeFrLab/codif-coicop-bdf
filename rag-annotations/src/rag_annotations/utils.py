@@ -11,54 +11,12 @@ import duckdb
 import pandas as pd
 from tqdm import tqdm
 
-
-def expand_paths(obj: Any, **kwargs: str) -> Any:
-    """Recursively apply str.format(**kwargs) to every string in a nested
-    dict/list structure. Used to substitute {run_id} / {run_date} in config
-    path templates."""
-    if isinstance(obj, dict):
-        return {k: expand_paths(v, **kwargs) for k, v in obj.items()}
-    if isinstance(obj, list):
-        return [expand_paths(v, **kwargs) for v in obj]
-    if isinstance(obj, str):
-        return obj.format(**kwargs)
-    return obj
-
-
-def create_duckdb_connection() -> duckdb.DuckDBPyConnection:
-    """
-    Create a DuckDB in-memory connection configured for S3/MinIO access.
-    """
-    con = duckdb.connect(database=":memory:")
-    con.execute(f"""
-        SET s3_access_key_id='{os.getenv("AWS_ACCESS_KEY_ID")}';
-        SET s3_secret_access_key='{os.getenv("AWS_SECRET_ACCESS_KEY")}';
-        SET s3_session_token='';
-        SET s3_endpoint='minio.lab.sspcloud.fr';
-        SET s3_region='us-east-1';
-    """)
-    return con
-
-
-def truncate_code(code: str, level: int) -> Optional[str]:
-    """
-    Truncate a dotted COICOP code to a hierarchical level.
-
-    e.g. truncate_code("01.1.2.3", 2) -> "01.1". Returns the code unchanged if
-    it is already at/below `level`, and None for invalid input.
-    """
-    if code is None or not isinstance(code, str) or code == "":
-        return None
-    parts = code.split(".")
-    if len(parts) <= level:
-        return code
-    return ".".join(parts[:level])
-
-
-def get_parents(code: str) -> List[str]:
-    """Return all parent codes of `code`, one per higher hierarchical level."""
-    code_level = len(code.split("."))
-    return [truncate_code(code, level) for level in range(1, code_level)]
+# Les fonctions génériques (chemins, codes, connexion S3) vivent désormais dans
+# `codif_common`, où elles ne sont écrites qu'une fois. Elles sont ré-exportées
+# ici pour que les imports existants continuent de fonctionner.
+from codif_common.codes import get_parents, truncate_code
+from codif_common.paths import expand_paths
+from codif_common.s3 import connect_env as create_duckdb_connection
 
 
 def embed_texts(client, model: str, texts: List[str], batch_size: int = 64) -> List[List[float]]:

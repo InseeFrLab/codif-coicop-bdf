@@ -18,6 +18,7 @@ import duckdb
 import openai
 import pandas as pd
 from openai import AsyncOpenAI, OpenAI
+from codif_common.schema import require_columns
 from prune_codes.pruning import trunc_and_prune_lvl4
 from pydantic import BaseModel, Field
 
@@ -315,21 +316,15 @@ def load_all_observations(
     rag_raw = _read_parquet(rag_path)
     ttc_raw = _read_parquet(ttc_path)
 
-    lcs = lcs_raw[
-        [
-            "id",
-            "raw_product",
-            "l_pr_product",
-            "shop",
-            "shop_type_name",
-            "budget",
-            "code",
-            "predict_code",
-            "distance",
-            "common_substring",
-            "prop_in_s2",
-        ]
-    ].rename(
+    # Frontière la plus chargée du pipeline, et la seule cross-langage :
+    # `classify-lcs` (R) écrit 19 colonnes en dur, on en lit 11 en dur ici.
+    LCS_COLUMNS = [
+        "id", "raw_product", "l_pr_product", "shop", "shop_type_name",
+        "budget", "code", "predict_code", "distance", "common_substring",
+        "prop_in_s2",
+    ]
+    require_columns(lcs_raw, LCS_COLUMNS, step="reconcile-llm", artifact=lcs_path)
+    lcs = lcs_raw[LCS_COLUMNS].rename(
         columns={
             "predict_code": "lcs_code",
             "distance": "lcs_distance",
@@ -338,16 +333,20 @@ def load_all_observations(
         }
     )
 
-    rag = rag_raw[["id", "code_predict", "confidence", "codable"]].rename(
+    RAG_COLUMNS = ["id", "code_predict", "confidence", "codable"]
+    require_columns(rag_raw, RAG_COLUMNS, step="reconcile-llm", artifact=rag_path)
+    rag = rag_raw[RAG_COLUMNS].rename(
         columns={
             "code_predict": "rag_code",
             "confidence": "rag_confidence",
         }
     )
 
+    # Les colonnes top-N n'existent que si classify-ttc a tourné avec --top-k > 1.
     ttc_cols = ["id", "predicted_code", "confidence"]
     for i in range(2, 4):
         ttc_cols += [f"predicted_code_top{i}", f"confidence_top{i}"]
+    require_columns(ttc_raw, ttc_cols, step="reconcile-llm", artifact=ttc_path)
     ttc = ttc_raw[ttc_cols].rename(
         columns={
             "predicted_code": "ttc_code_1",
@@ -364,7 +363,11 @@ def load_all_observations(
     # ──── BLOC RAG-ANNOTATIONS (optionnel) ────
     if rag_annotations_path is not None:
         ragann_raw = _read_parquet(rag_annotations_path)
-        ragann = ragann_raw[["id", "code_predict", "confidence", "codable"]].rename(
+        require_columns(
+            ragann_raw, RAG_COLUMNS,
+            step="reconcile-llm", artifact=rag_annotations_path,
+        )
+        ragann = ragann_raw[RAG_COLUMNS].rename(
             columns={
                 "code_predict": "ragann_code",
                 "confidence": "ragann_confidence",

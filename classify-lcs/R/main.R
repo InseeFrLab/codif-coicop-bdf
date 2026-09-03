@@ -15,6 +15,8 @@ if(!"ggplot2" %in% installed.packages()) install.packages("ggplot2")
 if(!"arrow" %in% installed.packages()) install.packages("arrow")
 if(!"future" %in% installed.packages()) install.packages("future")
 if(!"furrr" %in% installed.packages()) install.packages("furrr")
+# Lecture de contracts.yaml, le registre partagé avec les modules Python.
+if(!"yaml" %in% installed.packages()) install.packages("yaml")
 
 # Parse CLI args: --run-id=<id> --run-date=<YYYY-MM-DD>
 args <- commandArgs(trailingOnly = TRUE)
@@ -34,10 +36,23 @@ sample_size <- suppressWarnings(as.integer(parse_arg_opt("sample-size")))
 message(sprintf("run_id=%s, run_date=%s, sample_size=%s", run_id, run_date,
                 ifelse(is.na(sample_size), "NA", sample_size)))
 
-BUCKET <- "projet-budget-famille"
-run_root <- glue::glue("data/workflow_runs/{run_date}/{run_id}")
-path <- glue::glue("{run_root}/classify-regex/raw_test_without_regex.parquet")
-sug_path <- glue::glue("{run_root}/classify-regex/raw_train_without_regex.parquet")
+# Chemins lus dans le registre partagé (../contracts.yaml) plutôt qu'écrits en
+# dur ici. La syntaxe {run_date}/{run_id} du registre est celle de glue::glue()
+# comme celle de str.format() côté Python : aucune conversion.
+contracts <- yaml::read_yaml("../contracts.yaml")
+BUCKET <- Sys.getenv("COICOP_BUCKET", unset = contracts$bucket)
+run_root <- glue::glue(contracts$run_root)
+
+# `aws.s3` veut bucket et objet séparés, contrairement aux URI complètes des
+# configs Python : le registre stocke donc des chemins relatifs.
+artifact <- function(step, key) {
+  rel <- contracts$steps[[step]]$outputs[[key]]
+  if (is.null(rel)) stop(glue::glue("Artefact {step}.{key} absent de contracts.yaml"))
+  glue::glue("{run_root}/{rel}")
+}
+
+path <- artifact("classify-regex", "test_without_regex")
+sug_path <- artifact("classify-regex", "train_without_regex")
 lcs_output_dir <- glue::glue("{run_root}/classify-lcs")
   
 source("R/fonctions.R", encoding = "UTF-8")
@@ -82,7 +97,12 @@ if (!is.na(sample_size) && sample_size > 0 && sample_size < nrow(observations)) 
 
 # En mode prédiction, le suggester est dans un fichier dédié (bypass classify-regex).
 # On essaie ce fichier en premier ; si absent (mode normal), on lit depuis raw_train_without_regex.
-suggester_override <- glue::glue("{run_root}/suggester.parquet")
+#
+# Ce chemin était FAUX : il cherchait `{run_root}/suggester.parquet` alors que
+# build-datasets écrit sous `build-datasets/`. Le tryCatch ci-dessous avalait
+# l'erreur, la branche n'était donc JAMAIS prise — sans un message. Le registre
+# rend le décalage impossible : `artifact()` lève si la clé n'existe pas.
+suggester_override <- artifact("build-datasets", "suggester")
 use_override <- tryCatch({
   DBI::dbGetQuery(con, glue::glue(
     "SELECT COUNT(*) > 0 AS has_rows FROM read_parquet('s3://{BUCKET}/{suggester_override}')"

@@ -18,7 +18,11 @@ dependencies = [
     "duckdb>=1.4.3",
     "pandas>=2.3.3",
     "pyyaml>=6.0",
+    "codif-common",
 ]
+
+[tool.uv.sources]
+codif-common = { workspace = true }
 
 # `tests/` existe : pytest est déclaré ici pour que
 # `uv sync --group dev` suffise à lancer la suite. Le pipeline installe

@@ -49,6 +49,8 @@ package = false
 members = [
     "build-datasets",
     "classify-regex",
+    # Socle partagé : ne dépend d'aucun autre membre, donc aucun cycle possible.
+    "common",
     "classify-ttc",
     "export-results",
     "prune-codes",

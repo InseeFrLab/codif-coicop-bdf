@@ -1,12 +1,11 @@
 """Tests de la règle de nommage des collections Qdrant.
 
-`vector_index.py` est dupliqué à l'identique dans `rag_notices` et
-`rag_annotations`. Ce test fixe la forme du nom pour les deux usages réels
-(notices sans mode, annotations avec mode) afin qu'une modification d'un côté
-qui ne serait pas reportée de l'autre se voie.
+`vector_index.py` vit dans `codif_common` et sert aux deux pipelines
+d'indexation. Ce test fixe la forme du nom pour les deux usages réels :
+notices sans périmètre, annotations avec.
 """
 
-from rag_notices.vector_index import build_collection_name, manifest_uri
+from codif_common.vector_index import build_collection_name, manifest_uri
 
 
 class TestBuildCollectionName:

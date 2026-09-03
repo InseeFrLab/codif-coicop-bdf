@@ -11,9 +11,11 @@ dependencies = [
     "pyarrow>=16",
     "pydantic>=2.9",
     "prune-codes",
+    "codif-common",
 ]
 
 [tool.uv.sources]
+codif-common = { workspace = true }
 prune-codes = { workspace = true }
 
 # Rend `reconcile_llm` importable depuis un module frère : `reconcile-sirus/` réutilise

@@ -30,6 +30,8 @@ from __future__ import annotations
 import json
 from datetime import datetime
 
+import logging
+
 import numpy as np
 import pandas as pd
 from prune_codes.utils import ABSTENTION_SENTINELS as prune_abstention_sentinels
@@ -132,11 +134,19 @@ def truth_column(data: pd.DataFrame) -> str:
     against a raw annotation ``01.3.0.0.1`` and counted wrong. Falls back to the
     raw ``code`` for runs produced before ``code_lvl4`` existed.
     """
-    return (
-        TRUTH_COL_CANONICAL
-        if TRUTH_COL_CANONICAL in data.columns
-        else TRUTH_COL_RAW
+    if TRUTH_COL_CANONICAL in data.columns:
+        return TRUTH_COL_CANONICAL
+    # Le repli n'est PAS anodin : `code_lvl4` n'existe que si `--mapping-file` a
+    # été passé à reconcile-llm. L'oublier ne casse rien, ça fait juste chuter
+    # l'accuracy de tout le rapport — d'où l'avertissement, faute de pouvoir
+    # distinguer ici un run ancien (repli légitime) d'un flag oublié.
+    logging.getLogger(__name__).warning(
+        "%s absent : mesure contre %s, l'espace de codes brut. Accuracy "
+        "sous-estimée si les prédictions sont canoniques. Vérifier que "
+        "reconcile-llm a bien reçu --mapping-file.",
+        TRUTH_COL_CANONICAL, TRUTH_COL_RAW,
     )
+    return TRUTH_COL_RAW
 
 
 def code_parts(s) -> list[str]:

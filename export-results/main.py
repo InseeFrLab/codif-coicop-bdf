@@ -5,13 +5,14 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-from textwrap import dedent
 
 import duckdb
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 import s3fs
+from codif_common.contracts import artifact, run_root as contracts_run_root
+from codif_common.s3 import connect_secret as init_duckdb, resolve_endpoint
 from prune_codes.pruning import trunc_and_prune_lvl4
 
 
@@ -33,7 +34,11 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--run-id", required=True)
     p.add_argument("--run-date", required=True)
-    p.add_argument("--bucket", default="projet-budget-famille")
+    p.add_argument(
+        "--bucket",
+        default=None,
+        help="Surcharge le bucket du registre (contracts.yaml). Équivalent à $COICOP_BUCKET.",
+    )
     p.add_argument("--text-column", default="raw_product",
                    help="Original input column name for product text")
     p.add_argument("--shop-column", default="shop",
@@ -89,30 +94,6 @@ DECISION_SCHEMAS = {
 }
 
 
-def init_duckdb() -> duckdb.DuckDBPyConnection:
-    endpoint = (
-        os.environ.get("AWS_S3_ENDPOINT")
-        or os.environ.get("AWS_ENDPOINT_URL", "").replace("https://", "").replace("http://", "")
-        or "minio.lab.sspcloud.fr"
-    )
-    con = duckdb.connect()
-    con.sql("INSTALL httpfs; LOAD httpfs;")
-    con.sql(
-        dedent(f"""
-            CREATE OR REPLACE SECRET s3_secret (
-                TYPE s3,
-                KEY_ID '{os.environ.get("AWS_ACCESS_KEY_ID", "")}',
-                SECRET '{os.environ.get("AWS_SECRET_ACCESS_KEY", "")}',
-                SESSION_TOKEN '{os.environ.get("AWS_SESSION_TOKEN", "")}',
-                ENDPOINT '{endpoint}',
-                URL_STYLE 'path',
-                USE_SSL true
-            );
-        """)
-    )
-    return con
-
-
 def _fs() -> s3fs.S3FileSystem:
     endpoint = os.environ.get("AWS_S3_ENDPOINT") or os.environ.get("AWS_ENDPOINT_URL")
     if endpoint and not endpoint.startswith("http"):
@@ -137,14 +118,19 @@ def export_csv(df: pd.DataFrame, s3_uri: str) -> None:
 
 def main() -> int:
     args = parse_args()
-    run_root = f"s3://{args.bucket}/data/workflow_runs/{args.run_date}/{args.run_id}"
+    # Chemins depuis le registre : cette étape en désignait 4 en dur, dont
+    # `mapping_lvl4.parquet`, invisible aussi bien dans les configs que dans le YAML.
+    if args.bucket:
+        os.environ["COICOP_BUCKET"] = args.bucket
+    RUN = {"run_date": args.run_date, "run_id": args.run_id}
+    run_root = contracts_run_root(**RUN)
     con = init_duckdb()
 
     # Base: all user columns from the preprocessing output (strip internal pipeline columns).
     # Production (--input-file) : les observations à coder (observations.parquet) ;
     # évaluation : le split test des annotations (raw_test.parquet).
-    base_file = "observations.parquet" if args.input_file else "raw_test.parquet"
-    base_path = f"{run_root}/build-datasets/{base_file}"
+    base_key = "observations" if args.input_file else "raw_test"
+    base_path = artifact("build-datasets", base_key, **RUN)
     print(f"[export-results] loading base: {base_path}", flush=True)
     # Read full first to capture _source_input_file before stripping
     observations = con.sql(f"SELECT * FROM read_parquet('{base_path}')").df()
@@ -158,17 +144,17 @@ def main() -> int:
     print(f"[export-results] base: {len(raw)} rows, {len(initial_cols)} columns", flush=True)
 
     # Regex predictions: rows classified by regex
-    print(f"[export-results] loading regex predictions: {run_root}/classify-regex/REGEX_pred.parquet", flush=True)
+    print(f"[export-results] loading regex predictions: {artifact("classify-regex", "predictions", **RUN)}", flush=True)
     regex = con.sql(f"""
         SELECT id, predict_code
-        FROM read_parquet('{run_root}/classify-regex/REGEX_pred.parquet')
+        FROM read_parquet('{artifact("classify-regex", "predictions", **RUN)}')
         WHERE predict_code IS NOT NULL
     """).df()
     print(f"[export-results] regex predictions: {len(regex)} rows", flush=True)
 
     # Décisions de la conciliation retenue (reconcile-llm ou reconcile-sirus).
     schema = DECISION_SCHEMAS[args.decision_source]
-    decision_path = args.decision_file or f"{run_root}/{schema['step']}/predictions.parquet"
+    decision_path = args.decision_file or artifact(schema["step"], "predictions", **RUN)
     cols = [c for c in (schema["code"], schema["comment"], schema["confidence"], schema["regime"]) if c]
     print(
         f"[export-results] loading {args.decision_source} decisions: {decision_path}",
@@ -230,7 +216,7 @@ def main() -> int:
     # linéaires, en réutilisant la logique centralisée du module `prune`. Garantit
     # que la sortie ne contient que des codes prunés (idempotent sur un code déjà
     # pruné ; les codes NA restent NA).
-    mapping_path = f"{run_root}/prune-codes/mapping_lvl4.parquet"
+    mapping_path = artifact("prune-codes", "mapping_lvl4", **RUN)
     print(f"[export-results] pruning final codes with: {mapping_path}", flush=True)
     mapping = con.sql(f"SELECT * FROM read_parquet('{mapping_path}')").df()
     result = trunc_and_prune_lvl4(result, mapping, code_name="predicted_code")
@@ -263,7 +249,7 @@ def main() -> int:
 
     # Export with original input filename and format
     output_basename = os.path.basename(input_file_path) if input_file_path else "predictions.parquet"
-    output_uri = f"{run_root}/export-results/{output_basename}"
+    output_uri = artifact("export-results", "deliverable", **RUN, filename=output_basename)
     print(f"[export-results] output file: {output_uri}", flush=True)
 
     if output_basename.lower().endswith(".csv"):

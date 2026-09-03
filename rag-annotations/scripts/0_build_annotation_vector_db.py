@@ -38,7 +38,7 @@ from rag_annotations.utils import (
     embed_texts,
     expand_paths,
 )
-from rag_annotations.vector_index import (
+from codif_common.vector_index import (
     build_collection_name,
     dumps,
     git_sha,

@@ -3,36 +3,12 @@ from typing import Any, List, Dict, Optional
 import pandas as pd
 import duckdb
 
-
-def expand_paths(obj: Any, **kwargs: str) -> Any:
-    """Recursively apply str.format(**kwargs) to every string in a nested
-    dict/list structure. Used to substitute {run_id} / {run_date} in config
-    path templates."""
-    if isinstance(obj, dict):
-        return {k: expand_paths(v, **kwargs) for k, v in obj.items()}
-    if isinstance(obj, list):
-        return [expand_paths(v, **kwargs) for v in obj]
-    if isinstance(obj, str):
-        return obj.format(**kwargs)
-    return obj
-
-
-def create_duckdb_connection() -> duckdb.DuckDBPyConnection:
-    """
-    Create a DuckDB in-memory connection configured for S3/MinIO access.
-    Returns:
-        Configured DuckDB connection.
-    """
-    con = duckdb.connect(database=":memory:")
-
-    con.execute(f"""
-        SET s3_access_key_id='{os.getenv("AWS_ACCESS_KEY_ID")}';
-        SET s3_secret_access_key='{os.getenv("AWS_SECRET_ACCESS_KEY")}';
-        SET s3_session_token='';
-        SET s3_endpoint='minio.lab.sspcloud.fr';
-        SET s3_region='us-east-1';
-    """)
-    return con
+# Les fonctions génériques (chemins, codes, connexion S3) vivent désormais dans
+# `codif_common`, où elles ne sont écrites qu'une fois. Elles sont ré-exportées
+# ici pour que les imports existants continuent de fonctionner.
+from codif_common.codes import get_parents, truncate_code
+from codif_common.paths import expand_paths
+from codif_common.s3 import connect_env as create_duckdb_connection
 
 
 def merge_eval_and_retreived(
@@ -77,47 +53,3 @@ def merge_eval_and_retreived(
     return df_eval.to_dict('records')
 
 
-def truncate_code(code: str, level: int) -> Optional[str]:
-    """
-    Truncate code to specified hierarchical level
-    
-    Args:
-        code: Full code (e.g., '08.1.2.3.4' or '08.1.6')
-        level: Level to truncate to (1-5)
-    
-    Returns:
-        Truncated code or original if already at or below target level,
-        None if invalid
-    """
-    if code is None or not isinstance(code, str) or code == '':
-        return None
-    
-    # Split by dot separator
-    parts = code.split('.')
-    
-    # If code is already at or below target level, return as-is
-    if len(parts) <= level:
-        return code
-    
-    # Otherwise truncate to target level
-    return '.'.join(parts[:level])
-
-def get_parents(code: str) -> List[str]:
-    """
-    Get all parent codes for a given code by truncating at each hierarchical level.
-
-    Args:
-        code: The full hierarchical code (e.g., '08.1.2.3.4' or '08.1.6')
-
-    Returns:
-        List of parent codes, each representing a higher level in the hierarchy.
-        Returns empty list if input is invalid or has no parents.
-    """
-    code_level = len(code.split('.'))
-    parents = []
-    for level in range(1, code_level):
-        parents.append(
-            truncate_code(code, level)
-        )
-
-    return parents

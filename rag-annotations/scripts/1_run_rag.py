@@ -51,7 +51,7 @@ from rag_annotations.utils import (
     expand_paths,
     is_present,
 )
-from rag_annotations.vector_index import validate_collection
+from codif_common.vector_index import validate_collection
 
 
 def setup_argument_parser():

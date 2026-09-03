@@ -7,7 +7,6 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from textwrap import dedent
 from urllib.parse import urlparse
 
 import boto3
@@ -36,8 +35,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--run-date", required=True)
     p.add_argument(
         "--bucket",
-        default="projet-budget-famille",
-        help="S3 bucket that holds workflow_runs (default: projet-budget-famille)",
+        default=None,
+        help="Surcharge le bucket du registre (contracts.yaml). Équivalent à $COICOP_BUCKET.",
     )
     p.add_argument(
         "--input-file",
@@ -91,32 +90,10 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def s3_endpoint() -> str:
-    return (
-        os.environ.get("AWS_S3_ENDPOINT")
-        or os.environ.get("AWS_ENDPOINT_URL", "").replace("https://", "").replace("http://", "")
-        or "minio.lab.sspcloud.fr"
-    )
-
 
 def connect_s3() -> duckdb.DuckDBPyConnection:
-    """DuckDB connection configured to read parquet from the S3 bucket."""
-    con = duckdb.connect()
-    con.sql("INSTALL httpfs; LOAD httpfs;")
-    con.sql(
-        dedent(f"""
-            CREATE OR REPLACE SECRET s3_secret (
-                TYPE s3,
-                KEY_ID '{os.environ.get("AWS_ACCESS_KEY_ID", "")}',
-                SECRET '{os.environ.get("AWS_SECRET_ACCESS_KEY", "")}',
-                SESSION_TOKEN '{os.environ.get("AWS_SESSION_TOKEN", "")}',
-                ENDPOINT '{s3_endpoint()}',
-                URL_STYLE 'path',
-                USE_SSL true
-            );
-        """)
-    )
-    return con
+    """Connexion DuckDB configurée pour lire les parquet du bucket S3."""
+    return connect_secret()
 
 
 def s3_client():
@@ -315,15 +292,18 @@ def log_to_mlflow(args, run_root, output_s3, decide_path, prediction) -> None:
 
 def main() -> int:
     args = parse_args()
-    run_root = f"s3://{args.bucket}/data/workflow_runs/{args.run_date}/{args.run_id}"
+    if args.bucket:
+        os.environ["COICOP_BUCKET"] = args.bucket
+    RUN = {"run_date": args.run_date, "run_id": args.run_id}
+    run_root = contracts_run_root(**RUN)
     # Les deux conciliations sont exclusives (paramètre Argo `reconciliation`) :
     # on lit celle qui a effectivement tourné. Le fichier porte, dans les deux
     # cas, la table fusionnée complète — donc le rapport peut scorer les 4
     # classifieurs de base à l'identique.
     conciliation_step = "reconcile-sirus" if args.reconciliation == "sirus" else "reconcile-llm"
-    decide_path = f"{run_root}/{conciliation_step}/predictions.parquet"
-    final_output_path = f"{run_root}/export-results/predictions.parquet"
-    output_s3 = f"{run_root}/report/report.html"
+    decide_path = artifact(conciliation_step, "predictions", **RUN)
+    final_output_path = artifact("export-results", "predictions", **RUN)
+    output_s3 = artifact("report", "html", **RUN)
 
     here = Path(__file__).resolve().parent
     out_html = here / "report.html"
@@ -343,7 +323,10 @@ def main() -> int:
     qmd = "prediction_report.qmd" if prediction else "report.qmd"
     if prediction:
         if args.input_file:
-            final_output_path = f"{run_root}/export-results/{os.path.basename(args.input_file)}"
+            final_output_path = artifact(
+                "export-results", "deliverable", **RUN,
+                filename=os.path.basename(args.input_file),
+            )
         env["REPORT_INPUT_PATH"] = final_output_path
         env["REPORT_DECIDE_PATH"] = decide_path
         print(f"[report] reconcile-llm input (qmd): {decide_path}", flush=True)

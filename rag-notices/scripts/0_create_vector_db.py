@@ -15,7 +15,7 @@ from qdrant_client.models import Distance, VectorParams, PointStruct
 
 from rag_notices.data.coicop_document import CoicopDocument
 from rag_notices.utils import create_duckdb_connection, expand_paths, get_parents
-from rag_notices.vector_index import (
+from codif_common.vector_index import (
     build_collection_name,
     dumps,
     git_sha,
