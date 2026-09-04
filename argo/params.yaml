@@ -14,7 +14,8 @@ git-branch: refactor
 
 # --- Input ----------------------------------------------------------------
 # OBLIGATOIRE. Le pipeline n'a plus qu'un mode : il code ce fichier.
-input_file: s3://projet-budget-famille/data/workflow_inputs/BDF_data_saisie_vague1_a_codif.csv
+# input_file: s3://projet-budget-famille/data/workflow_inputs/BDF_data_saisie_vague1_a_codif.csv
+input_file: s3://projet-budget-famille/data/annotations_vague1_2026/as_new_input/annotations_vague1_2026_a_codif.parquet
 
 text_column: NAT_DEP        # label column to classify
 shop_column: MAG_DEP        # shop column
@@ -57,14 +58,15 @@ classify-rag-annotations-collection: "coicop_annotations__full__2026-09-02__inde
 # une colonne d'étiquettes. La renseigner ici suffit à déclencher l'étape
 # `evaluate` : rapport HTML sur S3 + métriques dans MLflow. Vide = étape sautée,
 # ce qui est le cas nominal de production.
-# label-column: "code"
+label-column: "code_previous"
 
 # Dimension d'analyse : accuracy ventilée par provenance du produit. Ne
 # restreint jamais le périmètre codé. Vide = section omise du rapport.
 # eval-source-column: "source"
+eval-source-column: ""
 
 # skip-eval: "false"        # "true" pour sauter l'évaluation malgré label-column
-# eval-experiment: codif-coicop-eval
+eval-experiment: codif-coicop-eval
 
 # --- Optional steps -------------------------------------------------------
 skip-report: "false"        # "true" to skip the Quarto report

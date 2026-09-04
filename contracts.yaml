@@ -53,7 +53,6 @@ steps:
       predictions:        classify-regex/REGEX_pred.parquet
       test_without_regex: classify-regex/raw_test_without_regex.parquet
       train_without_regex: classify-regex/raw_train_without_regex.parquet
-      errors:             classify-regex/error_regex_pred.parquet
 
   prune-codes:
     inputs:
@@ -143,9 +142,19 @@ steps:
     inputs:
       - reconcile-llm.predictions
       - reconcile-sirus.predictions
+      # `predictions` porte parsed/codable/confidence, que la fusion de
+      # reconcile-llm laisse tomber ; `retrieved_codes` porte ce que le
+      # retriever a ramené. Sans eux, pas de décomposition interne.
+      - classify-rag-notices.predictions
       - classify-rag-notices.retrieved_codes
       - classify-rag-annotations.predictions
+      # Le livrable est le seul à contenir les lignes captées par la regex,
+      # mais `export-results` en retire la vérité terrain (PIPELINE_COLS) :
+      # elle est rejointe depuis `observations`, puis rendue canonique par le
+      # mapping. C'est ce qui rend l'accuracy de bout en bout calculable.
       - export-results.deliverable
+      - build-datasets.observations
+      - prune-codes.mapping_lvl4
     outputs:
       html: evaluate/evaluation_report.html
 

@@ -2,7 +2,6 @@ paths:
   # KB = toutes les annotations ; à coder = les observations du fichier d'entrée.
   train_set_prod: "s3://projet-budget-famille/data/workflow_runs/{run_date}/{run_id}/build-datasets/annotations_full.parquet"
   test_set_prod:  "s3://projet-budget-famille/data/workflow_runs/{run_date}/{run_id}/build-datasets/observations.parquet"
-  error_pred: "s3://projet-budget-famille/data/workflow_runs/{run_date}/{run_id}/classify-regex/error_regex_pred.parquet"
   output:
     pred:      "s3://projet-budget-famille/data/workflow_runs/{run_date}/{run_id}/classify-regex/REGEX_pred.parquet"
     test_set:  "s3://projet-budget-famille/data/workflow_runs/{run_date}/{run_id}/classify-regex/raw_test_without_regex.parquet"

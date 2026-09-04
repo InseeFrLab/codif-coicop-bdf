@@ -61,9 +61,12 @@ RUN_DATE = os.environ.get("EVAL_RUN_DATE", "(inconnu)")
 # ni les codes récupérés par les RAG (retirés à la fusion) ni les lignes captées
 # par la regex (elles n'entrent jamais dans la chaîne). Sans eux, pas de recall
 # de retrieval ni d'accuracy de bout en bout — mais le rapport reste lisible.
+RAGNOTICES_PATH = os.environ.get("EVAL_RAGNOTICES_PATH") or None
 RETRIEVED_PATH = os.environ.get("EVAL_RETRIEVED_PATH") or None
 RAGANN_PATH = os.environ.get("EVAL_RAGANN_PATH") or None
 DELIVERABLE_PATH = os.environ.get("EVAL_DELIVERABLE_PATH") or None
+OBSERVATIONS_PATH = os.environ.get("EVAL_OBSERVATIONS_PATH") or None
+MAPPING_PATH = os.environ.get("EVAL_MAPPING_PATH") or None
 
 # Ventilation par provenance du produit. Vide : la section est omise. Ce
 # paramètre ne restreint jamais le périmètre codé — c'est une dimension
@@ -624,6 +627,253 @@ if len(scored_b) >= 10:
 else:
     md = "_Pas assez de valeurs non-nulles de `budget` pour former des déciles._"
 Markdown(md)
+```
+
+## Décomposition interne des classifieurs
+
+Les tableaux précédents disent **combien** chaque brique se trompe. Ils ne disent pas **où**, et c'est pourtant là que se décide quoi corriger.
+
+Un RAG à 70 % peut être deux choses très différentes : un retriever qui ne ramène jamais la bonne réponse — auquel cas aucun prompt ne le sauvera — ou un générateur qui la voit dans sa liste et choisit autre chose. Les corrections sont opposées : réindexer et augmenter le nombre de voisins d'un côté, retoucher le prompt de l'autre. Le chiffre agrégé ne permet pas de trancher.
+
+Ces indicateurs existaient : chaque étape de classification loguait les siens, dans sa propre expérience MLflow, sur son propre périmètre et avec sa propre convention. Ils étaient donc **incomparables entre briques**, et invisibles dans le rapport. Ils sont rapatriés ici, calculés sur les mêmes lignes et la même vérité canonique que tout le reste.
+
+```{python}
+# | label: setup-internals
+import internals as I
+
+# Prédictions et vérité viennent du parquet de conciliation — les colonnes que
+# le reste du rapport score, donc les chiffres se raccordent. `parsed`,
+# `codable` et les codes récupérés ne survivent pas à la fusion : ils sont
+# rejoints depuis les parquets des étapes elles-mêmes.
+RECORDS = I.load_classifier_records(
+    con, scorable, TRUTH,
+    ragnotices_path=RAGNOTICES_PATH,
+    retrieved_path=RETRIEVED_PATH,
+    ragann_path=RAGANN_PATH,
+)
+HIER = {name: I.hierarchical(recs) for name, recs in RECORDS.items()}
+WITH_RETRIEVAL = [
+    name for name, recs in RECORDS.items()
+    if any(r["list_retrieved_codes"] for r in recs)
+]
+Markdown(
+    f"Briques analysées : **{', '.join(RECORDS) or 'aucune'}**. "
+    + (
+        f"Codes récupérés disponibles pour : **{', '.join(WITH_RETRIEVAL)}**."
+        if WITH_RETRIEVAL
+        else "*Aucun artefact de retrieval trouvé : la section suivante est omise.*"
+    )
+)
+```
+
+### Ce que le retriever ramène, et ce que le générateur en fait
+
+Trois colonnes, et c'est leur écart qui informe :
+
+- le **recall du retriever** est la part des lignes dont la bonne réponse figure dans la liste récupérée : la matière dont dispose le générateur. Ce n'est **pas** un plafond strict — la consigne de reprendre un candidat à l'identique est incitative, pas structurelle, et un modèle peut produire un code juste absent de la liste. Quand l'accuracy dépasse le recall, l'écart mesure précisément cette part ;
+- l'**accuracy si récupéré** mesure, sur ces lignes-là seulement, à quelle fréquence le modèle choisit effectivement la bonne réponse. C'est la qualité de la **génération**, débarrassée des échecs du retriever ;
+- l'**accuracy** est le produit des deux — le chiffre habituel.
+
+Un recall bas avec une accuracy-si-récupéré haute désigne l'index — réindexer, changer l'embedding, augmenter le nombre de voisins. L'inverse désigne le prompt.
+
+```{python}
+# | label: tbl-retrieval
+if not WITH_RETRIEVAL:
+    out = "*Section omise : aucun code récupéré n'est disponible pour ce run.*"
+else:
+    blocks = []
+    for name in WITH_RETRIEVAL:
+        tbl = I.retrieval_table(HIER[name])
+        blocks.append(
+            f"**{name}**\n\n"
+            + tbl.to_markdown(floatfmt=(".0f", ".1%", ".1%", ".1%", ".1%"),
+                              missingval="—")
+        )
+    out = "\n\n".join(blocks)
+Markdown(out)
+```
+
+```{python}
+# | label: fig-retrieval
+if WITH_RETRIEVAL:
+    rows = []
+    for name in WITH_RETRIEVAL:
+        tbl = I.retrieval_table(HIER[name]).reset_index()
+        for _, r in tbl.iterrows():
+            for label, col in (
+                ("recall du retriever", "recall du retriever"),
+                ("accuracy si récupéré", "accuracy si récupéré"),
+                ("accuracy", "accuracy"),
+            ):
+                if pd.notna(r[col]):
+                    rows.append({"brique": name, "niveau": int(r["niveau"]),
+                                 "indicateur": label, "valeur": r[col]})
+    plot = pd.DataFrame(rows)
+    if len(plot):
+        g = sns.catplot(plot, x="niveau", y="valeur", hue="indicateur",
+                        col="brique", kind="bar", height=3.6, aspect=1.15)
+        g.set(ylim=(0, 1))
+        g.set_axis_labels("niveau COICOP", "")
+        g.legend.set_title("")
+        plt.tight_layout()
+        plt.show()
+```
+
+::: {.callout-note}
+## Pourquoi le recall ne bouge presque pas entre niveaux
+Un code récupéré compte dès que son préfixe au niveau `k` correspond à celui de la vérité. Plus `k` est petit, plus la correspondance est facile — le recall est donc décroissant en `k`, jamais l'inverse. S'il est constant, c'est que les codes de l'index et la vérité partagent déjà leur préfixe court : la difficulté est entièrement dans les derniers segments.
+:::
+
+### Régimes de réponse : quatre façons d'échouer
+
+Un RAG peut manquer une ligne de quatre manières distinctes, que l'accuracy globale additionne sans les distinguer : ne pas rendre de JSON exploitable, déclarer la ligne non codable, répondre avec une confiance basse, ou simplement se tromper.
+
+Lire la colonne `n` autant que l'accuracy. Une accuracy qui monte de régime en régime **sur une population qui fond** n'est pas une amélioration : c'est une sélection. Ce qu'elle mesure, c'est la capacité de la brique à savoir quand elle ne sait pas.
+
+```{python}
+# | label: tbl-regimes
+blocks = []
+for name, overall in HIER.items():
+    tbl = I.regime_table(overall)
+    if not len(tbl) or tbl["n"].max() == 0:
+        continue
+    # Une brique sans `parsed` ni `codable` (TTC, LCS) a tous ses régimes
+    # identiques : l'afficher n'apprendrait rien.
+    if tbl["n"].nunique() == 1:
+        continue
+    blocks.append(
+        f"**{name}**\n\n"
+        + tbl.to_markdown(floatfmt=(".0f", ".0f", ".1%", ".1%", ".1%"), missingval="—")
+    )
+Markdown(
+    "\n\n".join(blocks)
+    if blocks
+    else "*Aucune brique de ce run ne porte les drapeaux `parsed` / `codable`.*"
+)
+```
+
+### La confiance sépare-t-elle le juste du faux ?
+
+Une confiance n'a d'utilité que si elle **trie**. L'AUROC répond exactement à cette question : c'est la probabilité qu'une prédiction correcte porte une confiance plus élevée qu'une prédiction fausse.
+
+| AUROC | Lecture |
+|---|---|
+| ≈ 0,5 | la confiance n'apprend rien — ne fonder **aucun** seuil dessus |
+| 0,6 – 0,7 | signal faible, exploitable seulement en appoint |
+| > 0,7 | la confiance trie utilement ce qui part en relecture |
+| < 0,5 | la confiance est **inversée** : anomalie à investiguer, pas à exploiter |
+
+Seules les confiances de l'échelle [0, 1] figurent ici, donc directement comparables. `llm_confiance` (entier de 1 à 5) et `sirus_proba` ont chacun leur propre section de calibration plus bas ; les mêler à celles-ci produirait des seuils qui ne veulent rien dire.
+
+```{python}
+# | label: tbl-confidence-auroc
+conf_tbl = I.confidence_table(RECORDS)
+Markdown(
+    "**Pouvoir discriminant de la confiance de chaque brique** "
+    f"(justesse évaluée au niveau {I.TARGET_LEVEL}).\n\n"
+    + conf_tbl.to_markdown(floatfmt=(".0f", ".0f", ".3f", ".3f", ".3f", "+.3f"),
+                           missingval="—")
+    if len(conf_tbl)
+    else "*Aucune brique de ce run ne porte de score de confiance dans [0, 1].*"
+)
+```
+
+Ce que l'AUROC ne dit pas : **où** placer le seuil. C'est le rôle du balayage ci-dessous — pour chaque seuil, ce qu'il reste de volume et ce qu'on gagne en exactitude. C'est cette table qui instruit une décision de relecture.
+
+```{python}
+# | label: tbl-confidence-sweep
+blocks = []
+for name in conf_tbl.index if len(conf_tbl) else []:
+    sweep = I.threshold_sweep_table(RECORDS[name])
+    if not len(sweep):
+        continue
+    blocks.append(
+        f"**{name}**\n\n"
+        + sweep.to_markdown(floatfmt=(".1f", ".1%", ".0f", ".1%", ".1%"),
+                            missingval="—")
+    )
+Markdown("\n\n".join(blocks) if blocks else "*Pas de balayage de seuil disponible.*")
+```
+
+### Le refus déclaré : le drapeau `codable`
+
+Les deux RAG peuvent annoncer qu'aucun candidat ne convient. Ce refus n'a de valeur que si les lignes qu'il retient sont **plus souvent justes** que l'ensemble — c'est le `lift`. Un lift proche de zéro signifie que la brique refuse au hasard, et que le drapeau ne doit pas servir de filtre.
+
+```{python}
+# | label: tbl-codable
+cod_tbl = I.codable_table(RECORDS)
+Markdown(
+    "**Fiabilité du refus déclaré.** `lift` = accuracy sur `codable=vrai` moins "
+    "l'accuracy globale.\n\n"
+    + cod_tbl.to_markdown(floatfmt=(".0f", ".1%", ".0f", ".1%", ".1%", ".1%", "+.1%"),
+                          missingval="—")
+    if len(cod_tbl)
+    else "*Aucune brique de ce run ne porte le drapeau `codable`.*"
+)
+```
+
+### Distorsion de la distribution des codes
+
+Une brique peut afficher une accuracy correcte tout en **déformant la répartition des postes** : sur-représenter une catégorie fréquente, en ignorer une rare. L'accuracy n'y est pas sensible — un poste rare pèse peu — mais l'usage statistique aval, lui, l'est.
+
+`TV` est la distance en variation totale entre la distribution vraie et la prédite (0 = identiques, 1 = disjointes) ; `KL` la divergence de Kullback-Leibler. Les lignes déclarées non codables sont exclues : leur prédiction n'est pas une opinion.
+
+```{python}
+# | label: tbl-distortion
+parts = []
+for lvl in (1, 2):
+    tbl = I.distortion_table(RECORDS, lvl)
+    if len(tbl):
+        parts.append(tbl)
+out = (
+    "**Distorsion de distribution aux niveaux 1 et 2.**\n\n"
+    + pd.concat(parts, axis=1).to_markdown(floatfmt=".4f", missingval="—")
+    if parts
+    else "*Distorsion non calculable sur ce run.*"
+)
+Markdown(out)
+```
+
+```{python}
+# | label: tbl-worst-distorted
+blocks = []
+for name in RECORDS:
+    worst = I.worst_distorted(RECORDS[name], level=1, top=6)
+    if not len(worst):
+        continue
+    blocks.append(f"**{name}**\n\n" + worst.to_markdown(index=False, floatfmt=".3f"))
+Markdown(
+    "Catégories de niveau 1 qui font la distorsion — `diff` positif = la brique "
+    "**sur-prédit** cette catégorie.\n\n" + "\n\n".join(blocks)
+    if blocks
+    else "*Détail par catégorie indisponible.*"
+)
+```
+
+### Accuracy de bout en bout, regex comprise
+
+Tous les tableaux de ce rapport partent du parquet de conciliation. Or les lignes tranchées par [`classify-regex`](02-classify-regex.qmd) **n'y figurent pas** : elles sortent du circuit avant les classifieurs. Elles sont peu nombreuses et très justes, donc l'accuracy réellement livrée est mécaniquement supérieure à celle des tableaux ci-dessus.
+
+C'est ce chiffre-là qu'il faut annoncer : il décrit ce que reçoit l'utilisateur.
+
+```{python}
+# | label: tbl-end-to-end
+e2e = I.end_to_end(con, DELIVERABLE_PATH, OBSERVATIONS_PATH, MAPPING_PATH)
+if e2e is None:
+    out = (
+        "*Non calculable : le livrable, les observations ou le mapping manquent. "
+        "`export-results` retire la vérité terrain du livrable (elle est dans son "
+        "`PIPELINE_COLS`), elle doit donc être rejointe depuis `observations` puis "
+        "rendue canonique par le mapping.*"
+    )
+else:
+    out = (
+        "**Accuracy du fichier livré**, convention inclusive, sur "
+        f"{int(e2e['n'].max())} observations étiquetées — lignes captées par la "
+        "regex comprises.\n\n"
+        + e2e.to_markdown(floatfmt=(".0f", ".0f", ".0f", ".1%"), missingval="—")
+    )
+Markdown(out)
 ```
 
 ## Analyse d'erreurs

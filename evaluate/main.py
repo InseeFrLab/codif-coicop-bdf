@@ -43,6 +43,8 @@ from codif_common.metrics import (
 )
 from codif_common.s3 import connect_secret, resolve_endpoint
 
+from internals import flatten_internal, load_classifier_records
+
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
@@ -123,7 +125,7 @@ def require_canonical_truth(df: pd.DataFrame) -> str:
     return truth_col
 
 
-def log_to_mlflow(args, df, scorable, truth_col, output_s3) -> None:
+def log_to_mlflow(args, df, scorable, truth_col, output_s3, internal=None) -> None:
     """Métriques d'évaluation. Best-effort : ne casse jamais l'étape."""
     tracking_uri = os.environ.get("MLFLOW_TRACKING_URI")
     if not tracking_uri:
@@ -225,6 +227,15 @@ def log_to_mlflow(args, df, scorable, truth_col, output_s3) -> None:
         if "llm_error" in df.columns:
             mlflow.log_metric("llm_error_count", int(df["llm_error"].notna().sum()))
 
+        # Décomposition interne des classifieurs : recall du retriever, régimes
+        # de réponse, fiabilité des confiances, distorsion de distribution. Ces
+        # séries vivaient dans les étapes de classification, chacune dans sa
+        # propre expérience et sur son propre périmètre. Ici, elles portent sur
+        # les mêmes lignes et la même vérité que le reste du rapport.
+        if internal:
+            mlflow.log_metrics(internal)
+            print(f"[evaluate] + {len(internal)} métriques de décomposition", flush=True)
+
         out_html = Path(__file__).resolve().parent / "evaluation_report.html"
         if out_html.exists():
             mlflow.log_artifact(str(out_html))
@@ -263,8 +274,16 @@ def main() -> int:
     env = {
         **os.environ,
         "EVAL_DECIDE_PATH": decide_path,
+        # `predictions` porte `parsed` / `codable` / `confidence`, que la fusion
+        # de reconcile-llm laisse tomber : sans lui, pas de régimes de réponse.
+        "EVAL_RAGNOTICES_PATH": artifact("classify-rag-notices", "predictions", **RUN),
         "EVAL_RETRIEVED_PATH": artifact("classify-rag-notices", "retrieved_codes", **RUN),
         "EVAL_RAGANN_PATH": artifact("classify-rag-annotations", "predictions", **RUN),
+        # Pour l'accuracy de bout en bout : le livrable porte les lignes captées
+        # par la regex mais plus la vérité (retirée par PIPELINE_COLS), d'où la
+        # jointure sur `observations` et la mise au format canonique.
+        "EVAL_OBSERVATIONS_PATH": artifact("build-datasets", "observations", **RUN),
+        "EVAL_MAPPING_PATH": artifact("prune-codes", "mapping_lvl4", **RUN),
         "EVAL_RUN_ID": args.run_id,
         "EVAL_RUN_DATE": args.run_date,
         "EVAL_SOURCE_COLUMN": args.source_column or "",
@@ -286,7 +305,19 @@ def main() -> int:
     )
 
     upload(out_html, output_s3)
-    log_to_mlflow(args, df, scorable, truth_col, output_s3)
+
+    # Recalculé ici plutôt que récupéré du rapport : Quarto ne rend rien
+    # d'exploitable en retour, et `internals` est justement partagé pour que les
+    # deux passes donnent le même résultat.
+    internal = flatten_internal(
+        load_classifier_records(
+            con, scorable, truth_col,
+            ragnotices_path=env["EVAL_RAGNOTICES_PATH"],
+            retrieved_path=env["EVAL_RETRIEVED_PATH"],
+            ragann_path=env["EVAL_RAGANN_PATH"],
+        )
+    )
+    log_to_mlflow(args, df, scorable, truth_col, output_s3, internal)
     print(f"[evaluate] terminé — {output_s3}", flush=True)
     return 0
 

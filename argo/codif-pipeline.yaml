@@ -161,6 +161,8 @@ spec:
                   value: "{{workflow.parameters.smoke-experiment}}"
                 - name: rag-experiment
                   value: "{{workflow.parameters.smoke-experiment}}"
+                - name: eval-experiment
+                  value: "{{workflow.parameters.smoke-experiment}}"
 
           - name: full
             dependencies: [smoke]
@@ -177,6 +179,8 @@ spec:
                 # Vide : les 2 étapes RAG gardent l'expérience de leur config.
                 - name: rag-experiment
                   value: ""
+                - name: eval-experiment
+                  value: "{{workflow.parameters.eval-experiment}}"
 
     # Le DAG de codification lui-même. Les 4 classifieurs tournent en parallèle,
     # puis une conciliation tranche. L'indexation des vector DB n'est plus ici :
@@ -199,6 +203,7 @@ spec:
           - name: sample-observations   # 100 pour le smoke, le paramètre réel sinon
           - name: report-experiment     # expérience MLflow du rapport
           - name: rag-experiment        # base des 2 expériences MLflow RAG, suffixée -notices / -annotations (vide = défaut du module)
+          - name: eval-experiment       # expérience MLflow de l'évaluation
       dag:
         tasks:
           - name: build-datasets
@@ -441,7 +446,7 @@ spec:
                 - name: eval-source-column
                   value: "{{workflow.parameters.eval-source-column}}"
                 - name: eval-experiment
-                  value: "{{workflow.parameters.eval-experiment}}"
+                  value: "{{inputs.parameters.eval-experiment}}"
 
     - name: build-datasets
       inputs:

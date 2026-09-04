@@ -72,7 +72,8 @@ class TestConsumers:
         """`mapping_lvl4` est la sortie la plus consommée du pipeline : elle
         était désignée 5 fois par 4 mécanismes différents."""
         assert consumers("prune-codes", "mapping_lvl4") == [
-            "classify-rag-notices", "export-results", "reconcile-llm", "reconcile-sirus",
+            "classify-rag-notices", "evaluate", "export-results",
+            "reconcile-llm", "reconcile-sirus",
         ]
 
     def test_retrieved_codes_feeds_the_evaluation(self):

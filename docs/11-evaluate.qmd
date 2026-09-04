@@ -45,19 +45,28 @@ argo submit argo/codif-pipeline.yaml --parameter-file argo/params.yaml \
   -p label-column=code -p eval-source-column=source
 ```
 
-## Trois entrées, pas une
+## Les entrées : le parquet de conciliation ne suffit pas
 
-Le parquet de conciliation ne suffit pas. Il porte les quatre classifieurs et la décision
-finale, mais il lui manque deux choses : les codes récupérés par les RAG, retirés à la fusion,
-et **les lignes captées par la regex**, qui n'entrent jamais dans la chaîne d'arbitrage.
+Il porte les quatre classifieurs et la décision finale, mais **trois choses lui manquent** :
+les drapeaux `parsed` / `codable` et les codes récupérés par les RAG, tous retirés à la fusion,
+et les lignes captées par la regex, qui n'entrent jamais dans la chaîne d'arbitrage.
 
 | Entrée | Ce qu'elle apporte |
 |---|---|
-| `…/{run}/reconcile-{llm,sirus}/predictions.parquet` | les 4 classifieurs et la conciliation |
-| `…/{run}/classify-rag-notices/retrieved_codes.parquet` et `…/{run}/classify-rag-annotations/predictions.parquet` | le **recall de retrieval** et l'accuracy de génération conditionnelle : le seul indicateur qui dise si un RAG échoue à *retrouver* ou à *générer* |
-| le livrable d'[`export-results`](07-export-results.qmd) | l'**accuracy de bout en bout, regex comprise** — le chiffre métier |
+| `…/{run}/reconcile-{llm,sirus}/predictions.parquet` | les 4 classifieurs, leurs confiances, et la conciliation |
+| `…/{run}/classify-rag-notices/predictions.parquet` | `parsed`, `codable` — sans eux, pas de régimes de réponse |
+| `…/{run}/classify-rag-notices/retrieved_codes.parquet` et `…/{run}/classify-rag-annotations/predictions.parquet` | les codes récupérés : **recall du retriever** et accuracy de génération conditionnelle |
+| le livrable d'[`export-results`](07-export-results.qmd), plus `build-datasets/observations.parquet` et `prune-codes/mapping_lvl4.parquet` | l'**accuracy de bout en bout, regex comprise** — le chiffre métier |
 
-Les deux premiers artefacts étaient écrits à chaque run et **jamais relus**.
+Les artefacts de retrieval étaient écrits à chaque run et **jamais relus**.
+
+::: {.callout-note}
+## Pourquoi trois fichiers pour l'accuracy de bout en bout
+`export-results` **retire la vérité terrain du livrable** : `code` et `code_lvl4` sont dans son
+`PIPELINE_COLS`. Elle est donc rejointe depuis `observations.parquet` sur `id`, puis rendue
+canonique par `mapping_lvl4` — sans cette dernière étape, une prédiction canonique juste serait
+comptée fausse.
+:::
 
 ## Contenu du rapport
 
@@ -70,6 +79,7 @@ Les deux premiers artefacts étaient écrits à chaque run et **jamais relus**.
 - **Analyse d'erreurs** : matrice de confusion (top 20 paires au niveau 4), **calibration**
   (accuracy par tranche de confiance, AUROC) ;
 - **Coût et latence de l'arbitrage LLM** (tokens de prompt, latence moyenne) ;
+- **Décomposition interne de chaque brique** — voir la section suivante ;
 - **Accord entre les classifieurs et valeur ajoutée de l'arbitrage** ;
 - **Décisions du juge hors des prédictions des classifieurs** ;
 - **Récapitulatif**.
@@ -138,11 +148,45 @@ inférieure**, la stricte une mesure sur un sous-ensemble : lire les deux ensemb
 Avec une vérité canonique, le **niveau 5 n'est plus affiché** : les codes prunés ont au plus
 4 segments, la colonne serait structurellement vide.
 
+## La décomposition interne des classifieurs
+
+L'accuracy globale dit **combien** une brique se trompe, pas **où**. Un RAG à 70 % peut être un
+retriever qui ne ramène jamais la bonne réponse, ou un générateur qui la voit et choisit autre
+chose : les corrections sont opposées — réindexer d'un côté, retoucher le prompt de l'autre — et
+le chiffre agrégé ne permet pas de choisir.
+
+Ces indicateurs existaient déjà : chaque étape de classification loguait les siens, dans sa
+propre expérience MLflow, sur son propre périmètre et avec sa propre convention. Ils étaient
+donc **incomparables entre briques**, et absents du rapport. `evaluate/internals.py` les
+rapatrie, calculés sur les mêmes lignes et la même vérité canonique que tout le reste.
+
+| Indicateur | Ce qu'il répond |
+|---|---|
+| **Recall du retriever**, par niveau | quelle part des bonnes réponses figure dans la liste récupérée — la matière dont dispose le générateur |
+| **Accuracy si récupéré** | sur ces lignes-là, à quelle fréquence le modèle choisit effectivement la bonne : la qualité de la génération, isolée des échecs du retriever |
+| **Régimes de réponse** | accuracy et effectif sur `all_raw` / `all_parsed` / `codable_only` / `parsed_and_codable` / seuil de confiance — les quatre façons distinctes d'échouer que l'accuracy globale additionne |
+| **AUROC de chaque confiance** | la confiance sépare-t-elle le juste du faux ? ≈ 0,5 : elle n'apprend rien et ne doit fonder aucun seuil |
+| **Balayage de seuils** | pour chaque seuil, ce qu'il reste de volume et ce qu'on gagne en exactitude. C'est cette table qui instruit une décision de relecture, pas l'AUROC |
+| **Fiabilité du drapeau `codable`** | le refus déclaré retient-il des lignes plus souvent justes que l'ensemble (`lift`) ? |
+| **Distorsion de distribution** (TV, KL) | la brique déforme-t-elle la répartition des postes, à accuracy égale ? Invisible dans l'accuracy, sensible pour l'usage statistique aval |
+
+`internals.py` est importé par le rapport **et** par `main.py` : un seul calcul, deux sorties,
+donc les tableaux rendus et les scalaires MLflow ne peuvent pas diverger.
+
+::: {.callout-warning}
+## Le recall n'est pas un plafond
+La consigne faite au modèle de reprendre un candidat de la liste à l'identique est
+**incitative, pas structurelle**. Une accuracy supérieure au recall est donc possible, et
+l'écart mesure alors la part de codes justes produits hors de la liste récupérée. Ne pas lire
+le recall comme une borne.
+:::
+
 ## Rendre le rapport à la main
 
 Le gabarit lit ses entrées via des **variables d'environnement** plutôt que des paramètres
-Quarto : `EVAL_DECIDE_PATH`, `EVAL_RETRIEVED_PATH`, `EVAL_RAGANN_PATH`,
-`EVAL_DELIVERABLE_PATH`, `EVAL_RUN_ID`, `EVAL_RUN_DATE`, `EVAL_SOURCE_COLUMN`. C'est
+Quarto : `EVAL_DECIDE_PATH`, `EVAL_RAGNOTICES_PATH`, `EVAL_RETRIEVED_PATH`,
+`EVAL_RAGANN_PATH`, `EVAL_DELIVERABLE_PATH`, `EVAL_OBSERVATIONS_PATH`,
+`EVAL_MAPPING_PATH`, `EVAL_RUN_ID`, `EVAL_RUN_DATE`, `EVAL_SOURCE_COLUMN`. C'est
 `evaluate/main.py` qui les positionne avant d'appeler `quarto render` ; pour itérer sur le
 gabarit en local, il suffit de les exporter soi-même puis de rendre le `.qmd` directement.
 
@@ -159,8 +203,14 @@ Sont enregistrés :
 - **Métriques** : pour chaque méthode (LCS / RAG notices / RAG annotations / TTC /
   conciliation) et chaque niveau, les **deux conventions** — `accuracy_<méthode>_niv<k>`
   (stricte) et `accuracy_all_<méthode>_niv<k>` (inclusive) — plus
-  `truth_shallower_than_niv<k>_count`, la population qui sépare les deux ; le recall de
-  retrieval ; `llm_prompt_tokens_total` et `llm_latency_s_mean` ;
+  `truth_shallower_than_niv<k>_count`, la population qui sépare les deux ;
+  `llm_prompt_tokens_total` et `llm_latency_s_mean` ;
+- **La décomposition interne**, préfixée par famille pour que l'UI MLflow les regroupe et
+  qu'une comparaison entre deux runs porte sur des séries alignées :
+  `retrieval/<brique>/recall_niv<k>` et `…/generation_when_retrieved_niv<k>`,
+  `regime/<brique>/<régime>/accuracy_niv4` et `…/n`,
+  `confidence/<brique>/auroc`, `…/accuracy_at_<seuil>`, `…/coverage_at_<seuil>`,
+  `codable/<brique>/lift`, `distortion/<brique>/level_<k>/{tv_distance,kl_divergence}` ;
 - **Artefacts** : `evaluation_report.html` et `truth_depth_distribution.json`.
 
 ## Sortie
