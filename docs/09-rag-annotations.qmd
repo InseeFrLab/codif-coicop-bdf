@@ -65,7 +65,6 @@ bons exemples.
 |---|---|---|
 | `git-branch` | `main` | branche clonée par les trois étapes |
 | `run_id` / `run_date` | calculés par Argo | identité du run d'indexation, reprise dans le nom de la collection |
-| `kb-scope` | `full` | quels produits annotés composent la KB (`full` ou `train`, cf. ci-dessous) |
 | `kb-sample-size` | *(vide)* | plafonne le nombre de points indexés, donc le temps d'embedding |
 | `collection-name` | *(vide)* | échappatoire : forcer un nom exact au lieu de le composer |
 
@@ -85,14 +84,14 @@ dans un run d'indexation. Les deux sources lui sont passées explicitement
 
 - Embeddings : **`qwen3-embedding-8b`** (`model_len` 4096, `batch_size` 64), `upload_batch_size` 56.
 - Collection Qdrant au **nom unique**, composé depuis `qdrant.collection_base`
-  (`coicop_annotations`), la portée de la KB et l'identité du run :
-  `coicop_annotations__{kb_scope}__{run_date}__{run_id}[__sampleN]`, p. ex.
-  `coicop_annotations__full__2026-09-02__index-annotations-b3x9q`.
+  (`coicop_annotations`) et l'identité du run :
+  `coicop_annotations__{run_date}__{run_id}[__sampleN]`, p. ex.
+  `coicop_annotations__2026-09-02__index-annotations-b3x9q`.
 
 Le job se termine en imprimant la ligne à recopier dans `argo/params.yaml` :
 
 ```
-classify-rag-annotations-collection: coicop_annotations__full__2026-09-02__index-annotations-b3x9q
+classify-rag-annotations-collection: coicop_annotations__2026-09-02__index-annotations-b3x9q
 ```
 
 ::: {.callout-note}
@@ -101,29 +100,20 @@ applique exactement le même `prune_annotation_lvl4` (troncature niveau 4 + mapp
 qu'aux annotations, pour que tous les candidats vivent dans le même espace de codes.
 :::
 
-### `kb-scope` : `full` ou `train`
-
-| Valeur | KB indexée | Profil de sources exclues |
-|---|---|---|
-| `full` (défaut) | `annotations_full` : tous les produits annotés | `exclude_sources_prod` |
-| `train` | `raw_train` : l'ancien split | `exclude_sources` |
-
-Le split train/test n'existait que **faute de jeu de test indépendant** : il fallait bien
-réserver des lignes pour mesurer. Les nouveaux produits annotés en fournissent un
-naturellement. `train` est donc **transitoire** et sera supprimé ; les deux listes de sources
-exclues sont d'ailleurs déjà identiques aujourd'hui, la distinction n'étant conservée que le
-temps de la transition.
-
-La portée est inscrite **dans le nom** de la collection, pas seulement dans le manifeste :
-c'est le champ qu'un humain confond le plus en recopiant, et interroger une KB `full` depuis
-un run d'évaluation dont le test set vient du même lot gonfle l'accuracy sans lever d'erreur.
-`1_run_rag.py` détecte ce cas et **avertit** (sans bloquer, cette configuration n'étant plus la
-norme).
+::: {.callout-note}
+## Il y avait ici une option `kb-scope`
+Elle valait `full` (tous les produits annotés) ou `train` (la moitié réservée par l'ancien
+split), et la portée était inscrite dans le nom de la collection (`__full__` / `__train__`).
+Ce split n'existait que **faute de jeu de test indépendant** : il fallait bien réserver des
+lignes pour mesurer. Les nouveaux produits annotés en fournissent un naturellement, donc la KB
+est désormais **toute** la base annotée, et le segment de nom n'a plus rien à distinguer.
+Supprimés, ainsi que le second profil de sources exclues, qui était déjà identique au premier.
+:::
 
 ### Le manifeste
 
 À côté de chaque collection, l'indexation écrit un manifeste JSON sous
-`s3://projet-budget-famille/data/vector_db_manifests/{collection_name}.json` : `kb_scope`,
+`s3://projet-budget-famille/data/vector_db_manifests/{collection_name}.json` :
 modèle d'embedding, dimension, `sample_size`, nombre de points **recomptés auprès de Qdrant**
 (jamais `len(points)` : seule mesure qui atteste que les points sont bien arrivés), source des
 annotations, SHA du commit.
@@ -135,13 +125,8 @@ espace vectoriel : sans cette garde, les résultats seraient silencieusement fau
 
 ### Sources exclues de la KB
 
-Deux profils, choisis par `--kb-scope` (et non plus par le mode prod/éval, qui n'a plus cours
-dans un workflow d'indexation) :
-
-| Clé de config | `kb-scope` | Valeur actuelle |
-|---|---|---|
-| `exclude_sources` | `train` | `[bdf_2017, copain]` |
-| `exclude_sources_prod` | `full` | `[bdf_2017, copain]` |
+Un seul profil, la clé `annotations.exclude_sources` de `config/config.yaml`, qui vaut
+aujourd'hui `[bdf_2017, copain]` :
 
 - **`copain`** n'est de toute façon plus importé par le [build-datasets](01-build-datasets.qmd)
   depuis juin 2026 ; la mention est conservée par défense (sans effet si la source n'arrive
@@ -194,26 +179,21 @@ le module ne re-prune pas sa sortie. C'est
 élagage) avant le consensus et l'arbitrage.
 :::
 
-## Évaluation (opt-in)
+## Évaluation
 
-L'évaluation est pilotée par `--skip-eval` (`false` = mode évaluation, positionné
-automatiquement par Argo quand `input_file` est vide). Elle exige des labels dans l'input, et
-restreint le test set aux sources `include_sources`
-(`receipts_from_app`, `manual_from_app`, `manual_from_book`). Sont calculés, sur
-`eval.levels = 4` niveaux (graine `42`) :
+`1_run_rag.py` **ne calcule aucune métrique**. Il produit des prédictions, et rien d'autre.
 
-- **accuracy et recall par niveau** COICOP (1 à 4) ;
-- **accuracy par division COICOP** (niveau 1) et **par source** du test set ;
-- **distorsion de distribution** entre codes prédits et codes annotés (distance en variation
-  totale et divergence KL) — utile pour repérer un modèle qui « aplatit » la nomenclature ;
-- **fiabilité de la confiance** : AUROC, calibration, balayage de seuils
-  (`threshold_confidence: 0.7`) ;
-- **fiabilité du drapeau `codable`** (lift du refus de coder).
+Il y avait ici une évaluation pilotée par `--skip-eval`, qui restreignait de surcroît le jeu à
+coder à certaines sources — un filtre sur le périmètre codé, décidé par une option
+d'évaluation. Tout cela est parti dans l'[étape `evaluate`](11-evaluate.qmd), qui mesure une
+fois, à la fin, sur l'ensemble du run : accuracy et recall de retrieval par niveau, distorsion
+de distribution, AUROC, fiabilité du drapeau `codable`, et la ventilation par provenance du
+produit.
 
-Métriques et rapport partent dans **MLflow**, expérience `rag-annotation`
-(`mlflow.experiment_name` dans `config.yaml`). S'y ajoutent les tags de provenance de l'index
-(`index.git_sha`, `index.run_id`, `index.kb_scope`) et le nombre de points de la collection
-interrogée : deux runs bâtis sur des index différents seraient sinon indistinguables.
+Ce que le module loggue encore dans MLflow (expérience `rag-annotation`, réglable par
+`mlflow.experiment_name`) : ses paramètres, ses compteurs, et les tags de provenance de
+l'index (`index.git_sha`, `index.run_id`) avec le nombre de points de la collection
+interrogée — sans quoi deux runs bâtis sur des index différents seraient indistinguables.
 
 ## Sortie et intégration
 

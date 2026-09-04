@@ -36,23 +36,19 @@ steps:
 
   build-datasets:
     outputs:
+      # Base de connaissance : toutes les annotations historiques. Le split
+      # train/test a disparu — l'évaluation se fait désormais sur les étiquettes
+      # du fichier d'entrée, via l'étape `evaluate`.
       annotations_full: build-datasets/annotations_full.parquet
-      raw_train:        build-datasets/raw_train.parquet
-      raw_test:         build-datasets/raw_test.parquet
       suggester:        build-datasets/suggester.parquet
-      # Écrit uniquement en mode production (input_file non vide).
       observations:     build-datasets/observations.parquet
       qa_multiple_codes:            build-datasets/qa/annotations_with_multiple_codes.parquet
       qa_multiple_codes_hors_copain: build-datasets/qa/annotations_hors_copain_with_multiple_codes.parquet
 
   classify-regex:
     inputs:
-      # Le flux « train » est annotations_full en production, raw_train en
-      # évaluation ; le flux « test » est observations ou raw_test.
-      - build-datasets.annotations_full
-      - build-datasets.raw_train
-      - build-datasets.raw_test
-      - build-datasets.observations
+      - build-datasets.annotations_full   # la KB
+      - build-datasets.observations       # le jeu à coder
     outputs:
       predictions:        classify-regex/REGEX_pred.parquet
       test_without_regex: classify-regex/raw_test_without_regex.parquet
@@ -134,8 +130,24 @@ steps:
     inputs:
       - reconcile-llm.predictions
       - reconcile-sirus.predictions
+      - export-results.deliverable
     outputs:
       html: report/report.html
+
+  # Étape finale FACULTATIVE : ne tourne que si le fichier d'entrée porte des
+  # étiquettes. Elle lit trois artefacts, parce que le parquet de conciliation
+  # ne suffit pas : les codes récupérés par les RAG en sont absents (retirés à
+  # la fusion), et les lignes codées par la regex n'y entrent jamais — donc pas
+  # d'accuracy de bout en bout sans le livrable.
+  evaluate:
+    inputs:
+      - reconcile-llm.predictions
+      - reconcile-sirus.predictions
+      - classify-rag-notices.retrieved_codes
+      - classify-rag-annotations.predictions
+      - export-results.deliverable
+    outputs:
+      html: evaluate/evaluation_report.html
 
   # --- Étapes des deux pipelines d'indexation (run_id distinct) -------------
 

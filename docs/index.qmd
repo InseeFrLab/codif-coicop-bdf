@@ -62,8 +62,8 @@ Le diagramme ci-dessous montre les étapes **et les fichiers qui circulent entre
 
 ```{mermaid}
 flowchart LR
-  input[/"CSV d'entrée<br/>(input_file, mode prod)"/] --> PRE[build-datasets]
-  PRE -- "raw_test.parquet (éval)<br/>observations.parquet (prod)" --> REG[classify-regex]
+  input[/"CSV d'entrée<br/>(input_file, obligatoire)"/] --> PRE[build-datasets]
+  PRE -- observations.parquet --> REG[classify-regex]
   REG -- raw_test_without_regex.parquet --> PRU[prune-codes]
   REG -- raw_test_without_regex.parquet --> LCS[classify-lcs]
   REG -- raw_test_without_regex.parquet --> TTC[classify-ttc]
@@ -110,11 +110,11 @@ indexation crée désormais une collection au **nom unique** ; on recopie ce nom
 de paramètres du pipeline de codification — même pratique que `classify-ttc-model-uri` et
 `reconcile-sirus-model-uri`.
 
-Le pipeline de codification fonctionne en deux modes selon le paramètre `input_file` :
-**production** (`input_file` non vide — le fichier externe est codifié et livré par
-`export-results`) ou **évaluation** (`input_file` vide — c'est le split test des annotations
-qui est codifié, et le rapport mesure l'exactitude). Chaque étape des trois workflows clone le
-dépôt sur la branche donnée par le paramètre **`git-branch`** (défaut : `main`).
+Le pipeline de codification n'a **qu'un seul mode** : il codifie le fichier désigné par
+`input_file` (obligatoire) et le livre par `export-results`. Si ce fichier porte une colonne
+d'étiquettes, la désigner par `label-column` déclenche l'[étape `evaluate`](11-evaluate.qmd),
+qui mesure la qualité du run. Chaque étape des trois workflows clone le dépôt sur la branche
+donnée par le paramètre **`git-branch`** (défaut : `main`).
 :::
 
 | # | Étape | Rôle | Page |
@@ -128,7 +128,8 @@ dépôt sur la branche donnée par le paramètre **`git-branch`** (défaut : `ma
 | 7 | `classify-rag-annotations` | Codification par RAG sur exemples déjà codifiés, few-shot (collection bâtie par `index-annotations`) | [→](09-rag-annotations.qmd) |
 | 8 | `reconcile-llm` | Arbitrage final LLM-as-judge entre LCS / RAG notices / RAG annotations / TTC | [→](06-reconcile-llm.qmd) |
 | 9 | `export-results` | Assemble le résultat utilisateur (regex + décision LLM) | [→](07-export-results.qmd) |
-| 10 | `report` | Rapport Quarto (qualité ou suivi de prédiction) | [→](08-report.qmd) |
+| 10 | `report` | Rapport Quarto de production | [→](08-report.qmd) |
+| 11 | `evaluate` | Rapport d'évaluation, **facultatif** (`label-column`) | [→](11-evaluate.qmd) |
 
 
 
@@ -167,9 +168,9 @@ fil rouge · Sorties**.
 #    Construire les deux collections Qdrant. Chacune affiche en fin d'exécution
 #    la ligne exacte à recopier dans argo/params.yaml.
 argo submit argo/index-notices-pipeline.yaml
-argo submit argo/index-annotations-pipeline.yaml            # kb-scope=full par défaut
+argo submit argo/index-annotations-pipeline.yaml            # la KB = toute la base annotée
 
-# 2. Pipeline complet en mode évaluation (input_file vide dans params.yaml)
+# 2. Pipeline complet (input_file et les collections viennent de params.yaml)
 argo submit argo/codif-pipeline.yaml --parameter-file argo/params.yaml
 
 # Mode production : sur un fichier d'entrée et son mappage de colonnes

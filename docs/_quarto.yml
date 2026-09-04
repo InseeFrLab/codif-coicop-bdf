@@ -46,6 +46,8 @@ website:
             text: Final output
           - href: 08-report.qmd
             text: Report
+          - href: 11-evaluate.qmd
+            text: Evaluate (facultative)
       - text: Guides
         menu:
           - href: 09-lancer-une-etape.qmd
@@ -78,6 +80,7 @@ website:
           - 06b-reconcile-sirus.qmd
           - 07-export-results.qmd
           - 08-report.qmd
+          - 11-evaluate.qmd
       - section: "Guides"
         contents:
           - 09-lancer-une-etape.qmd

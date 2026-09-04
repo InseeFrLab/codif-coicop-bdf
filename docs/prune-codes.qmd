@@ -81,7 +81,7 @@ l'enfant avait lui-même au plus un enfant — le second cas de figure ci-dessus
 - conséquence méthodologique importante : **107 des 440 Postes (24 %) ont un code canonique
   moins profond que le niveau 4** (95 au niveau 3, 12 au niveau 2). Un code final de niveau 2
   ou 3 peut donc être *la* réponse exacte, pas une sous-codification — c'est précisément ce
-  que mesure la convention d'accuracy inclusive du [rapport](08-report.qmd#les-deux-conventions-daccuracy).
+  que mesure la convention d'accuracy inclusive du [rapport d'évaluation](11-evaluate.qmd#les-deux-conventions-daccuracy).
 
 ## Application aux annotations et au suggester
 

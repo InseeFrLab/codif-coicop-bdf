@@ -19,9 +19,8 @@ def parse_args():
     parser.add_argument(
         "--input-file",
         default=None,
-        help="Présence => mode production : le flux 'train' (KB) est l'ensemble des "
-             "annotations (annotations_full) et le flux 'test' (à coder) les "
-             "observations. Absence => mode évaluation (raw_train / raw_test).",
+        help="Conservé pour compatibilité : la KB est toujours annotations_full et le "
+             "jeu à coder toujours observations. Le pipeline n'a plus qu'un mode.",
     )
     parser.add_argument(
         "--sample-size",
@@ -60,18 +59,14 @@ def main():
     rules = load_regex_rules("config/rules.yaml")
 
     # -----------------------------------------------------------------------
-    # READ TRAIN AND TEST SET
+    # READ KB AND OBSERVATIONS
     #
-    # Production (--input-file) : 'train' = annotations_full (alimente la vector DB
-    # d'annotations) et 'test' = observations à coder. Évaluation : split train/test
-    # des annotations (raw_train / raw_test). Les sorties (raw_*_without_regex) gardent
-    # les mêmes noms, donc tout l'aval est inchangé.
+    # 'train' = annotations_full (ce qui alimente la vector DB d'annotations),
+    # 'test' = les observations à coder. Les clés de config gardent leur suffixe
+    # `_prod`, hérité de l'époque où le pipeline avait deux modes.
     # -----------------------------------------------------------------------
-    is_prod = bool(args.input_file)
-    kb_key = "train_set_prod" if is_prod else "train_set"
-    observations_key = "test_set_prod" if is_prod else "test_set"
-    logger.info(f"Mode {'production' if is_prod else 'évaluation'} : "
-                f"kb_data={config['paths'][kb_key]}, observations={config['paths'][observations_key]}")
+    kb_key, observations_key = "train_set_prod", "test_set_prod"
+    logger.info(f"KB={config['paths'][kb_key]}, observations={config['paths'][observations_key]}")
 
     logger.info("Chargement de la KB (kb_data).")
     query_definition = f"SELECT * FROM read_parquet('{config['paths'][kb_key]}')"
@@ -111,35 +106,9 @@ def main():
     logger.info("Nombre de libellés prédits selon leur code :")
     logger.info(regex_predicted["predict_code"].value_counts())
 
-    if "code" in regex_predicted.columns:
-        # Global accuracy
-        accuracy = (regex_predicted["code"] == regex_predicted["predict_code"]).mean()
-        logger.info(f"Accuracy : {accuracy:.2%}")
-        # Accuracy with not null codes
-        non_nuls = regex_predicted[regex_predicted["predict_code"].notna()]
-        accuracy = (non_nuls["code"] == non_nuls["predict_code"]).mean()
-        logger.info(f"Accuracy (with not null codes): {accuracy:.2%}")
-
-        # Number of raw classified by regex
-        logger.info(f"Prédictions par année:")
-        logger.info(regex_predicted.groupby("annee")["code"].count())
-
-        # Accuracy per code présents dans le fichier de règles
-        rules_codes = [rule["code"] for rule in rules]
-        regex_predicted["match"] = regex_predicted["code"] == regex_predicted["predict_code"]
-        accuracy_par_code = regex_predicted[regex_predicted["code"].isin(rules_codes)].groupby("code")["match"].mean()
-        logger.info("Accuracy par code :")
-        logger.info(accuracy_par_code)
-
-        non_nuls["match"] = non_nuls["code"] == non_nuls["predict_code"]
-        accuracy_par_code_nn = non_nuls[non_nuls["code"].isin(rules_codes)].groupby("code")["match"].mean()
-        logger.info("Accuracy par code (avec codes non nuls) :")
-        logger.info(accuracy_par_code_nn)
-
-        error_pred = non_nuls.loc[non_nuls["code"] != non_nuls["predict_code"], ["raw_product", "code", "predict_code"]]
-        logger.info(error_pred)
-
-        save_data_to_parquet(df=error_pred, path=config["paths"]["error_pred"])
+    # Les métriques d'accuracy qui vivaient ici sont parties dans l'étape finale
+    # `evaluate`. Elles se calculaient sur un mélange de la KB annotée et des
+    # observations (le `concat` ci-dessus), ce qui ne mesurait rien d'interprétable.
 
     # -----------------------------------------------------------------------
     # EXPORT OUTPUT

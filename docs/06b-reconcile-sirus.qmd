@@ -12,7 +12,7 @@ ne le suit pas », qu'un métier peut relire, valider et figer comme convention 
 
 Il fournit en plus un **score** par produit. L'étape s'arrête là : elle livre un code et ce
 score, **sans verdict**. Décider à partir de quel score un code est exploitable sans relecture
-est une question métier, instruite par le [rapport d'évaluation](08-report.qmd) — pas figée
+est une question métier, instruite par le [rapport d'évaluation](11-evaluate.qmd) — pas figée
 dans le chemin de production.
 
 Les deux conciliations sont **exclusives** : le paramètre `reconciliation` (`llm` ou `sirus`)
@@ -25,7 +25,7 @@ décide laquelle tourne, l'autre est skippée.
 
 | Moment | Où | Rôle |
 |---|---|---|
-| Entraînement | **Hors pipeline** : `cd reconcile-sirus/ && ./train.sh <date>/<run_id>` | Ajuste le modèle sur un run d'évaluation passé, mesure accuracy et calibration, logue le tout dans MLflow |
+| Entraînement | **Hors pipeline** : `cd reconcile-sirus/ && ./train.sh <date>/<run_id>` | Ajuste le modèle sur un run passé **étiqueté** (soumis avec `label-column`), mesure accuracy et calibration, logue le tout dans MLflow |
 | `reconcile-sirus` | Étape Argo, quand `conciliation: sirus` | Applique un modèle déjà entraîné au run courant |
 
 **L'entraînement n'est pas une étape du pipeline, et c'est délibéré.** Il produit un modèle
@@ -53,7 +53,7 @@ raisonnent donc exactement sur les mêmes candidats.
 | TTC | `…/{run}/classify-ttc/predictions.parquet` | `--ttc-file` |
 | Mapping [prune-codes](prune-codes.qmd) | `…/{run}/prune-codes/mapping_lvl4.parquet` | `--mapping-file` |
 | Ensemble à coder | `…/{run}/classify-regex/raw_test_without_regex.parquet` | `--tocodify-file` |
-| Colonnes utilisateur | `observations.parquet` (prod) ou `raw_test.parquet` (éval) | `--extra-columns-file` |
+| Colonnes utilisateur | `observations.parquet` | `--extra-columns-file` |
 | Modèle | URI MLflow | `--model-uri` |
 
 `--tocodify-file` n'existe pas côté `reconcile-llm` : il sert à détecter les produits
@@ -63,7 +63,7 @@ sans apparaître ni dans les résultats ni dans le décompte des produits sans c
 ## Sortie
 
 `…/{run}/reconcile-sirus/predictions.parquet` : la table fusionnée complète (pour que le
-[report](08-report.qmd) puisse scorer les 4 classifieurs de base à l'identique), plus :
+[rapport d'évaluation](11-evaluate.qmd) puisse scorer les 4 classifieurs de base à l'identique), plus :
 
 | Colonne | Sens |
 |---|---|
@@ -74,7 +74,7 @@ sans apparaître ni dans les résultats ni dans le décompte des produits sans c
 
 Les colonnes portent des noms honnêtes (`sirus_code`, pas `llm_code`) :
 [`export-results`](07-export-results.qmd) reçoit `--decision-source llm|sirus` et traduit, et le
-report résout la conciliation présente via `coicop_metrics.final_decision()`.
+les rapports résolvent la conciliation présente via `codif_common.metrics.final_decision()`.
 
 ## Comment se fait la prédiction
 
@@ -119,7 +119,7 @@ du workflow.
 
 Le pipeline n'en applique aucun. Si l'aval souhaite n'exploiter automatiquement que les codes
 au-dessus d'un certain score, la section **« Calibration de SIRUS »** du
-[rapport d'évaluation](08-report.qmd) donne l'arbitrage : pour chaque seuil envisageable, la
+[rapport d'évaluation](11-evaluate.qmd) donne l'arbitrage : pour chaque seuil envisageable, la
 part du volume qui reste codable et la fiabilité obtenue.
 
 Deux propriétés du score à connaître : c'est une **moyenne non pondérée des sorties de
@@ -154,6 +154,6 @@ l'étape échoue en cas de divergence.
 - **SIRUS ne crée pas de candidat.** Si le bon code n'est proposé par aucun classifieur,
   aucun réglage ne le retrouvera : c'est la métrique `upper_bound`.
 - Le [rapport de production](08-report.qmd) saute ses sections d'accord avec le juge en
-  mode SIRUS ; le rapport d'évaluation est complet dans les deux modes.
+  conciliation SIRUS ; le [rapport d'évaluation](11-evaluate.qmd) est complet dans les deux cas.
 
 Voir aussi [Limites et points de vigilance](limites-vigilance.qmd).

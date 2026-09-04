@@ -13,6 +13,7 @@ members = [
     "classify-ttc",
     "codif-coicop-bdf",
     "codif-common",
+    "evaluate",
     "export-results",
     "prune-codes",
     "rag-annotations",
@@ -1056,6 +1057,57 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/91/41/fc7c829172c60ca22485251eab285f4f1a0d87b486a024c726f21471d86e/duckdb-1.5.5-cp314-cp314-win_amd64.whl", hash = "sha256:9dc826c4b50e64f6c4e4d07a3a9cb075ef70ba3899dc43ec5493dc3d7b04b353", size = 13691858, upload-time = "2026-07-22T10:55:11.181Z" },
     { url = "https://files.pythonhosted.org/packages/e1/2c/95d9216b79e9273689d7ebce125a54503ed0c9bd7da931f0265888e99779/duckdb-1.5.5-cp314-cp314-win_arm64.whl", hash = "sha256:63e48d4b74b15aeacd688976432a7225163df8c226eddeb8536bba2d4d4ff433", size = 14470180, upload-time = "2026-07-22T10:55:14.445Z" },
 ]
+
+[[package]]
+name = "evaluate"
+version = "0.1.0"
+source = { virtual = "evaluate" }
+dependencies = [
+    { name = "boto3" },
+    { name = "codif-common" },
+    { name = "duckdb" },
+    { name = "ipykernel" },
+    { name = "jupyter" },
+    { name = "matplotlib" },
+    { name = "mlflow" },
+    { name = "nbformat" },
+    { name = "numpy" },
+    { name = "pandas" },
+    { name = "prune-codes" },
+    { name = "pyarrow" },
+    { name = "rag-annotations" },
+    { name = "rag-notices" },
+    { name = "seaborn" },
+    { name = "tabulate" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "boto3", specifier = ">=1.35" },
+    { name = "codif-common", editable = "common" },
+    { name = "duckdb", specifier = ">=1.4.4" },
+    { name = "ipykernel", specifier = ">=6.29" },
+    { name = "jupyter", specifier = ">=1.1" },
+    { name = "matplotlib", specifier = ">=3.9" },
+    { name = "mlflow", specifier = ">=3.9.0" },
+    { name = "nbformat", specifier = ">=5.10" },
+    { name = "numpy", specifier = ">=2.0.0" },
+    { name = "pandas", specifier = ">=2.2" },
+    { name = "prune-codes", editable = "prune-codes" },
+    { name = "pyarrow", specifier = ">=16" },
+    { name = "rag-annotations", editable = "rag-annotations" },
+    { name = "rag-notices", editable = "rag-notices" },
+    { name = "seaborn", specifier = ">=0.13" },
+    { name = "tabulate", specifier = ">=0.9" },
+]
+
+[package.metadata.requires-dev]
+dev = [{ name = "pytest", specifier = ">=9.0.2" }]
 
 [[package]]
 name = "executing"

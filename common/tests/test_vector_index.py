@@ -1,37 +1,28 @@
 """Tests de la règle de nommage des collections Qdrant.
 
 `vector_index.py` vit dans `codif_common` et sert aux deux pipelines
-d'indexation. Ce test fixe la forme du nom pour les deux usages réels :
-notices sans périmètre, annotations avec.
+d'indexation. Ce test fixe la forme du nom, identique pour les deux : ce qui
+distingue deux collections, c'est le run qui les a bâties.
 """
 
 from codif_common.vector_index import build_collection_name, manifest_uri
 
 
 class TestBuildCollectionName:
-    def test_notices_have_no_mode_segment(self):
-        """Les notices dérivent d'un CSV statique : leur contenu ne dépend pas
-        du mode prod/éval, donc en mettre un dans le nom serait mensonger."""
+    def test_notices(self):
         assert build_collection_name(
             base="coicop_notices", run_date="2026-09-02", run_id="index-notices-a7k2p"
         ) == "coicop_notices__2026-09-02__index-notices-a7k2p"
 
-    def test_annotations_carry_their_kb_scope(self):
-        """Le périmètre de la KB est dans le nom parce qu'une collection `full`
-        contient tous les produits annotés : c'est le champ qu'on confond en
-        recopiant, et le seul qui distingue deux collections du même jour."""
+    def test_annotations_have_the_same_form(self):
+        """Il y avait ici un segment de périmètre (`__full__` / `__train__`),
+        du temps où la KB était un demi-jeu. La KB, ce sont désormais tous les
+        produits annotés : le segment n'a plus rien à distinguer."""
         assert build_collection_name(
             base="coicop_annotations",
             run_date="2026-09-02",
             run_id="index-anno-b3x9q",
-            mode="full",
-        ) == "coicop_annotations__full__2026-09-02__index-anno-b3x9q"
-        assert build_collection_name(
-            base="coicop_annotations",
-            run_date="2026-09-02",
-            run_id="index-anno-b3x9q",
-            mode="train",
-        ) == "coicop_annotations__train__2026-09-02__index-anno-b3x9q"
+        ) == "coicop_annotations__2026-09-02__index-anno-b3x9q"
 
     def test_sample_size_is_visible_in_the_name(self):
         """Sans ce suffixe, un index jouet de 100 points et un index complet
@@ -40,7 +31,6 @@ class TestBuildCollectionName:
             base="coicop_annotations",
             run_date="2026-09-02",
             run_id="index-anno-b3x9q",
-            mode="full",
             sample_size=100,
         )
         assert name.endswith("__sample100")
@@ -58,7 +48,6 @@ class TestBuildCollectionName:
             base="coicop_annotations",
             run_date="2026-09-02",
             run_id="index-anno-b3x9q",
-            mode="full",
             sample_size=50,
         )
         assert not set(name) & set(":/ ?#")

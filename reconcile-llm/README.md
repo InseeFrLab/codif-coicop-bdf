@@ -22,8 +22,9 @@ Il fusionne les prédictions des quatre classifiers puis tranche :
    conservée **brute** dans `code` et dupliquée sous forme canonique dans
    **`code_lvl4`** — la sortie porte les deux. La logique est réutilisée du
    module [`prune-codes`](../prune-codes/) (aucune duplication). Le prompt du juge ne
-   contient **pas** le code de référence annoté (pas de fuite de la vérité
-   terrain en mode évaluation).
+   contient **pas** le code de référence annoté, même quand le fichier d'entrée
+   en porte un : sans quoi la vérité terrain fuiterait dans les mesures de
+   l'étape [`evaluate/`](../evaluate/).
 2. **Court-circuit consensus** — si LCS = RAG = RAG-annotations = TTC et que la
    confiance TTC ≥ 0,90, le code est retenu **sans appel LLM**.
 3. **Arbitrage LLM** — sinon, un LLM tranche à partir du contexte d'achat et des
@@ -60,9 +61,9 @@ normalisés de chaque classifier et la décision (`llm_code`, `llm_model`,
 en fin de batch (quand `--mapping-file` est fourni) ; le garde-fou de l'étape
 aval [`export-results`](../export-results/) est donc une redondance idempotente.
 
-En mode évaluation, deux colonnes portent la vérité terrain :
+Quand le run est étiqueté (`label-column`), deux colonnes portent la vérité terrain :
 
 | Colonne | Contenu |
 |---|---|
 | `code` | code annoté **brut**, tel que saisi (souvent niveau 5) |
-| `code_lvl4` | sa forme **canonique** : tronquée au niveau 4 puis élaguée — c'est la cible du scoring du [`report`](../report/) |
+| `code_lvl4` | sa forme **canonique** : tronquée au niveau 4 puis élaguée — c'est la cible du scoring de [`evaluate/`](../evaluate/), dont l'absence la fait **échouer** |

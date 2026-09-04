@@ -174,22 +174,18 @@ rapprocher du CSV courant permet de détecter l'écart après coup.
 `argo/params.yaml`. Publier une nomenclature révisée sous un **nouveau nom de fichier** plutôt
 que d'écraser l'ancien rend l'écart visible au lieu de silencieux.
 
-### Fuite train/test possible sur la KB d'annotations
+### Fuite possible entre la KB d'annotations et le jeu évalué
 
-L'indexation étant désormais découplée, rien n'empêche mécaniquement d'évaluer le pipeline
-contre une KB qui contient les réponses attendues.
+La KB indexée contient **tous** les produits annotés. Si le fichier évalué provient du même
+lot, le RAG y retrouve ses propres réponses et l'accuracy est gonflée — **sans qu'aucune étape
+n'échoue**.
 
-Une collection bâtie en `kb-scope=full` contient **tous** les produits annotés. Si le jeu de test
-d'un run d'évaluation provient du même lot historique, le RAG y retrouve ses propres réponses et
-l'accuracy est gonflée — **sans qu'aucune étape n'échoue**.
+Rien ne le vérifie, et c'est assumé : depuis que les nouveaux produits annotés fournissent un
+jeu indépendant, évaluer sur un lot frais est le cas normal. La garde revient à celui qui
+choisit le fichier à passer en `label-column`.
 
-Le `kb_scope` est inscrit dans le nom de la collection (`__full__` / `__train__`) et dans son
-manifeste, et `classify-rag-annotations` émet un avertissement en cas de discordance. Le choix
-assumé est de **ne pas bloquer** : depuis que les nouveaux produits annotés fournissent un jeu de
-test indépendant, une KB `full` est le cas normal et non une erreur.
-
-C'est aussi pourquoi `kb-scope=train` est conservé le temps de la transition : il permet une
-évaluation honnête sur l'ancien lot.
+Il y avait ici une option `kb-scope=train`, qui réservait la moitié de la base pour permettre
+une évaluation honnête sur l'ancien lot. Elle a été supprimée avec le split.
 
 ### Accumulation des collections Qdrant
 
@@ -208,16 +204,15 @@ de la même division, il n'est pas dans la liste.
 
 ### Les métriques MLflow des branches RAG ne sont pas celles du rapport
 
-Le `report` publie désormais explicitement **deux conventions** d'accuracy, documentées et
-loguées séparément (`accuracy_*` stricte et `accuracy_all_*` inclusive) — voir
-[la page report](08-report.qmd#les-deux-conventions-daccuracy). Il reste en revanche une
-troisième série, non alignée : les métriques que **chaque branche RAG** loggue pour son propre
-compte (expériences MLflow `test` et `classify-rag-annotations`).
+**Résolu.** Il y avait trois séries d'accuracy non alignées : les deux conventions du rapport,
+et les métriques que **chaque branche RAG** loguait pour son propre compte, sur son propre
+périmètre et avec sa propre convention. Pour un même modèle et un même jeu, leurs chiffres
+différaient de ceux du rapport, sans que rien ne le signale.
 
-Ces branches évaluent sur leur propre périmètre (leur jeu d'entrée pruné, leurs propres
-niveaux, `eval.levels: 4`) et avec leur propre convention. Pour un même modèle et un même jeu,
-leurs chiffres diffèrent donc de ceux du rapport. Ne jamais mettre les trois séries côte à côte
-sans préciser laquelle est laquelle ; la référence pour juger le pipeline est le `report`.
+Ces calculs ont disparu des étapes de classification : seule l'[étape
+`evaluate`](11-evaluate.qmd) mesure, et elle publie explicitement les **deux conventions**
+(`accuracy_*` stricte et `accuracy_all_*` inclusive) — voir
+[la page evaluate](11-evaluate.qmd#les-deux-conventions-daccuracy).
 
 Subsiste aussi une ambiguïté propre à la convention inclusive : une vérité terrain peu profonde
 peut être un code canonique terminal (mesure exacte) ou une annotation incomplète (une
@@ -252,13 +247,20 @@ inclusive — une vérité terrain peu profonde *et* terminale est une mesure ex
 peu profonde *non* terminale est une annotation incomplète — et de signaler une
 sous-codification dans le fichier livré.
 
+## Résolus par la sortie de l'évaluation
+
+- **Détection du mode du rapport** : `report/main.py` testait `bool_and(code IS NULL)` ; un
+  seul code non nul dans un fichier de production faisait basculer tout le rapport en mode
+  évaluation. La détection a disparu avec la dualité.
+- **Accuracy regex trompeuse** : `classify-regex` calculait une accuracy par égalité stricte
+  entre la vérité (niveau 5) et son code prédit (niveau ≤ 4) — proche de 0 par construction, et
+  jamais documentée. Le bloc a été supprimé.
+- **`rag-notices` loguait une accuracy ≈ 0 en production** : ce module n'a jamais connu la
+  dualité, il évaluait donc **sans condition**, et la garde qui devait ignorer les lignes sans
+  vérité terrain était commentée. Le bloc a été supprimé.
+
 ## Ouvert — détails d'exploitation
 
-- **Détection du mode du rapport** : `report/main.py` teste `bool_and(code IS NULL)`. Un seul
-  code non nul dans un fichier de production fait basculer tout le rapport en mode évaluation.
-- **Accuracy regex trompeuse** : `classify-regex` calcule une accuracy par égalité stricte entre
-  la vérité (niveau 5) et son code prédit (niveau ≤ 4) — la métrique est proche de 0 par
-  construction et ne doit pas être lue comme une performance.
 - **Script d'évaluation obsolète** : `rag-notices/scripts/eval.py` lit des colonnes
   (`code_tprune`, `code_predict_tprune`) que `2_run_rag.py` ne produit plus, et contient des
   chemins S3 datés en dur. Il n'est pas appelé par Argo.

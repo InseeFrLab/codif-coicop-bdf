@@ -31,7 +31,7 @@ chaque ligne est un libellé **court et bruité** à rattacher à la nomenclatur
 ```{mermaid}
 flowchart LR
   input[/"CSV d'entrée"/] --> PRE[build-datasets]
-  PRE -- "raw_test / observations" --> REG[classify-regex]
+  PRE -- observations --> REG[classify-regex]
   PRE -.->|"suggester.parquet"| LCS
   REG -- raw_test_without_regex --> LCS[classify-lcs]
   REG -- raw_test_without_regex --> PRU[prune-codes]
@@ -55,7 +55,7 @@ flowchart LR
 
 - **Argo Workflows** ; chaque étape = un conteneur qui `git clone` (paramètre `git-branch`, défaut `main`) + `uv sync --locked`
 - Un dossier S3 par run : `…/workflow_runs/{run_date}/{run_id}/<étape>/` ; `run_id`/`run_date` passés en CLI partout
-- **Trois workflows** : `codif-pipeline.yaml` (codification, modes prod/éval via `input_file`),
+- **Trois workflows** : `codif-pipeline.yaml` (codification ; un seul mode, `input_file` obligatoire),
   `index-notices-pipeline.yaml` et `index-annotations-pipeline.yaml` (construction des collections Qdrant)
 - Les nœuds en pointillé ne sont **pas** des étapes : ce sont des collections bâties à l'avance,
   désignées par les paramètres **obligatoires** `classify-rag-*-collection`
@@ -78,7 +78,7 @@ Deux problèmes :
 . . .
 
 Après : deux workflows autonomes, une collection au **nom unique** par indexation
-(`{base}[__{kb_scope}]__{run_date}__{run_id}[__sampleN]`), un **manifeste JSON** à côté
+(`{base}__{run_date}__{run_id}[__sampleN]`), un **manifeste JSON** à côté
 (modèle d'embedding, dimension, stratégie, points, SHA git) que `classify-rag-*` relit et
 **valide au démarrage**. `skip-index` n'existe plus : il n'y a plus rien à sauter.
 
@@ -108,7 +108,7 @@ court-circuite l'appel LLM. C'est le compromis coût / qualité central du pipel
 - mappage de colonnes configurable (`NAT_DEP` → `raw_product`…) ; `id` UUID par ligne
 - **deux normalisations** : `l_pr_product` (légère → RAG/TTC) et `s_pr_product` (forte → regex/LCS)
 - enseigne → `shop_type_name` (jointure `liste_magasins.csv`) ; retrait des non-codables
-- écrit `raw_test.parquet` + le pool `suggester.parquet` (COPAIN, codé main)
+- écrit `observations.parquet` (à coder) + `annotations_full.parquet` (la KB) + le pool `suggester.parquet`
 
 **classify-regex** (`classify-regex/`, 43 règles dans `config/rules.yaml`) :
 
@@ -142,7 +142,7 @@ cosinus, collection au nom unique + manifeste JSON :
 
 - `index-notices-pipeline.yaml` → notices COICOP prunées (`coicop_notices__…`)
 - `index-annotations-pipeline.yaml` → produits déjà annotés + suggester
-  (`coicop_annotations__{full|train}__…`) ; **aucun `input_file`** : la KB, ce sont les
+  (`coicop_annotations__…`) ; **aucun `input_file`** : la KB, ce sont les
   produits *annotés*, pas les produits *à classer* — d'où l'absence de `classify-regex` dans la chaîne
 
 **Codification** — `classify-rag-notices` / `classify-rag-annotations` : embedding de
@@ -203,7 +203,7 @@ Pour chaque ligne en désaccord :
 
 ```text
 s3://projet-budget-famille/data/workflow_runs/{run_date}/{run_id}/
-├── build-datasets/            raw_test.parquet · suggester.parquet
+├── build-datasets/            observations.parquet · annotations_full.parquet · suggester.parquet
 ├── classify-regex/            REGEX_pred.parquet · raw_test_without_regex.parquet
 ├── classify-lcs/              raw_test_LCS.parquet     (lcs_code, distance, substring, prop)
 ├── prune-codes/               nomenclature_pruned · mapping_lvl4 ·
@@ -235,12 +235,14 @@ sinon le code regex, sinon vide.
 | `llm` | arbitrage — croiser avec `llm_confiance` et `llm_comment` |
 | *(vide)* | non codé : échec LLM, raison dans `llm_error` (fichier reconcile-llm) |
 
-**`report`** : 2 gabarits choisis automatiquement (`code` tout NULL → prédiction) —
-distribution par niveau, sources, meilleur prédicteur par code, désaccords totaux ;
-en mode évaluation : accuracy par niveau/groupe, confusion, calibration.
+**`report`** (rapport de production, sans vérité terrain) : distribution par niveau, sources,
+meilleur prédicteur par code, désaccords totaux.
 
-**Traçabilité** : MLflow `codif-coicop-eval` (paramètres dont `ttc_model_uri`, métriques,
-`report.html` en artefact) + traces Langfuse (classify-rag-notices).
+**`evaluate`** (facultative, déclenchée par `label-column`) : accuracy par niveau/groupe/source,
+confusion, calibration, recall de retrieval, coût de l'arbitrage.
+
+**Traçabilité** : MLflow (paramètres dont `ttc_model_uri`, métriques, HTML en artefact) +
+traces Langfuse (classify-rag-notices).
 
 ## Opérations courantes {.smaller}
 
@@ -248,7 +250,7 @@ en mode évaluation : accuracy par niveau/groupe, confusion, calibration.
 # 1. Construire les collections Qdrant (une fois, ou quand les sources changent).
 #    Chacune imprime la ligne à recopier dans argo/params.yaml.
 argo submit argo/index-notices-pipeline.yaml
-argo submit argo/index-annotations-pipeline.yaml       # kb-scope=full par défaut
+argo submit argo/index-annotations-pipeline.yaml       # la KB = toute la base annotée
 
 # 2. Pipeline complet (test rapide : -p sample-observations=100)
 argo submit argo/codif-pipeline.yaml --parameter-file argo/params.yaml
@@ -290,15 +292,14 @@ Constats vérifiés dans le code, à garder en tête :
 - **MLflow éclaté** : classify-rag-notices loggue dans l'expérience `test`, classify-rag-annotations
   dans `rag-annotation`, report dans `codif-coicop-eval`
 - **`argo/ttc-pipeline.yaml` invalide et mal nommé** : workflow de prédiction, échoue à `argo lint`
-- **`vector_index.py` dupliqué à l'identique** dans `rag_notices` et `rag_annotations` (pas de
-  module `common/`) : toute modification doit être reportée dans les deux copies, sous peine de
-  casser la validation au démarrage
-- **`kb-scope=train` transitoire** : reliquat de l'époque sans jeu de test indépendant, à supprimer
 
 . . .
 
-Réglés depuis : collection Qdrant unique écrasée à chaque run (→ noms uniques + manifestes),
-branches git incohérentes (→ paramètre `git-branch` partout).
+Réglés depuis : collection Qdrant unique écrasée à chaque run (→ noms uniques + manifestes) ;
+branches git incohérentes (→ paramètre `git-branch` partout) ; `vector_index.py` dupliqué
+(→ module `common/`) ; **la dualité prod/éval** — un mode dérivé du seul fait qu'`input_file`
+soit vide ou non, testé à treize endroits, avec des métriques dans trois étapes de
+classification (→ un seul mode + l'étape facultative `evaluate`).
 
 ## Pistes — fiabilité
 
@@ -326,11 +327,9 @@ branches git incohérentes (→ paramètre `git-branch` partout).
 ## Pistes — méthode
 
 1. **Jeu d'évaluation permanent** : un échantillon annoté stable + un run de
-   `codif-pipeline.yaml` en mode évaluation (`input_file` vide) **à chaque changement** de
-   modèle, prompt ou règle — comparaison directe dans MLflow (l'infra existe déjà)
-2. **Sortir `kb-scope=train`** une fois la transition faite : le jeu de test indépendant
-   fourni par les nouveaux produits annotés rend le split historique inutile
-3. **Vendoriser une copie du prompt Langfuse** dans le dépôt (fallback + revue de code)
+   `codif-pipeline.yaml` avec `-p label-column=code` **à chaque changement** de modèle, prompt
+   ou règle — comparaison directe dans MLflow (l'infra existe déjà)
+2. **Vendoriser une copie du prompt Langfuse** dans le dépôt (fallback + revue de code)
 4. **Remplacer le littéral `Reprise manuelle`** par un code technique dédié (ex. `97.x`)
    pour garder `predicted_code` typé « code »
 5. Purge / cycle de vie des dossiers `workflow_runs/` — et des collections Qdrant, dont le

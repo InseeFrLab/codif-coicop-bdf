@@ -30,7 +30,7 @@ import pandas as pd
 import seaborn as sns
 from IPython.display import Markdown
 
-from coicop_metrics import (
+from codif_common.metrics import (
     CANONICAL_LEVELS,
     LEVELS,
     METHODS,
@@ -53,9 +53,22 @@ from coicop_metrics import (
 
 sns.set_theme(style="whitegrid")
 
-INPUT = os.environ["REPORT_INPUT_PATH"]
-RUN_ID = os.environ.get("REPORT_RUN_ID", "(inconnu)")
-RUN_DATE = os.environ.get("REPORT_RUN_DATE", "(inconnu)")
+INPUT = os.environ["EVAL_DECIDE_PATH"]
+RUN_ID = os.environ.get("EVAL_RUN_ID", "(inconnu)")
+RUN_DATE = os.environ.get("EVAL_RUN_DATE", "(inconnu)")
+
+# Artefacts complémentaires, facultatifs : le parquet de conciliation ne porte
+# ni les codes récupérés par les RAG (retirés à la fusion) ni les lignes captées
+# par la regex (elles n'entrent jamais dans la chaîne). Sans eux, pas de recall
+# de retrieval ni d'accuracy de bout en bout — mais le rapport reste lisible.
+RETRIEVED_PATH = os.environ.get("EVAL_RETRIEVED_PATH") or None
+RAGANN_PATH = os.environ.get("EVAL_RAGANN_PATH") or None
+DELIVERABLE_PATH = os.environ.get("EVAL_DELIVERABLE_PATH") or None
+
+# Ventilation par provenance du produit. Vide : la section est omise. Ce
+# paramètre ne restreint jamais le périmètre codé — c'est une dimension
+# d'analyse, pas un filtre.
+SOURCE_COLUMN = os.environ.get("EVAL_SOURCE_COLUMN") or None
 
 con = duckdb.connect()
 con.sql("INSTALL httpfs; LOAD httpfs;")
@@ -124,7 +137,7 @@ scorable = df[df[TRUTH].notna() & (df[TRUTH].astype(str).str.len() > 0)].copy()
 ```{python}
 # | tags: [utils]
 # code_parts / level_result / accuracy_series / accuracy / accuracy_table and the
-# METHODS / LEVELS constants are imported from coicop_metrics (shared with main.py
+# METHODS / LEVELS constants are imported from codif_common.metrics (shared with main.py
 # so the report and the MLflow-logged metrics never diverge).
 def style_acc(tbl: pd.DataFrame):
     return (
@@ -527,6 +540,27 @@ Markdown(
     if len(tbl_l2)
     else "_Pas assez d'observations par niveau 2._"
 )
+```
+
+### Par provenance du produit
+
+La provenance — ticket de caisse scanné, carnet papier, saisie assistée dans
+l'application — conditionne fortement la qualité du libellé, donc la difficulté
+de la codification. Un écart marqué entre sources désigne où porter l'effort :
+améliorer la saisie en amont, ou le classifieur en aval.
+
+Cette ventilation n'apparaît que si le run a été lancé avec `source-column`.
+Elle ne restreint jamais le périmètre codé : c'est une dimension d'analyse.
+
+```{python}
+# | label: tbl-source
+if SOURCE_COLUMN and SOURCE_COLUMN in scorable.columns and scorable[SOURCE_COLUMN].notna().any():
+    out = render_group_table(scorable, SOURCE_COLUMN, k=4).to_markdown(index=False)
+elif SOURCE_COLUMN:
+    out = f"_Colonne `{SOURCE_COLUMN}` annoncée mais absente ou vide dans les données._"
+else:
+    out = "_Ventilation par source non demandée (`source-column` vide)._"
+Markdown(out)
 ```
 
 ### Par `shop`

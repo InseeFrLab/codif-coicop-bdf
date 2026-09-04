@@ -22,10 +22,11 @@ from codif_common.s3 import connect_env as create_duckdb_connection
 # (`llm_code` vaut "N/A" quand l'arbitrage LLM échoue). Toutes comptent comme
 # abstention, pas comme code.
 #
-# Défini ici plutôt que dans `report/` : c'est du vocabulaire de code COICOP,
-# et `report/` n'est pas installable comme dépendance (il tire jupyter,
-# matplotlib, seaborn). `report.coicop_metrics` et le module `reconcile-sirus/` importent
-# tous les deux depuis ici, pour qu'un ajout de sentinelle profite aux deux.
+# Défini ici plutôt que dans un module de rapport : c'est du vocabulaire de code
+# COICOP, et `report/` comme `evaluate/` ne sont pas installables comme
+# dépendances (ils tirent jupyter, matplotlib, seaborn). `codif_common.metrics` et
+# le module `reconcile-sirus/` importent tous les deux depuis ici, pour qu'un ajout
+# de sentinelle profite aux deux.
 ABSTENTION_SENTINELS = frozenset(
     {"", "-", "?", "n/a", "na", "nan", "nat", "none", "null"}
 )

@@ -37,7 +37,7 @@ son identifiant est recopié dans le fichier de paramètres.
 Schéma Excalidraw du [pipeline](https://link.excalidraw.com/l/9vLymO4fSxN/3JjfZov3UgX).
 
 ```text
-build-datasets  (input_file : production / évaluation)
+build-datasets  (input_file : OBLIGATOIRE — un seul mode)
   └─→ classify-regex ─┬─→ classify-lcs ──────────────────────────────────────────┐
                       ├─→ classify-ttc ──────────────────────────────────────────┤
                       └─→ prune-codes ─┬─→ classify-rag-notices ─────────────────┤
@@ -51,6 +51,7 @@ build-datasets  (input_file : production / évaluation)
                                      │  les 4 classifieurs convergent
                                      └─→ reconcile-llm  OU  reconcile-sirus   (exclusifs : paramètre `reconciliation`)
                                              └─→ export-results ─→ report  (opt-in)
+                                                       └─→ evaluate  (facultative : label-column)
 ```
 
 Points à retenir sur cette topologie :
@@ -63,6 +64,8 @@ Points à retenir sur cette topologie :
   a plus rien à sauter.
 - `reconcile-llm` attend les quatre classifieurs ; `report` dépend de toutes les étapes
   précédentes (il en loggue les durées).
+- **`evaluate` est la dernière**, et facultative : elle ne tourne que si le fichier d'entrée
+  portait une colonne d'étiquettes. Voir [Évaluer un run](11-evaluate.qmd).
 
 Chaque étape lit et écrit sur S3 dans un dossier propre au run :
 `s3://projet-budget-famille/data/workflow_runs/{run_date}/{run_id}/<étape>/`.
@@ -78,15 +81,15 @@ de retomber en silence sur l'index d'un autre run — ou de planter après deux 
 ```yaml
 # argo/params.yaml
 classify-rag-notices-collection: coicop_notices__2026-09-02__index-notices-a7k2p
-classify-rag-annotations-collection: coicop_annotations__full__2026-09-02__index-annotations-b3x9q
+classify-rag-annotations-collection: coicop_annotations__2026-09-02__index-annotations-b3x9q
 ```
 
 Ces deux lignes sont **imprimées telles quelles** en fin d'exécution du pipeline d'indexation
 correspondant : il n'y a rien à reconstituer depuis les logs, seulement à copier.
 
-Le nom d'une collection suit la forme `{base}[__{kb_scope}]__{run_date}__{run_id}[__sampleN]`.
-Il porte ce qu'un humain doit voir d'un coup d'œil (la portée de la KB, la date, le run, un
-éventuel échantillonnage) ; tout le reste — modèle d'embedding, dimension, stratégie de
+Le nom d'une collection suit la forme `{base}__{run_date}__{run_id}[__sampleN]`.
+Il porte ce qu'un humain doit voir d'un coup d'œil (la date, le run, un éventuel
+échantillonnage) ; tout le reste — modèle d'embedding, dimension, stratégie de
 découpage, nombre de points, SHA git — vit dans un **manifeste JSON** écrit à côté :
 
 ```
@@ -116,49 +119,52 @@ Le **regex** est à part : il tranche en amont et retire ses lignes du flux. Les
 autres** produisent chacun une prédiction candidate sur les mêmes observations, que
 [`reconcile-llm`](06-reconcile-llm.qmd) arbitre.
 
-## Modes prod / éval
+## Un seul mode, et l'évaluation en fin de course
 
-Un **seul** workflow de codification (`argo/codif-pipeline.yaml`) couvre les deux usages. Le
-commutateur est le paramètre **`input_file`** :
+Le pipeline de codification (`argo/codif-pipeline.yaml`) n'a **qu'un seul mode** : il code le
+fichier désigné par `input_file`, qui est **obligatoire**. Il n'y a plus de « mode évaluation »
+déclenché par un `input_file` vide.
 
-| | Mode **production** | Mode **évaluation** |
+### Pourquoi il y en avait deux
+
+Le pipeline a été construit **pour être évalué**. Il n'existait alors qu'un seul jeu annoté :
+pour mesurer sa qualité sans qu'un classifieur retrouve ses propres réponses, il fallait le
+couper en deux — une moitié en base de connaissance, l'autre en jeu de test. Cette précaution a
+essaimé : un mode dérivé du seul fait qu'`input_file` soit vide ou non, testé à **treize
+endroits**, plus un `--skip-eval`, un `train_test_split`, une option `kb-scope`, et des calculs
+de métriques dans trois étapes de classification.
+
+Le contexte a changé : des données fraîches annotées arrivent régulièrement. Toute la base
+historique peut donc servir de KB **sans découpage**, et l'évaluation devient une opération
+*d'après-coup* sur un run ordinaire dont l'entrée se trouve porter des étiquettes.
+
+### Ce qui déclenche l'évaluation
+
+C'est la **donnée** qui décide, pas un mode :
+
+| Paramètre | Défaut | Rôle |
 |---|---|---|
-| `input_file` | non vide (CSV/parquet à codifier) | vide (`""`) |
-| Ce qui est codifié | les observations du fichier fourni | le split **test** des annotations manuelles |
-| Vérité terrain | absente (`code` à `NA`) | présente (code annoté) |
-| Livrable | fichier d'entrée enrichi (`export-results`) | rapport d'exactitude |
+| `label-column` | *(vide)* | Nom de la colonne d'étiquettes dans le fichier d'entrée. **Vide ⇒ l'étape `evaluate` est sautée**, ce qui est le cas nominal. Non vide, `build-datasets` la recopie dans `code`, qui la porte jusqu'au bout de la chaîne |
+| `eval-source-column` | *(vide)* | Nom de la colonne de provenance du produit. Ajoute une ventilation de l'accuracy par source au rapport. Ne restreint **jamais** le périmètre codé |
+| `skip-eval` | `false` | Échappatoire : saute `evaluate` même si `label-column` est renseignée |
+| `eval-experiment` | `codif-coicop-eval` | Expérience MLflow de l'étape |
 
-Le mode se propage étape par étape :
-
-| Étape | En production | En évaluation |
-|---|---|---|
-| `build-datasets` | reçoit `--input-file` + le mappage de colonnes, produit **`observations.parquet`** en plus des annotations | produit seulement les annotations (`annotations_full`, `raw_train`, `raw_test`) |
-| `classify-regex` | lit `test_set_prod` = `observations.parquet` et `train_set_prod` = `annotations_full.parquet` | lit `test_set` = `raw_test.parquet` et `train_set` = `raw_train.parquet` |
-| `classify-rag-annotations` | `--skip-eval true` (prédictions seules) | `--skip-eval false` (calcule les métriques) |
-| `reconcile-llm` | `--extra-columns-file` = `observations.parquet` | `--extra-columns-file` = `raw_test.parquet` |
-| `export-results` | repart de `observations.parquet` et restaure le nom du fichier d'entrée | repart de `raw_test.parquet` |
-| `report` | détecte l'absence de vérité terrain → `prediction_report.qmd` | → `report.qmd` (accuracy par niveau) |
+Rien d'autre ne change dans le run : les mêmes étapes tournent, sur les mêmes fichiers, avec les
+mêmes paramètres. Seule une étape s'ajoute à la fin. Voir [Évaluer un run](11-evaluate.qmd).
 
 ::: {.callout-note}
-La détection du mode par `report` est **automatique** : il teste `bool_and(code IS NULL)` sur
-la sortie de `reconcile-llm`. Un seul code non nul dans un fichier de production suffit donc à
-faire basculer le rapport en mode évaluation.
+## Ce que ce changement a corrigé au passage
+`rag-notices` calculait ses métriques **sans condition** — ce module n'a jamais connu la
+dualité — et la garde qui devait ignorer les lignes sans vérité terrain était commentée. Chaque
+run de production loguait donc dans MLflow une accuracy ≈ 0, silencieusement. Ce bloc a
+disparu avec les autres.
+
+De même, `report` détectait son mode en testant `bool_and(code IS NULL)` : un seul code non nul
+dans un fichier de production faisait basculer tout le rapport en mode évaluation. La détection
+n'existe plus, `report` étant désormais le rapport de production, sans variante.
 :::
 
-::: {.callout-warning}
-## En évaluation, attention à la portée de la collection d'annotations
-Une collection bâtie en `kb-scope=full` contient **tous** les produits annotés. Si le jeu de
-test d'un run d'évaluation provient du même lot historique, le RAG y retrouve ses propres
-réponses et l'accuracy est gonflée — sans qu'aucune étape n'échoue. Dans ce cas, viser une
-collection bâtie en `kb-scope=train` (son nom contient `__train__`).
-
-`classify-rag-annotations` détecte la situation et **avertit** dans ses logs, sans bloquer :
-depuis que les nouveaux produits annotés fournissent un jeu de test indépendant, ce n'est plus
-la norme. Le mode `train` n'existait d'ailleurs que faute d'un tel jeu de test ; il est
-conservé le temps de la transition et **destiné à disparaître**.
-:::
-
-Le mappage de colonnes (mode production) se fait par paramètres Argo, le pipeline n'imposant
+Le mappage de colonnes se fait par paramètres Argo, le pipeline n'imposant
 aucun nom de colonne en entrée :
 
 | Paramètre Argo | Valeur par défaut | Colonne pipeline produite |
@@ -168,6 +174,7 @@ aucun nom de colonne en entrée :
 | `budget_column` | `MONT_DEP` | `budget` (montant €) |
 | `annee_column` | *(vide)* | `annee` |
 | `source_column` | *(vide)* | `source` |
+| `label-column` | *(vide)* | `code` (la vérité terrain — voir ci-dessus) |
 
 ## Échantillonnage
 
@@ -178,16 +185,15 @@ point unique : `classify-regex`**. Le jeu à coder y est échantillonné une seu
 
 | Paramètre | Workflow | Effet |
 |---|---|---|
-| `sample-observations` | `codif-pipeline.yaml` | limite le nombre de libellés **à coder**, en production comme en évaluation |
+| `sample-observations` | `codif-pipeline.yaml` | limite le nombre de libellés **à coder** |
 | `kb-sample-size` | `index-annotations-pipeline.yaml` | limite le nombre de points **indexés** dans la collection d'annotations (donc le temps d'embedding) |
 
 ::: {.callout-note}
 ## Un seul curseur pour le jeu à coder
-Il y avait auparavant deux paramètres, `sample-observations` (production) et
-`sample-annotations` (évaluation). Le second plafonnait à la fois le jeu à coder et la KB
-indexée — deux choses sans rapport. L'indexation étant sortie du pipeline, le curseur de KB l'a
-suivie (`kb-sample-size`), et le jeu à coder en évaluation relève désormais du même
-`sample-observations` qu'en production : c'est le même concept.
+Il y avait auparavant deux paramètres, `sample-observations` et `sample-annotations`, un par
+mode. Le second plafonnait à la fois le jeu à coder et la KB indexée — deux choses sans
+rapport. L'indexation étant sortie du pipeline, le curseur de KB l'a suivie
+(`kb-sample-size`) ; le jeu à coder n'en a plus qu'un, `sample-observations`.
 
 La collection échantillonnée porte un suffixe `__sampleN` visible dans son nom, précisément
 pour qu'on ne recopie pas par mégarde un index-jouet dans les paramètres de production.
@@ -202,13 +208,17 @@ paramètres disparus sont à traquer dans les scripts d'appel, pas à attendre d
 :::
 
 ```bash
-# 100 libellés à coder, en évaluation
+# 100 libellés à coder
 argo submit argo/codif-pipeline.yaml --parameter-file argo/params.yaml -p sample-observations=100
 
-# production sur 100 libellés d'un fichier réel
+# 100 libellés d'un autre fichier
 argo submit argo/codif-pipeline.yaml --parameter-file argo/params.yaml \
   -p input_file=s3://projet-budget-famille/data/workflow_inputs/mon_fichier.csv \
   -p sample-observations=100
+
+# … et en mesurer la qualité, le fichier portant une colonne `code`
+argo submit argo/codif-pipeline.yaml --parameter-file argo/params.yaml \
+  -p sample-observations=100 -p label-column=code
 
 # petite base vectorielle d'annotations, pour tester la chaîne d'indexation
 argo submit argo/index-annotations-pipeline.yaml -p kb-sample-size=1000

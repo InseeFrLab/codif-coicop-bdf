@@ -1,13 +1,13 @@
 """Tests des deux conventions d'accuracy et de la résolution de la vérité terrain.
 
-Lancer depuis `report/` : `uv run --with pytest pytest test_coicop_metrics.py`
+Lancer depuis `common/` : `uv run pytest tests/test_metrics.py`
 """
 
 import json
 
 import pandas as pd
 
-from coicop_metrics import (
+from codif_common.metrics import (
     CANONICAL_LEVELS,
     CONSENSUS_LABEL,
     REGIME_COL,

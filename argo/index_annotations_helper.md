@@ -19,9 +19,6 @@ argo submit argo/index-annotations-pipeline.yaml --watch
 
 # Essai rapide — plafonne la KB indexée, donc le temps d'embedding
 argo submit argo/index-annotations-pipeline.yaml -p kb-sample-size=100 --watch
-
-# Ancien split train (transitoire, voir plus bas)
-argo submit argo/index-annotations-pipeline.yaml -p kb-scope=train --watch
 ```
 
 Chaîne exécutée : `build-datasets → prune-codes (--only kb) → index-annotations`.
@@ -33,7 +30,7 @@ produits que la regex sait coder.
 L'étape affiche en fin d'exécution la ligne à recopier dans `argo/params.yaml` :
 
 ```
-classify-rag-annotations-collection: coicop_annotations__full__2026-09-02__index-annotations-a7k2p
+classify-rag-annotations-collection: coicop_annotations__2026-09-02__index-annotations-a7k2p
 ```
 
 Si le workflow est déjà terminé :
@@ -46,7 +43,6 @@ argo logs <nom-du-workflow> | grep classify-rag-annotations-collection
 
 | Paramètre | Défaut | Rôle |
 |---|---|---|
-| `kb-scope` | `full` | `full` = tous les produits annotés ; `train` = ancien split |
 | `kb-sample-size` | `""` (toute la KB) | Plafonne la KB indexée |
 | `collection-name` | `""` (composé) | Force un nom exact |
 | `git-branch` | `main` | Branche clonée par les steps |
@@ -54,18 +50,15 @@ argo logs <nom-du-workflow> | grep classify-rag-annotations-collection
 `kb-sample-size` n'est pas le `sample-annotations` du pipeline de classification :
 celui-ci ne plafonne que les observations à coder, jamais la KB.
 
-## `kb-scope=train` : transitoire
+## Il y avait ici une option `kb-scope`
 
 Le split train/test n'existait que parce que les seuls produits annotés
-disponibles servaient à la fois de KB et de jeu d'évaluation. Les nouveaux
-produits annotés fournissent désormais un jeu de test indépendant, donc toute
-la base historique peut servir de KB — c'est le défaut `full`. L'option `train`
-reste le temps de la transition et sera supprimée.
+disponibles servaient à la fois de KB et de jeu d'évaluation : il fallait bien
+en réserver une moitié pour mesurer. Les nouveaux produits annotés fournissent
+désormais un jeu indépendant, donc **toute la base historique sert de KB** et
+l'option a été supprimée, avec le segment `__full__` / `__train__` du nom de
+collection.
 
-Tant qu'elle existe : si le jeu de test d'un run d'évaluation provient du même
-lot historique que la KB, une KB `full` contient ses réponses et l'accuracy est
-gonflée. `classify-rag-annotations` émet un avertissement dans ce cas, sans
-bloquer. Le `kb-scope` est visible dans le nom de la collection et dans son
-manifeste.
-
-Chaque exécution crée une collection de plus ; rien ne supprime les anciennes.
+Reste la vigilance qu'elle couvrait : si le fichier évalué provient du même lot
+historique que la KB, le RAG y retrouve ses réponses et l'accuracy est gonflée,
+sans qu'aucune étape n'échoue. Plus rien ne le détecte.

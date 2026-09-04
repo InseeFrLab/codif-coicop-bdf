@@ -52,6 +52,7 @@ members = [
     # Socle partagé : ne dépend d'aucun autre membre, donc aucun cycle possible.
     "common",
     "classify-ttc",
+    "evaluate",
     "export-results",
     "prune-codes",
     "rag-annotations",

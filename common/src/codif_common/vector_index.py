@@ -32,17 +32,15 @@ def build_collection_name(
     base: str,
     run_date: str,
     run_id: str,
-    mode: Optional[str] = None,
     sample_size: Optional[int] = None,
 ) -> str:
     """Compose le nom unique d'une collection.
 
-    Forme : ``{base}[__{mode}]__{run_date}__{run_id}[__sample{N}]``
+    Forme : ``{base}__{run_date}__{run_id}[__sample{N}]``
 
-    `mode` porte le périmètre de la KB — 'full' (tous les produits annotés) ou
-    'train' (l'ancien split, transitoire) — et n'est renseigné que pour les
-    annotations, dont le contenu en dépend réellement. Les notices dérivent d'un
-    CSV statique et n'ont pas de périmètre : leur en inventer un serait mensonger.
+    Il y avait autrefois un segment de périmètre (`__full__` / `__train__`) pour
+    les annotations, du temps où la KB était un demi-jeu. La KB, ce sont
+    désormais tous les produits annotés : le segment n'a plus rien à distinguer.
 
     `sample_size` ajoute un suffixe visible : sans lui, un index de test à 100
     points et un index complet portent des noms de même forme, et rien ne
@@ -51,10 +49,7 @@ def build_collection_name(
     Les segments sont sûrs en chemin d'URL (Qdrant expose le nom dans ses URLs) :
     tirets et chiffres uniquement, jamais ':' ni '/'.
     """
-    parts = [base]
-    if mode:
-        parts.append(mode)
-    parts.extend([run_date, run_id])
+    parts = [base, run_date, run_id]
     name = SEP.join(parts)
     if sample_size:
         name = f"{name}{SEP}sample{sample_size}"

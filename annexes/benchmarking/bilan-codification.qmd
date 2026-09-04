@@ -23,10 +23,10 @@ jupyter: python3
 # la colonne `code_previous` sert de référence, ce qui permet de mesurer une
 # accuracy là où un run de production n'en fournit normalement pas.
 #
-# Rendu (l'environnement du module `report/` porte déjà toutes les dépendances,
-# `coicop_metrics` et le paquet `prune` compris) :
+# Rendu (l'environnement du module `evaluate/` porte déjà toutes les
+# dépendances, `codif_common.metrics` et `prune-codes` compris) :
 #
-#     cd report/ && uv sync
+#     cd evaluate/ && uv sync
 #     BILAN_RUN_ID=codif-sj4jz BILAN_RUN_DATE=2026-08-31 \
 #     BILAN_INPUT=<chemin s3 du export-results> \
 #       uv run quarto render ../annexes/benchmarking/bilan-codification.qmd
@@ -47,28 +47,27 @@ import pandas as pd
 import seaborn as sns
 from IPython.display import Markdown
 
-# `coicop_metrics` (module libre de report/) et `prune` (paquet installé, mais
-# ajouté ici pour un rendu hors environnement report/) : on réutilise les
-# helpers testés plutôt que de réimplémenter la comparaison de codes.
+# `codif_common.metrics` et `prune_codes` sont des paquets du workspace ; ils
+# sont ajoutés au path pour un rendu lancé hors de leur environnement. On
+# réutilise ces helpers testés plutôt que de réimplémenter la comparaison de
+# codes.
 # Racine du dépôt trouvée en remontant jusqu'à un marqueur, et non par un nombre
 # de niveaux : quarto exécute depuis le dossier du .qmd, mais un rendu lancé
 # autrement (kernel enregistré globalement, notebook ouvert à la main) n'aurait
 # pas la même profondeur.
 _HERE = Path.cwd().resolve()
-_ROOT = next(
-    (p for p in (_HERE, *_HERE.parents) if (p / "report" / "coicop_metrics.py").is_file()),
-    None,
-)
+_MARKER = Path("common") / "src" / "codif_common" / "metrics.py"
+_ROOT = next((p for p in (_HERE, *_HERE.parents) if (p / _MARKER).is_file()), None)
 if _ROOT is None:
     raise RuntimeError(
         "Racine du dépôt codif-coicop-bdf introuvable depuis "
-        f"{_HERE} : `report/coicop_metrics.py` est requis."
+        f"{_HERE} : `{_MARKER}` est requis."
     )
-for _p in (_ROOT / "report", _ROOT / "prune-codes" / "src"):
+for _p in (_ROOT / "common" / "src", _ROOT / "prune-codes" / "src"):
     if str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
 
-from coicop_metrics import accuracy, accuracy_series  # noqa: E402
+from codif_common.metrics import accuracy, accuracy_series  # noqa: E402
 from prune_codes.utils import truncate_code  # noqa: E402
 
 RUN_ID = os.environ.get("BILAN_RUN_ID", "codif-sj4jz")
@@ -153,7 +152,7 @@ df["truth"] = (
 # Convention `inclusive=True` : toutes les lignes portant une vérité comptent, à
 # quelle que profondeur que ce soit. C'est la seule convention qui ait un sens
 # sur des codes canoniques — une vérité `01.3` **est** la réponse de niveau 4, et
-# non une troncature de celle-ci (cf. docstring de report/coicop_metrics.py).
+# non une troncature de celle-ci (cf. docstring de common/src/codif_common/metrics.py).
 LEVEL = 4
 df["ok"] = accuracy_series(df["truth"], df["predicted_code"], LEVEL, inclusive=True)
 

@@ -1,28 +1,9 @@
-"""Shared COICOP metric helpers.
+"""Vocabulaire et calculs de mesure du pipeline COICOP.
 
-Used by both ``report.qmd`` (so the rendered report and the metrics logged to
-MLflow never diverge) and ``main.py`` (which logs to MLflow).
-
-COICOP codes are stored as dot-separated strings (e.g. ``"01.1.2.3.4"``).
-Level-k accuracy compares the first ``k`` segments of the prediction with the
-ground truth.
-
-Two conventions coexist, and both are reported (see ``accuracy_table``):
-
-``inclusive=False`` (strict, historical)
-    Rows whose ground truth is shallower than ``k`` are **excluded** from the
-    denominator: that depth cannot be evaluated for them. A prediction shorter
-    than ``k`` counts as an error. Answers "among the observations codeable at
-    depth k, what share did we get right?".
-
-``inclusive=True``
-    **Every** row with a ground truth counts, whatever its depth. The truth and
-    the prediction are compared on ``parts[:k]``, so a truth shallower than
-    ``k`` demands a prediction equal to it. This is only meaningful on
-    *canonical* codes (``code_lvl4``): once linear hierarchies are pruned, a
-    truth of ``01.3`` means ``01.3`` **is** the level-4 answer, not a truncation
-    of it. Answers "over the whole population, what share did we place
-    correctly in the level-k grid?".
+Vivait dans `report/`, qui n'est pas un paquet installable. Déplacé ici parce
+que **deux** consommateurs en ont désormais besoin : le rapport de production
+et l'étape finale `evaluate`. Pandas pur, sans I/O ni MLflow : tout ce module
+est réutilisable tel quel.
 """
 
 from __future__ import annotations
@@ -85,9 +66,9 @@ REGIME_LEVEL = 4
 
 # Le vocabulaire de l'abstention (« ce classifieur a-t-il répondu ? ») vit dans
 # `prune_codes.utils` : c'est du vocabulaire de code COICOP, partagé avec le module
-# `reconcile-sirus/`, qui ne peut pas dépendre de `report/` (jupyter, matplotlib, seaborn).
-# Ré-exporté ici pour que report.qmd, prediction_report.qmd et main.py continuent
-# de l'importer depuis `coicop_metrics` sans changement.
+# `reconcile-sirus/`, qui ne peut pas dépendre de `evaluate/` (jupyter, matplotlib,
+# seaborn). Ré-exporté ici pour que les deux rapports Quarto et les deux `main.py`
+# (report et evaluate) l'importent depuis un seul endroit.
 ABSTENTION_SENTINELS = prune_abstention_sentinels
 
 # Colonnes booléennes par lesquelles une brique déclare explicitement que

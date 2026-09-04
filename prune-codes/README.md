@@ -38,8 +38,9 @@ Le dépôt est un workspace `uv` : le lock est à la racine, et cette commande n
 que les dépendances de ce module (voir « Environnement Python » dans le README racine).
 
 Entrées par défaut : la nomenclature COICOP brute + les sorties de `classify-regex`
-(`raw_train_without_regex` = KB, `raw_test_without_regex` = à coder) + le
-suggester (CSV). Voir `config/config.yaml`.
+(`raw_train_without_regex` = la KB, `raw_test_without_regex` = le jeu à coder — les
+suffixes `train`/`test` sont hérités du split supprimé) + le suggester (CSV).
+Voir `config/config.yaml`.
 
 ## `--only {all,nomenclature,kb}`
 
@@ -66,7 +67,7 @@ pruning sur `build-datasets` plutôt que sur `classify-regex` / le CSV brut :
 
 | Option | Défaut (config) | Ce qu'y met `index-annotations-pipeline.yaml` |
 |---|---|---|
-| `--annotations-train` | `annotations_train` (sortie `classify-regex`) | `build-datasets/annotations_full.parquet` (ou `raw_train.parquet` si `kb-scope=train`) |
+| `--annotations-train` | `annotations_train` (sortie `classify-regex`) | `build-datasets/annotations_full.parquet` |
 | `--suggester-path` | `suggester.s3_path` (CSV brut) | `build-datasets/suggester.parquet` (préprocessé, porte déjà `l_pr_product`) |
 | `--suggester-product-col` | `suggester.source_product_col` | `l_pr_product` |
 

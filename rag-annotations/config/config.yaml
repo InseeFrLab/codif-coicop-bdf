@@ -23,13 +23,11 @@ annotations:
   # Valeurs possibles : copain, receipts_from_app, manual_from_app,
   #                     manual_from_book, bdf_2017, suggester
   #
-  # Deux profils selon le mode (sélectionné via --skip-eval) :
-  #   - exclude_sources       → ÉVALUATION (KB = lot train restreint) ;
-  #   - exclude_sources_prod  → PRODUCTION (KB = toutes les annotations 2024 + suggester).
+  # Profil unique : la KB, ce sont tous les produits déjà annotés, plus le
+  # suggester. Il y avait deux profils quand le pipeline avait deux modes.
   # NB : copain est déjà exclu en amont (build-datasets, depuis 2026-06) ; il est
   # conservé ici par défense (no-op si la source n'arrive jamais jusqu'à la KB).
   exclude_sources: [bdf_2017, copain]
-  exclude_sources_prod: [bdf_2017, copain]
 
 # Données du suggester ajoutées à l'index, aux côtés des annotations de train.
 # Codes au niveau 5 et non prunés en amont → on leur applique exactement le même
@@ -72,9 +70,8 @@ llm:
   max_tokens: 2048
   concurrency: 32
 
+# Seuils et niveaux relus par l'étape `evaluate`, qui mesure désormais seule.
 eval:
-  # L'évaluation est opt-in : pilotée par --skip-eval (défaut 'true' = production).
-  # En mode évaluation, l'input doit contenir les labels (`code` / `coicop`).
   threshold_confidence: 0.7
   levels: 4   # évalue les niveaux COICOP 1..levels
   seed: 42    # graine pour l'échantillonnage optionnel (--sample_size)

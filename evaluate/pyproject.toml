@@ -1,0 +1,49 @@
+# Étape finale FACULTATIVE : mesure la qualité d'un run dont le fichier d'entrée
+# portait des étiquettes.
+#
+# Elle existe pour que le reste du pipeline n'ait plus qu'un seul mode. Avant, la
+# dualité production/évaluation était testée à 13 endroits, et trois étapes de
+# classification calculaient leurs propres métriques — dont une, `rag-notices`,
+# qui les calculait même en production et loguait une accuracy ≈ 0 sans que rien
+# n'échoue.
+#
+# Les dépendances de workspace tirent les trois bibliothèques de mesure, toutes
+# paramétrées par nom de colonne donc applicables à n'importe quelle prédiction :
+#   codif-common     → `metrics` : accuracy par niveau, couverture, régimes
+#   rag-notices      → recall de retrieval, accuracy de génération conditionnelle
+#   rag-annotations  → AUROC, distorsion de distribution, fiabilité du `codable`,
+#                      et `accuracy_by_source`, la ventilation par provenance
+[project]
+name = "evaluate"
+version = "0.1.0"
+description = "Rapport d'évaluation du pipeline de codification COICOP"
+requires-python = ">=3.13"
+dependencies = [
+    "boto3>=1.35",
+    "duckdb>=1.4.4",
+    "ipykernel>=6.29",
+    "jupyter>=1.1",
+    "matplotlib>=3.9",
+    "mlflow>=3.9.0",
+    "nbformat>=5.10",
+    "numpy>=2.0.0",
+    "pandas>=2.2",
+    "pyarrow>=16",
+    "seaborn>=0.13",
+    "tabulate>=0.9",
+    "codif-common",
+    "prune-codes",
+    "rag-notices",
+    "rag-annotations",
+]
+
+[tool.uv.sources]
+codif-common = { workspace = true }
+prune-codes = { workspace = true }
+rag-notices = { workspace = true }
+rag-annotations = { workspace = true }
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+]

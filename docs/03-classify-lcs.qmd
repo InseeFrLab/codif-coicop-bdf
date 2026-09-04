@@ -20,11 +20,11 @@ C'est une approche robuste pour les libellés qui ressemblent fortement à des l
 | Source | Chemin S3 |
 |---|---|
 | Jeu à coder | `…/{run}/classify-regex/raw_test_without_regex.parquet` |
-| Pool suggester (mode prédiction) | `…/{run}/suggester.parquet` (fichier dédié écrit par `build-datasets`) |
-| Pool suggester (mode normal) | `…/{run}/classify-regex/raw_train_without_regex.parquet` filtré `source = 'suggester'` |
+| Pool suggester (fichier dédié) | `…/{run}/suggester.parquet` (fichier dédié écrit par `build-datasets`) |
+| Pool suggester (repli) | `…/{run}/classify-regex/raw_train_without_regex.parquet` filtré `source = 'suggester'` |
 
-En mode prédiction, `main.R` détecte automatiquement le fichier `suggester.parquet` dédié et
-l'utilise en priorité.
+`main.R` détecte automatiquement le fichier `suggester.parquet` dédié et l'utilise en
+priorité ; le filtre sur la KB est le repli.
 
 ::: {.callout-note}
 ## D'où vient le pool suggester ?

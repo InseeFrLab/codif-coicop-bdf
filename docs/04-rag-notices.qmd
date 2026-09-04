@@ -113,7 +113,7 @@ Pour chaque libellé à coder (`rag-notices/scripts/2_run_rag.py`) :
    `confidence`, puis **re-pruning** du code prédit (troncature niveau 4 + mapping
    `mapping_lvl4.parquet`) : même si le LLM répond au niveau 5 ou sur un code replié, la
    prédiction retombe dans l'espace de codes [pruné](prune-codes.qmd).
-6. **Traçage** : métriques dans MLflow (expérience `test`), traces dans Langfuse.
+6. **Traçage** : paramètres et compteurs dans MLflow (expérience `test`), traces dans Langfuse. Aucune accuracy n'est calculée ici — c'est l'[étape `evaluate`](11-evaluate.qmd) qui mesure. Ce module évaluait autrefois **sans condition**, et loguait donc une accuracy ≈ 0 sur chaque run de production.
 
 ## Exemple sur le fil rouge
 

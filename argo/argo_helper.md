@@ -185,7 +185,7 @@ argo resubmit @latest   # rerun as-is
 | Parameter | Default | Role |
 |---|---|---|
 | `git-branch` | `main` | branch every step clones. **Your local changes are invisible until pushed** — the pods clone from GitHub, not from your disk |
-| `input_file` | `s3://…/BDF_data_…_a_codif.csv` | input CSV file on S3 |
+| `input_file` | `s3://…/BDF_data_…_a_codif.csv` | **required** — the input CSV file on S3. The pipeline has a single mode; it codifies this file |
 | `text_column` | `NAT_DEP` | label column to classify |
 | `shop_column` / `budget_column` | `MAG_DEP` / `MONT_DEP` | shop / amount |
 | `annee_column` / `source_column` | `""` | optional |
@@ -193,7 +193,7 @@ argo resubmit @latest   # rerun as-is
 | `smoke-only` | `"false"` | `"true"` runs the smoke pass and stops there |
 | `smoke-observations` | `"100"` | size of the smoke sample |
 | `smoke-experiment` | `codif-coicop-smoke` | MLflow experiment of the smoke pass |
-| `sample-observations` | `""` | cap the to-codify set, in **both** modes (empty = all); sampled **once** at `classify-regex` so all classifiers code the same rows. To cap the indexed KB instead, that is `kb-sample-size` of `index-annotations-pipeline.yaml` |
+| `sample-observations` | `""` | cap the to-codify set (empty = all); sampled **once** at `classify-regex` so all classifiers code the same rows. To cap the indexed KB instead, that is `kb-sample-size` of `index-annotations-pipeline.yaml` |
 | `classify-rag-notices-collection` | `""` | **required** — Qdrant collection from `index-notices-pipeline.yaml` |
 | `classify-rag-annotations-collection` | `""` | **required** — Qdrant collection from `index-annotations-pipeline.yaml` |
 | `classify-rag-model` / `reconcile-llm-model` | `gemma4-26b-moe` | LLM models |
@@ -203,6 +203,10 @@ argo resubmit @latest   # rerun as-is
 | `report-experiment` | `codif-coicop-eval` | report's MLflow experiment |
 | `reconciliation` | `llm` | which step decides the final code: `llm` (`reconcile-llm`) or `sirus` (`reconcile-sirus`). **Mutually exclusive** — the other is skipped |
 | `reconcile-sirus-model-uri` | `""` | SIRUS model (MLflow), required when `reconciliation: sirus`. Produced out of pipeline by `reconcile-sirus/train.sh` |
+| `label-column` | `""` | ground-truth column in `input_file`. **Empty ⇒ the `evaluate` step is skipped**, which is the nominal case. Non-empty, and `build-datasets` copies it into `code`, carrying it through the whole chain |
+| `eval-source-column` | `""` | product-provenance column. Adds a per-source accuracy breakdown to the evaluation report. Never restricts what gets codified |
+| `skip-eval` | `"false"` | `"true"` skips `evaluate` even with a `label-column` |
+| `eval-experiment` | `codif-coicop-eval` | the `evaluate` step's MLflow experiment |
 
 The two `*-collection` parameters have no default **on purpose**. Argo cannot express a required
 parameter, so the guard is written twice — a `[ -z ] && exit 1` in the container script and

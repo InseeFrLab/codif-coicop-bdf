@@ -9,7 +9,7 @@ convention de codage — plus un score par produit.
 L'étape s'arrête là : elle livre **un code et un score**, sans verdict sur le
 sort à leur réserver. Décider à partir de quel score un code est exploitable
 sans relecture est une question métier, qui s'instruit sur la section
-« Calibration de SIRUS » du rapport d'évaluation.
+« Calibration de SIRUS » du rapport de l'étape [`evaluate`](../evaluate/).
 
 ## Deux moitiés, volontairement séparées
 
@@ -37,16 +37,16 @@ retenue pour TTC (`classify-ttc-model-uri`).
 
 ## Utilisation
 
-### 1. Entraîner (à la main, sur un run d'évaluation passé)
+### 1. Entraîner (à la main, sur un run passé étiqueté)
 
 ```bash
 cd reconcile-sirus/
 ./train.sh 2026-06-29/codif-vvkv9
 ```
 
-Le run désigné doit être un run d'**évaluation** terminé (soumis avec
-`input_file` vide) : l'entraînement a besoin de la vérité terrain, qu'un run de
-production ne porte pas.
+Le run désigné doit être un run terminé et **étiqueté** — soumis avec
+`label-column`, donc sur un fichier d'entrée qui portait une colonne de vérité
+terrain. L'ajustement en a besoin.
 
 Réglages optionnels, par variables d'environnement (les défauts conviennent
 dans la quasi-totalité des cas) :
@@ -120,7 +120,8 @@ score, donc sans information propre, tout en figeant dans le parquet un réglage
 que l'aval ne pourrait plus rediscuter sans réentraîner.
 
 Pour décider à partir de quel score un code est exploitable sans relecture,
-lire la section **« Calibration de SIRUS »** du rapport d'évaluation. Elle donne
+lire la section **« Calibration de SIRUS »** du rapport de l'étape
+[`evaluate`](../evaluate/). Elle donne
 l'accuracy par tranche de score et, surtout, l'arbitrage volume/fiabilité pour
 chaque seuil envisageable.
 
@@ -228,8 +229,8 @@ Rscript R/make_golden.R          # régénère tests/golden/ — à relire dans 
   l'article ni dans le paquet : d'où le cadrage « ce candidat est-il correct ? »
   plutôt que « quel code ? ».
 - **Le rapport de production** (`report/prediction_report.qmd`) saute ses
-  sections d'accord avec le juge en mode SIRUS ; le rapport d'évaluation, lui,
-  est complet dans les deux modes.
+  sections d'accord avec le juge en conciliation SIRUS ; le rapport d'évaluation
+  (`evaluate/evaluation_report.qmd`) est complet dans les deux cas.
 
 ## Références
 

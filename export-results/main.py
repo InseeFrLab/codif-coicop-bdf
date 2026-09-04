@@ -48,9 +48,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--annee-column", default="annee",
                    help="Original input column name for year")
     p.add_argument(
-        "--input-file", default=None,
-        help="Présence => mode production : les colonnes utilisateur proviennent de "
-             "observations.parquet. Absence => mode évaluation (raw_test.parquet).",
+        "--input-file", required=True,
+        help="Fichier d'entrée du run. Sert à restaurer le nom du livrable ; "
+             "les colonnes utilisateur, elles, viennent d'observations.parquet.",
     )
     p.add_argument(
         "--decision-source", choices=["llm", "sirus"], default="llm",
@@ -127,10 +127,7 @@ def main() -> int:
     con = init_duckdb()
 
     # Base: all user columns from the preprocessing output (strip internal pipeline columns).
-    # Production (--input-file) : les observations à coder (observations.parquet) ;
-    # évaluation : le split test des annotations (raw_test.parquet).
-    base_key = "observations" if args.input_file else "raw_test"
-    base_path = artifact("build-datasets", base_key, **RUN)
+    base_path = artifact("build-datasets", "observations", **RUN)
     print(f"[export-results] loading base: {base_path}", flush=True)
     # Read full first to capture _source_input_file before stripping
     observations = con.sql(f"SELECT * FROM read_parquet('{base_path}')").df()

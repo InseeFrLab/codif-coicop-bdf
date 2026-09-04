@@ -17,6 +17,9 @@ from codif_common.vector_index import build_collection_name, validate_collection
 | `codes.py` | `truncate_code`, `get_parents` | 4 et 2 copies |
 | `s3.py` | connexions DuckDB configurées pour S3 | 5 copies, sur 2 des 4 dialectes |
 | `vector_index.py` | nommage, manifeste et validation des collections Qdrant | 2 copies |
+| `contracts.py` | registre des artefacts : `artifact()`, `run_root()`, `external()`, `consumers()` | chemins S3 en dur, éparpillés |
+| `schema.py` | contrôles de frontière : `require_columns()`, `declare_output()` | rien |
+| `metrics.py` | accuracy par niveau (2 conventions), couverture, régimes, `final_decision` | `report/coicop_metrics.py`, lu par `report/` **et** `evaluate/` |
 
 ## Règle d'or
 

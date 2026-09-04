@@ -2,7 +2,6 @@ import argparse
 import uuid
 
 import pandas as pd
-from sklearn.model_selection import train_test_split
 
 from src.utils.data_management import (
     concat_path_from_key,
@@ -49,8 +48,17 @@ def parse_args():
     )
     parser.add_argument(
         "--input-file",
+        required=True,
+        help="Fichier des produits à coder (local ou S3). Le pipeline n'a plus qu'un mode.",
+    )
+    parser.add_argument(
+        "--label-column",
         default=None,
-        help="Path to input file for prediction (local or S3). Activates prediction mode.",
+        help=(
+            "Colonne d'étiquettes du fichier d'entrée, si celui-ci en porte. Recopiée "
+            "dans `code`, ce qui rend le run évaluable par l'étape finale `evaluate`. "
+            "Absente : `code` reste nul et l'évaluation est impossible."
+        ),
     )
     parser.add_argument(
         "--text-column",
@@ -145,7 +153,7 @@ def build_annotations(
     output_root,
     logger,
 ):
-    """Renvoie (annotations_full, raw_train, raw_test) et exporte les contrôles QA."""
+    """Renvoie `annotations_full` et exporte les contrôles QA."""
 
     # -- Recodage de la colonne source (méthodes héritées) ------------------
     annotations_hors_copain["source"] = annotations_hors_copain["source"].replace(
@@ -223,22 +231,17 @@ def build_annotations(
         f"Nombre de lignes total du fichier BdF 2017: {len(annotations_with_budget_old)}"
     )
 
-    # Split sur les seules données 2024 ; l'historique 2017 (+ suggester) rejoint le train.
-    train_anno_wb, test_anno_wb = train_test_split(
-        annotations_with_budget_test, test_size=0.5, random_state=42
-    )
-    train_anno_wb = pd.concat([train_anno_wb, annotations_with_budget_old], axis=0)
-
-    # Jeu complet = train ∪ test (2024 agrégé + historique agrégé).
+    # Plus de split train/test : il n'existait que parce que le seul jeu annoté
+    # disponible servait à la fois de base de connaissance et de jeu d'évaluation.
+    # Des données fraîches annotées arrivant désormais régulièrement, toute la
+    # base historique alimente la KB, et l'évaluation se fait a posteriori sur un
+    # run dont le fichier d'entrée porte ses propres étiquettes.
     annotations_full = pd.concat(
         [annotations_with_budget_test, annotations_with_budget_old], axis=0
     )
-
     logger.info(f"Nombre de lignes total du fichier complet: {len(annotations_full)}")
-    logger.info(f"Nombre de lignes total du fichier train: {len(train_anno_wb)}")
-    logger.info(f"Nombre de lignes total du fichier test: {len(test_anno_wb)}")
 
-    return annotations_full, train_anno_wb, test_anno_wb
+    return annotations_full
 
 
 # ---------------------------------------------------------------------------
@@ -293,8 +296,21 @@ def build_observations(args, con, shops_mapping, uncodable_products, stopwords, 
     df = normalize_products(df, uncodable_products, stopwords, logger)
     logger.info(f"{len(df)} lignes après prétraitement")
 
-    # Aligne le schéma sur celui des annotations pour que l'aval ne plante pas
-    # (pas de vérité terrain en prédiction → code/coicop à NA, source='prediction').
+    # La vérité terrain, quand le fichier d'entrée en porte une : elle traverse
+    # ensuite la chaîne comme la vérité des annotations, et `reconcile-llm` en
+    # dérive `code_lvl4`, la forme canonique sur laquelle l'évaluation mesure.
+    if args.label_column:
+        if args.label_column not in df.columns:
+            raise ValueError(
+                f"Colonne d'étiquettes « {args.label_column} » absente du fichier "
+                f"d'entrée. Colonnes présentes : {list(df.columns)}"
+            )
+        df = df.rename(columns={args.label_column: "code"})
+        n_labelled = int(df["code"].notna().sum())
+        logger.info(f"Étiquettes reprises depuis « {args.label_column} » : {n_labelled} lignes")
+
+    # Aligne le schéma sur celui des annotations pour que l'aval ne plante pas.
+    # `code` n'est mis à NA que s'il n'a pas été fourni ci-dessus.
     prediction_defaults = {
         "annee": pd.NA,
         "code": pd.NA,
@@ -362,7 +378,7 @@ def main():
     # -----------------------------------------------------------------------
     # Pipeline ANNOTATIONS (toujours) : fichier complet + train + test
     # -----------------------------------------------------------------------
-    annotations_full, raw_train, raw_test = build_annotations(
+    annotations_full = build_annotations(
         config,
         annotations_hors_copain,
         suggester,
@@ -374,12 +390,10 @@ def main():
         logger,
     )
 
-    logger.info("Écriture sur S3 des fichiers d'annotations (complet / train / test)")
+    logger.info("Écriture sur S3 du fichier d'annotations complet")
     export_parquet_s3(annotations_full, f"{output_root}/annotations_full.parquet")
-    export_parquet_s3(raw_train, f"{output_root}/raw_train.parquet")
-    export_parquet_s3(raw_test, f"{output_root}/raw_test.parquet")
 
-    statistics_annotations_data(con, pd.concat([raw_train, raw_test], axis=0))
+    statistics_annotations_data(con, annotations_full)
 
     # -----------------------------------------------------------------------
     # Pipeline SUGGESTER (toujours)

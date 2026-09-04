@@ -31,6 +31,23 @@ spec:
         value: ""
       - name: source_column
         value: ""
+
+      # --- Évaluation : facultative, et déclenchée par les données -----------
+      # Le pipeline n'a plus qu'un mode. L'évaluation est une étape finale qui
+      # ne tourne que si le fichier d'entrée porte des étiquettes.
+      #
+      # `label-column` est le déclencheur : nom de la colonne de vérité dans le
+      # CSV d'entrée. Vide = pas d'évaluation, l'étape est sautée.
+      - name: label-column
+        value: ""
+      # Dimension d'analyse du rapport d'évaluation : accuracy ventilée par
+      # provenance du produit. Ne restreint JAMAIS le périmètre codé.
+      - name: eval-source-column
+        value: ""
+      - name: skip-eval
+        value: "false"
+      - name: eval-experiment
+        value: "codif-coicop-eval"
       # Plafonne le jeu À CODER, dans les deux modes (vide = tout). Tirage
       # unique à classify-regex, hérité par les 4 classifieurs.
       # Pour plafonner la KB indexée : `kb-sample-size` de
@@ -181,7 +198,7 @@ spec:
           - name: run_id                # suffixé `-smoke` pour isoler les sorties S3
           - name: sample-observations   # 100 pour le smoke, le paramètre réel sinon
           - name: report-experiment     # expérience MLflow du rapport
-          - name: rag-experiment        # expérience MLflow des 2 étapes RAG (vide = défaut du module)
+          - name: rag-experiment        # base des 2 expériences MLflow RAG, suffixée -notices / -annotations (vide = défaut du module)
       dag:
         tasks:
           - name: build-datasets
@@ -194,6 +211,8 @@ spec:
                   value: "{{workflow.parameters.run_date}}"
                 - name: input_file
                   value: "{{workflow.parameters.input_file}}"
+                - name: label-column
+                  value: "{{workflow.parameters.label-column}}"
                 - name: text_column
                   value: "{{workflow.parameters.text_column}}"
                 - name: shop_column
@@ -401,12 +420,36 @@ spec:
     # -----------------------------------------------------------------------
     # Step 0: Preprocessing — construction du dataset
     # -----------------------------------------------------------------------
+          # --- Évaluation : facultative, dernière du DAG -----------------------
+          # Ne tourne que si le fichier d'entrée portait des étiquettes. Sans
+          # `label-column` il n'y a pas de vérité terrain et rien à mesurer : la
+          # tâche est Skipped, ce qui est le cas nominal de production.
+          - name: evaluate
+            dependencies: [reconcile-llm, reconcile-sirus, classify-rag-notices, classify-rag-annotations, export-results]
+            template: evaluate
+            when: '"{{workflow.parameters.skip-eval}}" != "true" && "{{workflow.parameters.label-column}}" != ""'
+            arguments:
+              parameters:
+                - name: run_id
+                  value: "{{inputs.parameters.run_id}}"
+                - name: run_date
+                  value: "{{workflow.parameters.run_date}}"
+                - name: input_file
+                  value: "{{workflow.parameters.input_file}}"
+                - name: reconciliation
+                  value: "{{workflow.parameters.reconciliation}}"
+                - name: eval-source-column
+                  value: "{{workflow.parameters.eval-source-column}}"
+                - name: eval-experiment
+                  value: "{{workflow.parameters.eval-experiment}}"
+
     - name: build-datasets
       inputs:
         parameters:
           - name: run_id
           - name: run_date
           - name: input_file
+          - name: label-column
           - name: text_column
           - name: shop_column
           - name: budget_column
@@ -429,14 +472,13 @@ spec:
             cd repo/build-datasets
             uv sync --locked --no-dev
             ARGS="--run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}"
-            # input_file vide => mode évaluation : ne pas passer --input-file ni les colonnes (sens uniquement en prédiction)
-            if [ -n "{{inputs.parameters.input_file}}" ]; then
-              ARGS="$ARGS --input-file {{inputs.parameters.input_file}} --text-column {{inputs.parameters.text_column}}"
-              [ -n "{{inputs.parameters.shop_column}}" ]   && ARGS="$ARGS --shop-column {{inputs.parameters.shop_column}}"
-              [ -n "{{inputs.parameters.budget_column}}" ] && ARGS="$ARGS --budget-column {{inputs.parameters.budget_column}}"
-              [ -n "{{inputs.parameters.annee_column}}" ]  && ARGS="$ARGS --annee-column {{inputs.parameters.annee_column}}"
-              [ -n "{{inputs.parameters.source_column}}" ] && ARGS="$ARGS --source-column {{inputs.parameters.source_column}}"
-            fi
+            ARGS="$ARGS --input-file {{inputs.parameters.input_file}} --text-column {{inputs.parameters.text_column}}"
+            [ -n "{{inputs.parameters.shop_column}}" ]   && ARGS="$ARGS --shop-column {{inputs.parameters.shop_column}}"
+            [ -n "{{inputs.parameters.budget_column}}" ] && ARGS="$ARGS --budget-column {{inputs.parameters.budget_column}}"
+            [ -n "{{inputs.parameters.annee_column}}" ]  && ARGS="$ARGS --annee-column {{inputs.parameters.annee_column}}"
+            [ -n "{{inputs.parameters.source_column}}" ] && ARGS="$ARGS --source-column {{inputs.parameters.source_column}}"
+            # Étiquettes du fichier d'entrée : ce sont elles qui rendent le run évaluable.
+            [ -n "{{inputs.parameters.label-column}}" ]  && ARGS="$ARGS --label-column {{inputs.parameters.label-column}}"
             uv run --locked --no-dev main.py $ARGS
         env:
           - name: AWS_ACCESS_KEY_ID
@@ -501,7 +543,7 @@ spec:
             uv sync --locked --no-dev
             ARGS="--run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}"
             # input_file non vide => mode production (train=annotations_full, test=observations)
-            [ -n "{{workflow.parameters.input_file}}" ] && ARGS="$ARGS --input-file {{workflow.parameters.input_file}}"
+            ARGS="$ARGS --input-file {{workflow.parameters.input_file}}"
             # Sampling CENTRALISÉ du jeu à coder (unique point du pipeline) :
             # tous les classifieurs aval héritent de ce tirage.
             [ -n "{{inputs.parameters.sample-observations}}" ] && ARGS="$ARGS --sample-size {{inputs.parameters.sample-observations}}"
@@ -705,7 +747,10 @@ spec:
               ARGS="$ARGS --model_name {{inputs.parameters.classify-rag-model}}"
             fi
 
-            [ -n "{{inputs.parameters.mlflow-experiment}}" ] && ARGS="$ARGS --experiment_name {{inputs.parameters.mlflow-experiment}}"
+            # Suffixé par étape : les deux RAG reçoivent le MÊME paramètre, et
+            # le smoke run le renseigne toujours. Sans suffixe, ils logueraient
+            # dans une seule expérience MLflow.
+            [ -n "{{inputs.parameters.mlflow-experiment}}" ] && ARGS="$ARGS --experiment_name {{inputs.parameters.mlflow-experiment}}-notices"
             uv run --locked --no-dev scripts/2_run_rag.py $ARGS
         env:
           - name: LANGFUSE_BASE_URL
@@ -831,18 +876,15 @@ spec:
             ARGS="--config {{inputs.parameters.config}} --run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}"
             ARGS="$ARGS --collection-name {{inputs.parameters.collection-name}}"
 
-            # input_file vide => évaluation (--skip-eval false, calcule les métriques) ;
-            # non vide => production (--skip-eval true, prédictions seules, pas de filtre source)
-            SKIP_EVAL=true
-            [ -z "{{workflow.parameters.input_file}}" ] && SKIP_EVAL=false
-            ARGS="$ARGS --skip-eval $SKIP_EVAL"
-
             # Échantillonnage centralisé en amont (classify-regex) → pas de sampling ici.
             if [ -n "{{inputs.parameters.classify-rag-model}}" ]; then
               ARGS="$ARGS --model_name {{inputs.parameters.classify-rag-model}}"
             fi
 
-            [ -n "{{inputs.parameters.mlflow-experiment}}" ] && ARGS="$ARGS --experiment_name {{inputs.parameters.mlflow-experiment}}"
+            # Suffixé par étape : les deux RAG reçoivent le MÊME paramètre, et
+            # le smoke run le renseigne toujours. Sans suffixe, ils logueraient
+            # dans une seule expérience MLflow.
+            [ -n "{{inputs.parameters.mlflow-experiment}}" ] && ARGS="$ARGS --experiment_name {{inputs.parameters.mlflow-experiment}}-annotations"
             uv run --locked --no-dev scripts/1_run_rag.py $ARGS
         env:
           - name: LANGFUSE_BASE_URL
@@ -1031,9 +1073,8 @@ spec:
             uv sync --locked --no-dev
 
             RUN_ROOT="s3://projet-budget-famille/data/workflow_runs/{{inputs.parameters.run_date}}/{{inputs.parameters.run_id}}"
-            # Colonnes utilisateur : observations en production, split test des annotations en évaluation.
-            EXTRA_COLUMNS_FILE="$RUN_ROOT/build-datasets/raw_test.parquet"
-            [ -n "{{workflow.parameters.input_file}}" ] && EXTRA_COLUMNS_FILE="$RUN_ROOT/build-datasets/observations.parquet"
+            # Colonnes utilisateur, reprises du fichier d'entrée préparé.
+            EXTRA_COLUMNS_FILE="$RUN_ROOT/build-datasets/observations.parquet"
             ARGS="--lcs-file $RUN_ROOT/classify-lcs/raw_test_LCS.parquet \
                   --rag-file $RUN_ROOT/classify-rag-notices/predictions.parquet \
                   --rag-annotations-file $RUN_ROOT/classify-rag-annotations/predictions.parquet \
@@ -1124,10 +1165,8 @@ spec:
             uv sync --locked --no-dev
 
             RUN_ROOT="s3://projet-budget-famille/data/workflow_runs/{{inputs.parameters.run_date}}/{{inputs.parameters.run_id}}"
-            # Colonnes utilisateur : observations en production, split test des
-            # annotations en évaluation (même règle que reconcile-llm).
-            EXTRA_COLUMNS_FILE="$RUN_ROOT/build-datasets/raw_test.parquet"
-            [ -n "{{workflow.parameters.input_file}}" ] && EXTRA_COLUMNS_FILE="$RUN_ROOT/build-datasets/observations.parquet"
+            # Colonnes utilisateur, reprises du fichier d'entrée préparé.
+            EXTRA_COLUMNS_FILE="$RUN_ROOT/build-datasets/observations.parquet"
 
             # Attention : le dossier de RAG-annotations est `classify-rag-annotations`
             # (singulier), contrairement au nom de l'étape.
@@ -1230,7 +1269,7 @@ spec:
             [ -n "{{inputs.parameters.budget_column}}" ] && ARGS="$ARGS --budget-column {{inputs.parameters.budget_column}}"
             [ -n "{{inputs.parameters.annee_column}}" ]  && ARGS="$ARGS --annee-column {{inputs.parameters.annee_column}}"
             # input_file non vide => mode production : colonnes utilisateur depuis observations.parquet
-            [ -n "{{workflow.parameters.input_file}}" ] && ARGS="$ARGS --input-file {{workflow.parameters.input_file}}"
+            ARGS="$ARGS --input-file {{workflow.parameters.input_file}}"
             uv run --locked --no-dev main.py $ARGS
         env:
           - name: AWS_ACCESS_KEY_ID
@@ -1312,7 +1351,7 @@ spec:
                   --classify-rag-annotations-collection {{inputs.parameters.classify-rag-annotations-collection}} \
                   --skip-report {{inputs.parameters.skip-report}}"
 
-            [ -n "{{inputs.parameters.input_file}}" ]    && ARGS="$ARGS --input-file {{inputs.parameters.input_file}}"
+            ARGS="$ARGS --input-file {{inputs.parameters.input_file}}"
             # Même échantillon que celui tiré par classify-regex.
             [ -n "{{inputs.parameters.sample-observations}}" ] && ARGS="$ARGS --sample-size {{inputs.parameters.sample-observations}}"
             [ -n "{{inputs.parameters.classify-rag-model}}" ]    && ARGS="$ARGS --classify-rag-model {{inputs.parameters.classify-rag-model}}"
@@ -1325,6 +1364,98 @@ spec:
             # single quotes so it stays one argument (it must NOT go through $ARGS,
             # which would word-split it on expansion).
             uv run --locked --no-dev main.py $ARGS --step-timings '{{inputs.parameters.step-timings}}'
+        env:
+          - name: MLFLOW_TRACKING_URI
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: MLFLOW_TRACKING_URI
+          - name: MLFLOW_TRACKING_USERNAME
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: MLFLOW_TRACKING_USERNAME
+          - name: MLFLOW_TRACKING_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: MLFLOW_TRACKING_PASSWORD
+          - name: AWS_ACCESS_KEY_ID
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_ACCESS_KEY_ID
+          - name: AWS_SECRET_ACCESS_KEY
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_SECRET_ACCESS_KEY
+          - name: AWS_SESSION_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_SESSION_TOKEN
+          - name: AWS_S3_ENDPOINT
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_S3_ENDPOINT
+          - name: AWS_ENDPOINT_URL
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_ENDPOINT_URL
+        resources:
+          requests:
+            memory: 2Gi
+            cpu: 100m
+          limits:
+            memory: 20Gi
+            cpu: 4000m
+
+    # -------------------------------------------------------------------------
+    # evaluate — mesure la qualité d'un run étiqueté.
+    #
+    # Elle lit trois artefacts, et pas seulement le parquet de conciliation :
+    # celui-ci ignore les lignes codées par la regex, qui n'entrent jamais dans
+    # la chaîne. Le livrable final est le seul à porter l'accuracy de bout en
+    # bout — le chiffre métier.
+    # -------------------------------------------------------------------------
+    - name: evaluate
+      inputs:
+        parameters:
+          - name: run_id
+          - name: run_date
+          - name: input_file
+          - name: reconciliation
+          - name: eval-source-column
+          - name: eval-experiment
+      retryStrategy:          # cf. « Reprise sur échec » en tête de fichier
+        limit: "2"
+        retryPolicy: OnFailure
+        backoff:
+          duration: "30s"
+          factor: "2"
+          maxDuration: "5m"
+      container:
+        image: inseefrlab/onyxia-vscode-python:py3.13.12
+        command: [sh, -c]
+        args:
+          - |
+            set -e
+            git -c http.version=HTTP/1.1 clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo
+            cd repo/evaluate
+            uv sync --locked --no-dev
+
+            ARGS="--run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}} \
+                  --experiment-name {{inputs.parameters.eval-experiment}} \
+                  --reconciliation {{inputs.parameters.reconciliation}} \
+                  --input-file {{inputs.parameters.input_file}}"
+
+            # Vide => la ventilation par provenance est omise du rapport.
+            [ -n "{{inputs.parameters.eval-source-column}}" ] && ARGS="$ARGS --source-column {{inputs.parameters.eval-source-column}}"
+
+            uv run --locked --no-dev main.py $ARGS
         env:
           - name: MLFLOW_TRACKING_URI
             valueFrom:

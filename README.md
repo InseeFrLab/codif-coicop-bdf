@@ -18,7 +18,7 @@ l'entraînement de `classify-ttc` et de `reconcile-sirus`.
 
         └── les deux noms sont recopiés dans argo/params.yaml ──┐
                                                                 ▼
-③ argo/codif-pipeline.yaml   (input_file : production / évaluation)
+③ argo/codif-pipeline.yaml   (input_file : OBLIGATOIRE — un seul mode)
    Le DAG ci-dessous tourne DEUX FOIS : smoke sur 100 lignes (~8 min), puis pour de vrai.
    Si le smoke échoue, le vrai run ne démarre pas. Échappatoire : -p skip-smoke=true
 
@@ -32,11 +32,14 @@ build-datasets
                                        │  les 4 classifieurs convergent
                                        └─→ reconcile-llm  OU  reconcile-sirus   (exclusifs : paramètre `reconciliation`)
                                                └─→ export-results ─→ report  (skip-report)
+                                                          └─→ evaluate  (facultative : label-column)
 ```
 
-Le **mode** du pipeline ③ est dérivé d'`input_file` : non vide ⇒ **production** (on code ces observations), vide ⇒ **évaluation** (on code le split test des annotations). L'étape **`prune-codes`** centralise tout le pruning et produit les artefacts lus par l'aval.
+Le pipeline ③ n'a **qu'un seul mode** : il code le fichier désigné par `input_file`, qui est obligatoire. L'étape **`prune-codes`** centralise tout le pruning et produit les artefacts lus par l'aval.
 
-Les pipelines ① et ②, eux, n'ont pas de mode : ils ne construisent pas de codification mais une base d'exemples. ② n'a d'ailleurs **pas** de paramètre `input_file` — celui-ci désigne les produits *à classer*, ce qui ne concerne pas la constitution d'une base de produits déjà annotés.
+Il y avait auparavant deux modes, dérivés du seul fait qu'`input_file` soit vide ou non, et testés à treize endroits. Cette dualité venait de ce que le pipeline avait été construit **pour être évalué**, à une époque où il n'existait qu'un jeu annoté : il fallait le couper en deux pour mesurer sans fuite. Des données fraîches annotées arrivent désormais régulièrement, donc toute la base historique sert de KB sans découpage, et **l'évaluation devient une opération d'après-coup** : l'étape facultative `evaluate`, qui ne tourne que si le fichier d'entrée porte une colonne d'étiquettes (`label-column`).
+
+② n'a **pas** de paramètre `input_file` — celui-ci désigne les produits *à classer*, ce qui ne concerne pas la constitution d'une base de produits déjà annotés.
 
 ### build-datasets
 
@@ -50,7 +53,7 @@ Construit le dataset d'annotations à partir des sources brutes (COPAIN, histori
 Étape **unique** de pruning (troncature niveau 4 + élagage des hiérarchies linéaires → code canonique). Produit tous les artefacts prunés sous `…/{run}/prune-codes/`, lus par l'aval.
 
 - Code dans [`prune-codes/`](./prune-codes/) (`scripts/main.py`)
-- Sorties : `nomenclature_pruned`, `mapping_lvl4`, `annotations_train_pruned` (KB), `annotations_test_pruned` (à coder), `suggester_pruned`
+- Sorties : `nomenclature_pruned`, `mapping_lvl4`, `annotations_train_pruned` (la KB annotée), `annotations_test_pruned` (le jeu à coder), `suggester_pruned`. Les suffixes `train`/`test` sont hérités du split supprimé : ils désignent aujourd'hui la KB et le jeu à coder.
 
 ### index-notices *(workflow ① — hors pipeline de classification)*
 
@@ -66,11 +69,11 @@ Encode la **KB d'annotations** (+ suggester) dans une vector DB Qdrant, pour la 
 
 - Code dans [`rag-annotations/`](./rag-annotations/) (`scripts/0_build_annotation_vector_db.py`)
 - La KB, ce sont les **produits déjà annotés** : `annotations_full` + `suggester` au sens de `build-datasets`, prunés. `classify-regex` n'est pas dans la chaîne — la KB n'a pas à être filtrée des produits que la regex sait coder
-- `kb-scope` : `full` (défaut, tous les produits annotés) ou `train` (l'ancien split, **transitoire**). Ce split n'existait que faute de jeu de test indépendant ; les nouveaux produits annotés en fournissent un, donc l'option disparaîtra
+- Il y avait ici une option `kb-scope` (`full` / `train`), du temps où la KB était un demi-jeu. Ce split n'existait que faute de jeu de test indépendant ; les nouveaux produits annotés en fournissent un, donc toute la base historique sert de KB. Supprimée
 
 ### Les collections Qdrant
 
-Chaque indexation crée une collection au **nom unique** — `{base}[__{kb_scope}]__{run_date}__{run_id}[__sampleN]` — et un manifeste JSON à côté (modèle d'embedding, dimension, stratégie, nombre de points, sha git), que les étapes `classify-rag-*` relisent au démarrage pour valider ce qu'elles interrogent.
+Chaque indexation crée une collection au **nom unique** — `{base}__{run_date}__{run_id}[__sampleN]` — et un manifeste JSON à côté (modèle d'embedding, dimension, stratégie, nombre de points, sha git), que les étapes `classify-rag-*` relisent au démarrage pour valider ce qu'elles interrogent.
 
 Auparavant deux noms fixes (`coicop_lineage`, `coicop_annotations_without_copain_2017`) étaient partagés par tous les runs et détruits/recréés à chaque indexation : une réindexation cassait la base que lisait un run concurrent.
 
@@ -92,14 +95,14 @@ Code le jeu à coder via un RAG sur les **notices** de la nomenclature COICOP.
 
 - Code dans [`rag-notices/`](./rag-notices/) (`scripts/2_run_rag.py`)
 - Récupère les notices proches depuis Qdrant, génère via VLLM (`VLLM_GENERATION_URL`)
-- Métriques MLflow (`MLFLOW_TRACKING_URI`), traces Langfuse (`LANGFUSE_BASE_URL`)
+- Paramètres et compteurs MLflow (`MLFLOW_TRACKING_URI`), traces Langfuse (`LANGFUSE_BASE_URL`). Il ne calcule plus d'accuracy : c'est `evaluate` qui mesure
 
 ### classify-rag-annotations
 
 Code le jeu à coder via un RAG sur des **exemples déjà annotés** (few-shot).
 
 - Code dans [`rag-annotations/`](./rag-annotations/) (`scripts/1_run_rag.py`)
-- Récupère les annotations proches depuis Qdrant ; éval (accuracy/recall) opt-in via le mode
+- Récupère les annotations proches depuis Qdrant. Prédictions seules : les métriques sont calculées par `evaluate`
 
 ### classify-ttc
 
@@ -127,19 +130,28 @@ Arbitrage final des prédictions par un LLM-as-judge : fusionne les sorties de `
 
 ### report
 
-Rapport d'exactitude Quarto (HTML auto-contenu) sur la sortie de `reconcile-llm`.
+Rapport **de production** Quarto (HTML auto-contenu) sur la sortie de conciliation. Il ne suppose **aucune vérité terrain** : il décrit ce que le pipeline a produit, sans le noter.
 
-- Code dans [`report/`](./report/) — Quarto + Python (pandas, duckdb, matplotlib, seaborn)
+- Code dans [`report/`](./report/) (`prediction_report.qmd`) — Quarto + Python (pandas, duckdb, matplotlib, seaborn)
 - **Activé par défaut** : le YAML pose `skip-report: "false"`, c'est-à-dire « ne pas sauter ». Passer `-p skip-report=true` pour s'en dispenser
-- Entrée : `s3://.../reconcile-llm/predictions.parquet`
+- Entrée : `s3://.../reconcile-{llm,sirus}/predictions.parquet`
 - Sortie : `s3://.../report/report.html`
-- Contenu :
-  - Accuracy globale par niveau COICOP (1 à 5) pour **LCS, RAG, TTC, LLM**
-  - Accuracy par `shop`, `shop_type_name` et **quartile de `budget`**
-  - Matrice de confusion (top 20 paires `code` vs `llm_code` au niveau 4)
-  - Calibration : accuracy par bucket de `llm_confiance`
-  - Consensus vs désaccord des sources amont : apport de l'arbitrage LLM
-- Méthodologie *accuracy par niveau* : tronquer `code` et la prédiction aux `k` premiers segments ; les observations dont la vérité a moins de `k` niveaux sont exclues du dénominateur à ce niveau
+- Contenu : volumétrie et couverture, profondeur des codes prédits, accord/désaccord des quatre classifieurs, distribution des confiances, durée de chaque étape
+
+### evaluate *(facultative)*
+
+Mesure la qualité du run. **Ne tourne que si le fichier d'entrée portait une colonne d'étiquettes** (`label-column`) — sinon la tâche est `Skipped`, ce qui est le cas nominal de production.
+
+- Code dans [`evaluate/`](./evaluate/) (`main.py` + `evaluation_report.qmd`)
+- Déclenchement : `-p label-column=code`. `-p skip-eval=true` la saute malgré tout
+- Entrées — **trois** artefacts, pas un :
+  - `s3://.../reconcile-{llm,sirus}/predictions.parquet` — les 4 classifieurs et la conciliation
+  - `s3://.../classify-rag-notices/retrieved_codes.parquet` et `s3://.../classify-rag-annotations/predictions.parquet` — le **recall de retrieval** : le seul indicateur qui dise si un RAG échoue à *retrouver* ou à *générer*
+  - le livrable d'`export-results` — l'**accuracy de bout en bout, regex comprise** : le chiffre métier. Le parquet de conciliation ne l'a pas, car les lignes captées par la regex n'entrent jamais dans la chaîne
+- Sorties : `s3://.../evaluate/evaluation_report.html` **et** les métriques dans MLflow
+- Contenu : accuracy par niveau COICOP (1 à 4) pour **LCS, RAG notices, RAG annotations, TTC, conciliation**, selon les deux conventions (stricte et inclusive) ; accuracy par `shop`, `shop_type_name` et quartile de `budget` ; matrice de confusion ; calibration (accuracy par bucket de confiance, AUROC) ; coût et latence de l'arbitrage LLM. Avec `-p eval-source-column=…`, une ventilation **par provenance du produit**
+- Méthodologie *accuracy par niveau* : tronquer la vérité et la prédiction aux `k` premiers segments ; les observations dont la vérité a moins de `k` niveaux sont exclues du dénominateur à ce niveau
+- Elle **échoue** si la vérité canonique `code_lvl4` est absente, plutôt que de se rabattre sur `code` : comparer des prédictions canoniques à une vérité brute sous-estime l'accuracy sur près d'un quart des postes
 
 ## Contrôles automatiques
 
@@ -176,7 +188,9 @@ Ce dépôt rassemble le code de toutes les étapes du pipeline, auparavant dispe
 | [`classify-ttc/`](./classify-ttc/) | `coicop_bdf_classifier` | Étape `classify-ttc` |
 | [`reconcile-llm/`](./reconcile-llm/) | — | Étape `reconcile-llm` (arbitrage LLM) |
 | [`export-results/`](./export-results/) | — | Étape `export-results` (livrable utilisateur) |
-| [`report/`](./report/) | — | Rapport Quarto d'exactitude (étape `report`, activée par défaut) |
+| [`report/`](./report/) | — | Rapport Quarto **de production** (étape `report`, activée par défaut) |
+| [`evaluate/`](./evaluate/) | — | Rapport Quarto **d'évaluation** (étape `evaluate`, facultative) |
+| [`common/`](./common/) | — | Socle partagé (`codif_common`) : registre d'artefacts, métriques, chemins S3. Aucune étape Argo |
 
 Chaque sous-dossier Python conserve son propre `pyproject.toml` (ses dépendances lui
 appartiennent), mais tous sont membres d'un même **workspace `uv`**.
@@ -245,19 +259,23 @@ Puis la classification :
 # Pipeline complet (les noms de collections viennent de params.yaml)
 argo submit argo/codif-pipeline.yaml --parameter-file argo/params.yaml
 
-# Lancer en production sur un fichier d'observations à coder
+# Sur un autre fichier à coder
 argo submit argo/codif-pipeline.yaml --parameter-file argo/params.yaml \
   -p input_file=s3://.../workflow_inputs/mon_fichier.csv \
   -p text_column=NAT_DEP -p shop_column=MAG_DEP -p budget_column=MONT_DEP
 
 # Limiter le volume pour tester (sampling centralisé à classify-regex, hérité par tous
-# les classifieurs) — vaut en production comme en évaluation
+# les classifieurs)
 argo submit argo/codif-pipeline.yaml --parameter-file argo/params.yaml -p sample-observations=100
+
+# Mesurer le run : uniquement si le fichier d'entrée porte une colonne d'étiquettes
+argo submit argo/codif-pipeline.yaml --parameter-file argo/params.yaml \
+  -p label-column=code -p eval-source-column=source
 
 # Modèle spécifique pour classify-rag-notices
 argo submit argo/codif-pipeline.yaml --parameter-file argo/params.yaml -p classify-rag-model=openai/gpt-oss-120b
 
-# Désactiver le rapport d'exactitude (activé par défaut dans le YAML)
+# Désactiver le rapport de production (activé par défaut dans le YAML)
 argo submit argo/codif-pipeline.yaml --parameter-file argo/params.yaml -p skip-report=true
 ```
 
@@ -270,11 +288,15 @@ Voir aussi la fiche [`argo/argo_helper.md`](./argo/argo_helper.md) et le fichier
 
 | Paramètre | Défaut | Description |
 |---|---|---|
-| `input_file` | *(csv BDF)* | Non vide ⇒ **production** (code ces observations) ; vide ⇒ **évaluation** (code le split test des annotations). Pilote le mode partout. |
-| `sample-observations` | *(vide)* | Plafonne le jeu à coder, en production **comme** en évaluation. Échantillonné **une fois** à `classify-regex`, hérité par tous les classifieurs. Pour plafonner la KB indexée, c'est `kb-sample-size` du workflow ②. |
+| `input_file` | *(csv BDF)* | **Obligatoire.** Le fichier à coder. Le pipeline n'a plus qu'un mode. |
+| `sample-observations` | *(vide)* | Plafonne le jeu à coder. Échantillonné **une fois** à `classify-regex`, hérité par tous les classifieurs. Pour plafonner la KB indexée, c'est `kb-sample-size` du workflow ②. |
 | `classify-rag-notices-collection` | *(vide)* | **Obligatoire.** Collection Qdrant produite par `index-notices-pipeline.yaml`. |
 | `classify-rag-annotations-collection` | *(vide)* | **Obligatoire.** Collection Qdrant produite par `index-annotations-pipeline.yaml`. |
 | `classify-rag-model` | `gemma4-26b-moe` | Modèle LLM pour `classify-rag-notices` / `classify-rag-annotations` |
 | `reconcile-llm-model` | `gemma4-26b-moe` | Modèle LLM utilisé par `reconcile-llm` |
 | `reconcile-llm-concurrency` | `5` | Nombre d'appels LLM parallèles de `reconcile-llm` |
-| `skip-report` | `false` | Si `false`, génère le rapport Quarto après `export-results` |
+| `skip-report` | `false` | Si `false`, génère le rapport de production après `export-results` |
+| `label-column` | *(vide)* | Nom de la colonne d'étiquettes dans `input_file`. **Vide = pas d'évaluation** : l'étape `evaluate` est sautée. Non vide, `build-datasets` la recopie dans `code`, qui la porte jusqu'au bout de la chaîne. |
+| `eval-source-column` | *(vide)* | Nom de la colonne de provenance du produit. Ajoute une ventilation de l'accuracy par source au rapport d'évaluation. Ne restreint **jamais** le périmètre codé. |
+| `skip-eval` | `false` | `true` saute l'étape `evaluate` même si `label-column` est renseignée. |
+| `eval-experiment` | `codif-coicop-eval` | Expérience MLflow de l'étape `evaluate`. |

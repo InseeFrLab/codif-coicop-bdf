@@ -24,7 +24,7 @@ qui pèse les indices.
 | RAG-Annotations *(optionnel)* | `…/{run}/classify-rag-annotations/predictions.parquet` | `--rag-annotations-file` |
 | Table de mapping [prune-codes](prune-codes.qmd) *(optionnel)* | `…/{run}/prune-codes/mapping_lvl4.parquet` | `--mapping-file` |
 | Nomenclature | CSV des codes COICOP + codes techniques (`Libelle;Code`) — défaut : `reconcile-llm/data/coicop_et_codes_techniques.csv`, fichier **statique** du dépôt (~700 codes, tous niveaux) | `--nomenclature` |
-| Colonnes utilisateur | `…/{run}/build-datasets/observations.parquet` (prod) ou `raw_test.parquet` (éval) | `--extra-columns-file` |
+| Colonnes utilisateur | `…/{run}/build-datasets/observations.parquet` | `--extra-columns-file` |
 
 Le pipeline Argo passe systématiquement `--mapping-file` et `--rag-annotations-file` (la
 step dépend de `prune-codes` et de `classify-rag-annotations`).
@@ -56,18 +56,19 @@ Consensus, arbitrage et scoring raisonnent ainsi sur des codes homogènes : `11.
 `11.2.0` ne sont plus comptés comme un désaccord.
 
 La **vérité terrain** suit un traitement différent : elle n'est pas écrasée. La sortie porte
-les **deux** versions, et c'est la version canonique que le [report](08-report.qmd) score.
+les **deux** versions, et c'est la version canonique que l'étape [`evaluate`](11-evaluate.qmd) score.
 
 | Colonne | Contenu | Usage |
 |---|---|---|
-| `code` | code annoté **brut**, tel que saisi (souvent niveau 5) | traçabilité, inspection d'un cas, détection du mode par `report` |
+| `code` | code annoté **brut**, tel que saisi (souvent niveau 5) | traçabilité, inspection d'un cas |
 | `code_lvl4` | sa forme **canonique** : tronquée niveau 4 puis élaguée | cible du scoring |
 
 ::: {.callout-note}
-Conserver `code` brut évite un effet de bord : la détection automatique du mode par
-[`report`](08-report.qmd) repose sur le test « tous les `code` sont nuls », qui reste donc
-valable. Et un contrôle méthodologique peut comparer les deux colonnes pour mesurer combien
-d'annotations ont effectivement été ramenées à un code plus agrégé.
+Conserver `code` brut permet à un contrôle méthodologique de comparer les deux colonnes, et de
+mesurer combien d'annotations ont effectivement été ramenées à un code plus agrégé.
+
+C'est `code_lvl4` que l'évaluation score, et son absence la fait **échouer** : elle n'est
+produite ici que si `--mapping-file` est passé.
 :::
 
 ### 1. Court-circuit consensus (sans LLM)
@@ -269,8 +270,9 @@ On peut reproduire ce prompt pour n'importe quelle ligne avec le mode mono-obser
 `uv run main.py reconcile-llm --id <uuid> --output json …`
 (voir [Lancer une étape](09-lancer-une-etape.qmd#reconcile-llm)).
 
-En mode évaluation, le code annoté (`code`) n'est **pas** injecté dans le prompt : le juge
-décide à l'aveugle, comme en production (pas de fuite de la vérité terrain dans les métriques).
+Le code annoté (`code`) n'est **pas** injecté dans le prompt, même quand le fichier d'entrée
+en porte un : le juge décide à l'aveugle, sans quoi la vérité terrain fuiterait dans les
+mesures de l'étape [`evaluate`](11-evaluate.qmd).
 :::
 
 ### Reprise et coût
@@ -332,6 +334,6 @@ appartenance à la nomenclature. C'est rare, mais à garder en tête lors des co
 
 | Fichier | Colonnes clés |
 |---|---|
-| `…/{run}/reconcile-llm/predictions.parquet` | `id`, les codes normalisés des 4 classifieurs (`lcs_code`, `rag_code`, `ragann_code`, `ttc_code_1..3` + confiances), `code` (vérité terrain **brute**) et `code_lvl4` (vérité **canonique**, éval), `llm_code` (normalisé), `llm_libelle`, `llm_explication`, `llm_confiance`, `llm_model` (`"consensus"` si court-circuit), `llm_error` (raison si `llm_code` est `NA`) |
+| `…/{run}/reconcile-llm/predictions.parquet` | `id`, les codes normalisés des 4 classifieurs (`lcs_code`, `rag_code`, `ragann_code`, `ttc_code_1..3` + confiances), `code` (vérité terrain **brute**, présente si `label-column`) et `code_lvl4` (vérité **canonique**), `llm_code` (normalisé), `llm_libelle`, `llm_explication`, `llm_confiance`, `llm_model` (`"consensus"` si court-circuit), `llm_error` (raison si `llm_code` est `NA`) |
 
 ➡️ Étape suivante : [9. Final output](07-export-results.qmd)

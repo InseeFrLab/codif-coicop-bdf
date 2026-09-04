@@ -7,16 +7,11 @@ For each product: embed it, retrieve the most similar already-coded products fro
 Qdrant, build a few-shot prompt from those examples, ask the LLM for a COICOP code,
 parse the JSON answer, and export the predictions.
 
-Two modes (mirrors the workflow's `skip-report` convention):
-  - PRODUCTION (default): predict + export only. Input has no labels.
-  - EVALUATION (`--skip-eval false`): additionally compute per-level accuracy and
-    retrieval recall against the ground-truth `code` of a labeled input.
+Un seul mode : prédire et exporter. L'évaluation se fait a posteriori, dans
+l'étape finale `evaluate`, qui relit le parquet exporté ici.
 
 Usage:
-    # production
     uv run scripts/1_run_rag.py --run-id <ID> --run-date <YYYY-MM-DD>
-    # evaluation
-    uv run scripts/1_run_rag.py --run-id <ID> --run-date <YYYY-MM-DD> --skip-eval false
 """
 import argparse
 import datetime
@@ -72,11 +67,6 @@ def setup_argument_parser():
     )
     parser.add_argument("--model_name", type=str, help="LLM model name (overrides config)")
     parser.add_argument("--experiment_name", type=str, help="MLflow experiment (overrides config)")
-    parser.add_argument(
-        "--skip-eval", default="true",
-        help="If != 'true', evaluate predictions against ground-truth labels "
-             "(evaluation mode). Default 'true' = production mode (predictions only).",
-    )
     return parser
 
 
@@ -105,9 +95,6 @@ def main():
     product_col = config["annotations"]["product_col"]
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    # Evaluation is opt-in (mirrors the workflow's `skip-report` convention):
-    # default = production (predictions only); `--skip-eval false` = evaluation mode.
-    do_eval = str(args.skip_eval).lower() != "true"
     input_path = config["data"]["s3_path_input"]
 
     # Valider l'index AVANT MLflow : échouer à l'intérieur d'un start_run
@@ -129,28 +116,10 @@ def main():
         param_name="classify-rag-annotations-collection",
         index_pipeline="argo/index-annotations-pipeline.yaml",
     )
-    # Non bloquant (décision assumée) : on signale seulement. Une KB `full`
-    # contient tous les produits annotés, y compris ceux qu'un run d'évaluation
-    # s'apprête à coder si son jeu de test provient du même lot historique.
-    # Depuis que les nouveaux produits annotés fournissent un jeu de test
-    # indépendant, ce cas n'est plus la norme — d'où l'avertissement plutôt
-    # que le refus.
-    if do_eval and index_manifest.get("kb_scope") == "full":
-        logger.warning("=" * 72)
-        logger.warning(
-            "Run d'ÉVALUATION sur une collection bâtie en kb-scope=full (%s).",
-            config["qdrant"]["collection_name"],
-        )
-        logger.warning(
-            "Vérifier que le jeu de test de ce run est bien indépendant de la KB : "
-            "sinon le RAG y retrouve ses propres réponses et l'accuracy est gonflée."
-        )
-        logger.warning("=" * 72)
     logger.info(
-        "✓ Collection validée : %s (%s points, kb_scope %s)",
+        "✓ Collection validée : %s (%s points)",
         config["qdrant"]["collection_name"],
         index_manifest["point_count_live"],
-        index_manifest.get("kb_scope"),
     )
 
     mlflow.set_tracking_uri(os.environ["MLFLOW_TRACKING_URI"])
@@ -158,15 +127,13 @@ def main():
 
     with mlflow.start_run(run_name=f"annotation-rag_{timestamp}"):
         logger.info("=" * 80)
-        logger.info("STARTING ANNOTATION RAG PIPELINE (%s mode)",
-                    "EVALUATION" if do_eval else "PRODUCTION")
+        logger.info("STARTING ANNOTATION RAG PIPELINE")
         logger.info("=" * 80)
 
         # Provenance de l'index : deux runs bâtis sur des index différents
         # seraient sinon indistinguables dans MLflow.
         mlflow.set_tag("index.git_sha", str(index_manifest.get("git_sha")))
         mlflow.set_tag("index.run_id", str(index_manifest.get("run_id")))
-        mlflow.set_tag("index.kb_scope", str(index_manifest.get("kb_scope")))
 
         mlflow.log_params({
             "collection_name": config["qdrant"]["collection_name"],
@@ -174,7 +141,6 @@ def main():
             "model_name": config["llm"]["model_name"],
             "embedding_model": config["embedding"]["model_name"],
             "retrieval_size": config["retrieval"]["size"],
-            "mode": "evaluation" if do_eval else "production",
             "input": input_path,
             "vectordb_exclude_sources": ",".join(config["annotations"].get("exclude_sources") or []) or "none",
             "testset_include_sources": ",".join(config["eval"].get("include_sources") or []) or "all",
@@ -203,18 +169,10 @@ def main():
             f"SELECT * FROM read_parquet('{input_path}')"
         ).to_df()
 
-        # Keep only configured sources in the test set (empty = all).
-        # Production input carries source="prediction" (no ground truth) and must
-        # NOT be filtered out → the source filter only applies in evaluation mode.
-        include_sources = config["eval"].get("include_sources") or []
-        if do_eval and include_sources and "source" in observations.columns:
-            before = len(observations)
-            observations = observations[observations["source"].isin(include_sources)]
-            logger.info(
-                f"  → test set filtered to sources {include_sources}: {before} → {len(observations)} rows"
-            )
-        elif not do_eval:
-            logger.info("  → production mode: no source filter applied to the input")
+        # Aucun filtre par source : on code tout ce qui arrive. Ce filtre
+        # n'existait que pour l'évaluation, où certaines sources faussaient la
+        # mesure ; la source est désormais une dimension d'analyse du rapport
+        # d'évaluation, pas une restriction du périmètre codé.
 
         if args.sample_size:
             observations = observations.sample(n=min(args.sample_size, len(observations)),
@@ -329,42 +287,10 @@ def main():
 
         mlflow.log_dict(config, "config.yaml")
 
-        # -------------------------------------------------------------------
-        # Evaluate (opt-in: only in evaluation mode, and only if labels exist)
-        # -------------------------------------------------------------------
-        if not do_eval:
-            logger.info("STEP 8: evaluation skipped (production mode)")
-        elif "code" not in observations.columns:
-            logger.warning(
-                "STEP 8: evaluation requested but no ground-truth 'code' column in input "
-                "— skipping evaluation."
-            )
-        else:
-            logger.info("STEP 8: evaluating")
-            target_level = config["eval"]["levels"]
-            detail = detailed_evaluation(records, max_level=target_level, target_level=target_level)
-
-            report = format_detailed_report(detail)
-            print("\n" + report)
-            with open("report.txt", "w", encoding="utf-8") as f:
-                f.write(report)
-            mlflow.log_artifact("report.txt")
-
-            # Scalar metrics
-            mlflow.log_metrics(flatten_detailed(detail))
-
-            # Detailed tables (viewable in the MLflow UI)
-            mlflow.log_table(pd.DataFrame(detail["by_level1"]),
-                             "eval/accuracy_by_level1.json")
-            for lvl, d in detail["distortion"].items():
-                mlflow.log_table(pd.DataFrame(d["per_category"]),
-                                 f"eval/distribution_level_{lvl}.json")
-            mlflow.log_table(pd.DataFrame(detail["confidence"]["calibration_bins"]),
-                             "eval/confidence_calibration.json")
-            mlflow.log_table(pd.DataFrame(detail["confidence"]["threshold_sweep"]),
-                             "eval/confidence_threshold_sweep.json")
-            mlflow.log_table(pd.DataFrame(detail["codable"]["groups"]),
-                             "eval/codable_reliability.json")
+        # L'évaluation a quitté cette étape pour l'étape finale `evaluate`, qui
+        # la rejoue depuis le parquet exporté ci-dessus. `detailed_evaluation` et
+        # ses fonctions restent dans `rag_annotations.eval`, désormais importées
+        # de là-bas.
 
         logger.info("=" * 80)
         logger.info("ANNOTATION RAG PIPELINE COMPLETED")

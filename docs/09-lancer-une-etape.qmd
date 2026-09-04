@@ -30,6 +30,7 @@ local, il faut exporter soi-même les variables requises par l'étape :
 | `classify-ttc` | `AWS_*` + `MLFLOW_TRACKING_*` (chargement du modèle depuis MLflow) |
 | `reconcile-llm` | `AWS_*` + `LLMLAB_API_KEY` (+ `LLMLAB_URL` pour un endpoint non-OpenAI) |
 | `report` | `AWS_*` + `MLFLOW_TRACKING_*` (facultatif : sans `MLFLOW_TRACKING_URI`, le log MLflow est sauté) |
+| `evaluate` | idem `report` |
 | `reconcile-sirus` | `AWS_*` + `MLFLOW_TRACKING_*` (résolution de `reconcile-sirus-model-uri`) |
 | entraînement SIRUS (`reconcile-sirus/train.sh`, hors pipeline) | `AWS_*` + `MLFLOW_TRACKING_*` — **obligatoires** ici, contrairement au `report` : le modèle et ses métriques n'ont pas d'autre destination, et le script refuse de démarrer sans `MLFLOW_TRACKING_URI` |
 
@@ -73,7 +74,7 @@ argo submit argo/codif-pipeline.yaml --entrypoint classify-rag-notices \
   -p collection-name=coicop_notices__2026-09-02__index-notices-a7k2p
 argo submit argo/codif-pipeline.yaml --entrypoint classify-rag-annotations \
   -p run_id=codif-abc12 -p run_date=2026-03-20 -p classify-rag-model=gemma4-26b-moe \
-  -p collection-name=coicop_annotations__full__2026-09-02__index-annotations-b3x9q
+  -p collection-name=coicop_annotations__2026-09-02__index-annotations-b3x9q
 
 # classify-ttc : classify-ttc-model-uri a une valeur par défaut, surchargeable
 argo submit argo/codif-pipeline.yaml --entrypoint classify-ttc \
@@ -101,7 +102,7 @@ argo submit argo/codif-pipeline.yaml --entrypoint reconcile-llm \
 # report : "step-timings" n'est pas un paramètre du workflow, il faut le passer
 argo submit argo/codif-pipeline.yaml --entrypoint report \
   -p run_id=codif-abc12 -p run_date=2026-03-20 \
-  -p input_file= -p report-experiment=codif-coicop-eval \
+  -p input_file=s3://.../workflow_inputs/mon_fichier.csv -p report-experiment=codif-coicop-eval \
   -p classify-rag-model= -p reconcile-llm-model=gemma4-26b-moe \
   -p reconcile-llm-concurrency=5 -p classify-ttc-model-uri= \
   -p classify-rag-notices-collection= -p classify-rag-annotations-collection= \
@@ -149,6 +150,9 @@ uv run main.py --run-id $RUN_ID --run-date $RUN_DATE \
   --input-file s3://projet-budget-famille/data/workflow_inputs/mon_fichier.csv \
   --text-column NAT_DEP --shop-column MAG_DEP --budget-column MONT_DEP
 ```
+
+`--input-file` est **obligatoire**. Ajouter `--label-column code` si le fichier porte une
+vérité terrain : elle est recopiée dans `code` et rend le run évaluable.
 
 ### 2. classify-regex
 
@@ -207,11 +211,9 @@ Attention au mélange de styles : le script attend `--run-id`/`--run-date` (tire
 ```bash
 cd rag-annotations && uv sync --locked
 
-# --skip-eval false = mode évaluation (métriques) ;
-# --skip-eval true  = mode production (prédictions seules)
 uv run scripts/1_run_rag.py --config config/config.yaml \
-  --run-id $RUN_ID --run-date $RUN_DATE --skip-eval false \
-  --collection-name coicop_annotations__full__2026-09-02__index-annotations-b3x9q
+  --run-id $RUN_ID --run-date $RUN_DATE \
+  --collection-name coicop_annotations__2026-09-02__index-annotations-b3x9q
 ```
 
 `--collection-name` est **obligatoire**, pour la même raison qu'au-dessus.
@@ -227,9 +229,8 @@ relancer **en entier** (ce sont des chaînes de deux ou trois étapes).
 # Notices : autonome, la nomenclature vient d'un CSV statique
 argo submit argo/index-notices-pipeline.yaml
 
-# Annotations : kb-scope=full par défaut ; kb-sample-size pour un index d'essai
+# Annotations : la KB, c'est toute la base annotée ; kb-sample-size pour un index d'essai
 argo submit argo/index-annotations-pipeline.yaml
-argo submit argo/index-annotations-pipeline.yaml -p kb-scope=train
 argo submit argo/index-annotations-pipeline.yaml -p kb-sample-size=1000
 ```
 
@@ -249,7 +250,7 @@ uv run scripts/0_create_vector_db.py --config config/config.yaml \
 # après `prune-codes --only kb` sur le même RUN_ID/RUN_DATE
 cd rag-annotations && uv sync --locked
 uv run scripts/0_build_annotation_vector_db.py --config config/config.yaml \
-  --run-id $RUN_ID --run-date $RUN_DATE --kb-scope full   # + --sample-size N si besoin
+  --run-id $RUN_ID --run-date $RUN_DATE   # + --sample-size N si besoin
 ```
 
 ### 7. classify-ttc (depuis `classify-ttc/`)
@@ -276,12 +277,11 @@ uv run main.py reconcile-llm \
   --ttc-file "$RUN_ROOT/classify-ttc/predictions.parquet" \
   --mapping-file "$RUN_ROOT/prune-codes/mapping_lvl4.parquet" \
   --output-file "$RUN_ROOT/reconcile-llm/predictions.parquet" \
-  --extra-columns-file "$RUN_ROOT/build-datasets/raw_test.parquet" \
+  --extra-columns-file "$RUN_ROOT/build-datasets/observations.parquet" \
   --model gemma4-26b-moe --concurrency 5
 ```
 
-En mode production, remplacer `--extra-columns-file` par
-`"$RUN_ROOT/build-datasets/observations.parquet"`. Sans `--mapping-file`, les codes ne sont
+ Sans `--mapping-file`, les codes ne sont
 **pas** normalisés (troncature + élagage) — le pipeline Argo le passe toujours.
 
 Si `--output-file` existe déjà, l'étape **reprend automatiquement** les observations non
@@ -314,13 +314,12 @@ uv run main.py predict \
   --ttc-file "$RUN_ROOT/classify-ttc/predictions.parquet" \
   --mapping-file "$RUN_ROOT/prune-codes/mapping_lvl4.parquet" \
   --tocodify-file "$RUN_ROOT/classify-regex/raw_test_without_regex.parquet" \
-  --extra-columns-file "$RUN_ROOT/build-datasets/raw_test.parquet" \
+  --extra-columns-file "$RUN_ROOT/build-datasets/observations.parquet" \
   --model-uri "mlflow-artifacts:/12/9f3c.../artifacts/model" \
   --output-file "$RUN_ROOT/reconcile-sirus/predictions.parquet"
 ```
 
-En mode production, remplacer `--extra-columns-file` par
-`"$RUN_ROOT/build-datasets/observations.parquet"`. L'URI du modèle est le paramètre de workflow
+ L'URI du modèle est le paramètre de workflow
 `reconcile-sirus-model-uri` ; un chemin local vers un dossier contenant `rules.json` est aussi accepté,
 ce qui permet de tester sans MLflow.
 
@@ -333,8 +332,7 @@ uv run main.py --run-id $RUN_ID --run-date $RUN_DATE \
   --text-column NAT_DEP --shop-column MAG_DEP --budget-column MONT_DEP
 ```
 
-(`--input-file` en mode production seulement : il sélectionne `observations.parquet` comme
-base et restaure le nom du fichier livré.)
+(`--input-file` est obligatoire : il restaure le nom du fichier livré.)
 
 ### 10. report
 
@@ -344,15 +342,28 @@ uv run main.py --run-id $RUN_ID --run-date $RUN_DATE \
   --experiment-name codif-coicop-eval
 ```
 
-Le mode (évaluation ou prédiction) est détecté automatiquement (voir
-[8. Report](08-report.qmd)). Sans `MLFLOW_TRACKING_URI`, le log MLflow est simplement sauté.
+Sans `MLFLOW_TRACKING_URI`, le log MLflow est simplement sauté.
+
+### 11. evaluate *(facultative)*
+
+```bash
+cd evaluate && uv sync --locked
+uv run main.py --run-id $RUN_ID --run-date $RUN_DATE \
+  --input-file s3://projet-budget-famille/data/workflow_inputs/mon_fichier.csv \
+  --reconciliation llm --experiment-name codif-coicop-eval \
+  --source-column source          # facultatif : ventilation par provenance
+```
+
+Elle n'a de sens que sur un run dont le fichier d'entrée portait une colonne d'étiquettes
+(`--label-column` de `build-datasets`). Sans quoi elle **échoue** en annonçant que la vérité
+canonique `code_lvl4` est absente. Voir [11. Evaluate](11-evaluate.qmd).
 
 ## Entraîner le modèle SIRUS (hors pipeline)
 
 L'entraînement **n'est pas une étape du pipeline** : il produit un modèle destiné à un run
 *futur*, et `reconcile-sirus-model-uri` doit être connue au `argo submit`. Il se lance donc à la main,
-comme celui de [TTC](05-classify-ttc.qmd), sur un run d'**évaluation** passé — un run de production
-ne porte pas la vérité terrain dont l'ajustement a besoin.
+comme celui de [TTC](05-classify-ttc.qmd), sur un run passé **étiqueté** (soumis avec
+`label-column`) — l'ajustement a besoin d'une vérité terrain.
 
 ```bash
 cd reconcile-sirus/
@@ -420,7 +431,7 @@ con.sql(f"SELECT * FROM read_parquet('{RUN_ROOT}/reconcile-llm/predictions.parqu
 **Tracer les appels LLM.** Les appels de `classify-rag-notices` et `classify-rag-annotations` sont tracés dans
 **Langfuse** (prompt, réponse, latence par produit). Les métriques de chaque branche RAG vont
 dans **MLflow** (expériences `test` et `rag-annotation`, avec les tags de provenance de
-l'index : `index.git_sha`, `index.run_id`, `index.kb_scope`), et les paramètres/métriques du run
+l'index : `index.git_sha`, `index.run_id`), et les paramètres/métriques du run
 complet dans l'expérience `codif-coicop-eval` via l'étape `report`, avec le `report.html` en
 artefact.
 

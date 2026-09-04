@@ -19,19 +19,17 @@ techniques (carte bancaire, prélèvement, remise…) et quelques catégories g�
 
 ## Entrées
 
-Les chemins dépendent du mode (sélectionné par `--input-file`, cf.
-[Généralités](00-generalites.qmd)) :
+| Variable config | Chemin S3 |
+|---|---|
+| `paths.test_set_prod` | `…/{run}/build-datasets/observations.parquet` (lignes à coder) |
+| `paths.train_set_prod` | `…/{run}/build-datasets/annotations_full.parquet` (la KB) |
 
-| Variable config | Mode | Chemin S3 |
-|---|---|---|
-| `paths.test_set` | évaluation | `…/{run}/build-datasets/raw_test.parquet` |
-| `paths.train_set` | évaluation | `…/{run}/build-datasets/raw_train.parquet` |
-| `paths.test_set_prod` | production | `…/{run}/build-datasets/observations.parquet` (lignes à coder) |
-| `paths.train_set_prod` | production | `…/{run}/build-datasets/annotations_full.parquet` (KB complète) |
+Les suffixes `_prod` sont hérités de l'époque où le pipeline avait deux modes ; il y avait
+alors deux autres clés, `test_set` et `train_set`, pointant sur le split des annotations.
+Elles ont disparu avec le split.
 
 C'est aussi ici qu'a lieu l'**échantillonnage centralisé** du pipeline : si le paramètre
-`sample-observations` est renseigné — il vaut dans les deux modes, production comme
-évaluation —, le jeu à coder est échantillonné une seule fois (`random_state=42`) et tous les
+`sample-observations` est renseigné, le jeu à coder est échantillonné une seule fois (`random_state=42`) et tous les
 classifieurs aval héritent des mêmes lignes via `raw_test_without_regex.parquet` ; leurs
 prédictions restent donc comparables entre elles.
 
@@ -123,6 +121,5 @@ regex ne traite que les cas non ambigus, le reste relève des modèles + arbitra
 | `{run}/REGEX_pred.parquet` | lignes codées par regex (`predict_code`, `method="REGEX"`) |
 | `{run}/raw_test_without_regex.parquet` | lignes **non** codées → entrée des modèles |
 | `{run}/raw_train_without_regex.parquet` | idem côté train / suggester |
-| `{run}/error_regex_pred.parquet` | erreurs (si vérité terrain disponible) |
 
 ➡️ Étape suivante : [3. Prune — troncature & élagage](prune-codes.qmd)

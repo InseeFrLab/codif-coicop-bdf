@@ -30,15 +30,8 @@ spec:
   # `classify-regex` n'est pas dans la chaîne : la KB n'a pas à être filtrée
   # des produits que la regex sait coder.
   #
-  # kb-scope :
-  #   full  (DÉFAUT) → annotations_full : tous les produits annotés.
-  #   train          → raw_train : l'ancien split. Conservé pour la transition,
-  #                    destiné à disparaître. Il n'existait que faute de jeu de
-  #                    test indépendant ; les nouveaux produits annotés en
-  #                    fournissent un naturellement.
-  #
   # En fin d'exécution, le log affiche la ligne à recopier :
-  #     classify-rag-annotations-collection: coicop_annotations__full__<date>__<run_id>
+  #     classify-rag-annotations-collection: coicop_annotations__<date>__<run_id>
   # ---------------------------------------------------------------------------
 
   arguments:
@@ -53,18 +46,13 @@ spec:
           "{{workflow.creationTimestamp.Y}}-{{workflow.creationTimestamp.m}}-{{wor\
           kflow.creationTimestamp.d}}"
 
-      # Quels produits annotés composent la KB. Voir l'en-tête.
-      - name: kb-scope
-        value: full
-        enum: [full, train]
-
       # Plafonne la KB réellement indexée, donc le temps d'embedding.
       # Vide = toute la KB.
       - name: kb-sample-size
         value: ""
 
       # Échappatoire : forcer un nom de collection exact. Vide = composé depuis
-      # `qdrant.collection_base`, kb-scope et l'identité de ce run.
+      # `qdrant.collection_base` et l'identité de ce run.
       - name: collection-name
         value: ""
 
@@ -98,8 +86,6 @@ spec:
                   value: "{{workflow.parameters.run_id}}"
                 - name: run_date
                   value: "{{workflow.parameters.run_date}}"
-                - name: kb-scope
-                  value: "{{workflow.parameters.kb-scope}}"
 
           - name: index-annotations
             dependencies: [prune-codes]
@@ -110,17 +96,15 @@ spec:
                   value: "{{workflow.parameters.run_id}}"
                 - name: run_date
                   value: "{{workflow.parameters.run_date}}"
-                - name: kb-scope
-                  value: "{{workflow.parameters.kb-scope}}"
                 - name: kb-sample-size
                   value: "{{workflow.parameters.kb-sample-size}}"
                 - name: collection-name
                   value: "{{workflow.parameters.collection-name}}"
 
     # -----------------------------------------------------------------------
-    # Produit annotations_full, raw_train, raw_test et suggester — toujours,
-    # sans dépendre d'un fichier d'entrée : seul `observations.parquet` en
-    # dépendrait, et on n'en a pas besoin ici.
+    # Produit annotations_full et suggester — la KB complète, sans dépendre
+    # d'un fichier d'entrée : seul `observations.parquet` en dépendrait, et on
+    # n'en a pas besoin ici.
     #
     # Le bloc `env` est celui du template build-datasets d'origine : il exige
     # AWS_S3_ENDPOINT et AWS_ENDPOINT_URL (os.environ nu dans save_data.py),
@@ -189,7 +173,6 @@ spec:
             value: config/config.yaml
           - name: run_id
           - name: run_date
-          - name: kb-scope
       container:
         image: inseefrlab/onyxia-vscode-python:py3.13.12
         command: [sh, -c]
@@ -200,16 +183,11 @@ spec:
             cd repo/prune-codes
             uv sync --locked --no-dev
             BD="s3://projet-budget-famille/data/workflow_runs/{{inputs.parameters.run_date}}/{{inputs.parameters.run_id}}/build-datasets"
-            case "{{inputs.parameters.kb-scope}}" in
-              full)  KB="$BD/annotations_full.parquet" ;;
-              train) KB="$BD/raw_train.parquet" ;;
-              *)     echo "kb-scope invalide : {{inputs.parameters.kb-scope}}"; exit 1 ;;
-            esac
             uv run --locked --no-dev scripts/main.py \
               --config {{inputs.parameters.config}} \
               --run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}} \
               --only kb \
-              --annotations-train "$KB" \
+              --annotations-train "$BD/annotations_full.parquet" \
               --suggester-path "$BD/suggester.parquet" \
               --suggester-product-col l_pr_product
         env:
@@ -243,7 +221,7 @@ spec:
 
     # -----------------------------------------------------------------------
     # Embedding de la KB (+ suggester) et création de la collection Qdrant.
-    # Écrit un manifeste (kb-scope, modèle d'embedding, nombre de points) que
+    # Écrit un manifeste (modèle d'embedding, nombre de points) que
     # le pipeline de classification relit au démarrage.
     # -----------------------------------------------------------------------
     - name: index-annotations
@@ -253,7 +231,6 @@ spec:
             value: config/config.yaml
           - name: run_id
           - name: run_date
-          - name: kb-scope
           - name: kb-sample-size
           - name: collection-name
       container:
@@ -266,7 +243,6 @@ spec:
             cd repo/rag-annotations
             uv sync --locked --no-dev
             ARGS="--config {{inputs.parameters.config}} --run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}"
-            ARGS="$ARGS --kb-scope {{inputs.parameters.kb-scope}}"
             [ -n "{{inputs.parameters.kb-sample-size}}" ] && ARGS="$ARGS --sample-size {{inputs.parameters.kb-sample-size}}"
             [ -n "{{inputs.parameters.collection-name}}" ] && ARGS="$ARGS --collection-name {{inputs.parameters.collection-name}}"
             uv run --locked --no-dev scripts/0_build_annotation_vector_db.py $ARGS

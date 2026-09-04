@@ -21,7 +21,7 @@ C'est ici que les deux sources de codification se rejoignent :
 
 | Source | Chemin S3 | Apport |
 |---|---|---|
-| Colonnes utilisateur | `…/{run}/build-datasets/observations.parquet` (prod, si `--input-file`) ou `raw_test.parquet` (éval) | colonnes d'origine + `id` + `_source_input_file` |
+| Colonnes utilisateur | `…/{run}/build-datasets/observations.parquet` | colonnes d'origine + `id` + `_source_input_file` |
 | Codes regex | `…/{run}/classify-regex/REGEX_pred.parquet` | `predict_code` |
 | Décisions LLM | `…/{run}/reconcile-llm/predictions.parquet` | `llm_code`, `llm_explication`, `llm_confiance`, `llm_model` |
 | Table de mapping [prune-codes](prune-codes.qmd) | `…/{run}/prune-codes/mapping_lvl4.parquet` | garde-fou troncature + élagage |
@@ -117,4 +117,4 @@ Points d'attention :
 |---|---|
 | `…/{run}/export-results/{nom_fichier_entrée}` | fichier d'entrée enrichi de `predicted_code`, `prediction_source`, `llm_comment` |
 
-➡️ Étape suivante : [10. Report](08-report.qmd)
+➡️ Étape suivante : [10. Report](08-report.qmd), puis [11. Evaluate](11-evaluate.qmd) si le run est étiqueté

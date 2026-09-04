@@ -5,27 +5,28 @@ title: "1. Preprocessing"
 ## Rôle de l'étape
 
 `build-datasets` construit, à partir des sources brutes, **tous** les jeux de données
-normalisés dont le pipeline a besoin en aval — quel que soit le mode d'exécution.
-Elle enchaîne deux pipelines indépendants :
+normalisés dont le pipeline a besoin en aval. Elle enchaîne deux pipelines indépendants :
 
-1. **Pipeline annotations** *(toujours exécuté)* — consolide les données annotées
-   (BdF 2024 + historique 2017 + suggester), standardise les libellés, agrège le budget
-   et produit un **fichier complet** + un split **train** / **test**.
-2. **Pipeline observations** *(uniquement si `--input-file` est fourni)* — prépare les
-   libellés **à coder** (sans vérité terrain) issus du fichier d'entrée.
+1. **Pipeline annotations** — consolide les données annotées (BdF 2024 + historique 2017 +
+   suggester), standardise les libellés, agrège le budget et produit `annotations_full`, la
+   **base de connaissance** des classifieurs.
+2. **Pipeline observations** — prépare les libellés **à coder**, issus du fichier d'entrée.
 
 ::: {.callout-note}
-Avant, l'étape avait deux chemins mutuellement exclusifs : en mode prédiction elle
-écrasait `raw_test.parquet` avec les observations et laissait `raw_train.parquet` vide.
-Désormais `raw_train`/`raw_test` désignent **toujours** le split train/test des
-**annotations**, et les observations à coder vont dans un fichier dédié
-`observations.parquet`. Ainsi, en prod comme en évaluation, toutes les données utiles
-sont disponibles.
+## Il y avait ici un split train / test
+Le pipeline annotations coupait son résultat en deux (`raw_train` / `raw_test`, 50/50) parce
+qu'il n'existait qu'un seul jeu annoté : mesurer sans qu'un classifieur retrouve ses propres
+réponses exigeait d'en réserver une moitié. Des données fraîches annotées arrivent désormais
+régulièrement, donc **toute la base historique sert de KB** et le split a disparu.
+
+L'évaluation, elle, est devenue une [étape finale facultative](11-evaluate.qmd) : elle mesure
+sur les étiquettes du fichier d'entrée lui-même, quand il en porte.
 :::
 
 - Code : [`build-datasets/`](https://github.com/InseeFrLab/codif-coicop-bdf/tree/main/preprocessing) — entrée `build-datasets/main.py`
-- Commande (évaluation) : `python main.py --run-id=<id> --run-date=YYYY-MM-DD`
-- Commande (prédiction) : `python main.py --run-id=<id> --run-date=YYYY-MM-DD --input-file=<s3> --text-column=NAT_DEP --shop-column=MAG_DEP --budget-column=MONT_DEP`
+- Commande : `python main.py --run-id=<id> --run-date=YYYY-MM-DD --input-file=<s3> --text-column=NAT_DEP --shop-column=MAG_DEP --budget-column=MONT_DEP`
+- `--input-file` est **obligatoire**. Ajouter `--label-column=<colonne>` si le fichier porte
+  une vérité terrain : elle est alors recopiée dans `code`, et le run devient évaluable.
 
 ## Entrées
 
@@ -37,7 +38,7 @@ sont disponibles.
 | Pool « suggester » | `data/input-annotation/liste_produits_fr_copain.csv` |
 | Table enseigne → type | `data/input-annotation/liste_magasins.csv` |
 | Produits non codables | `data/codification-manuelle-anterieure/produit_non_annotable.csv` |
-| Fichier à coder *(prédiction)* | `s3://…/workflow_inputs/BDF_data_tickets_appli_20260320_a_codif.csv` |
+| Fichier à coder | `s3://…/workflow_inputs/BDF_data_tickets_appli_20260320_a_codif.csv` |
 
 ## Traitement
 
@@ -74,14 +75,11 @@ applique les briques partagées, exporte des contrôles qualité (`qa/`), puis :
 
 - agrège le budget séparément pour les données 2024 et l'historique
   (`aggregate_budget`, dédoublonnage + somme) ;
-- découpe les données 2024 en **train** / **test** (`train_test_split`, 50/50,
-  `random_state=42`) ; l'historique 2017 (+ suggester) rejoint le **train** ;
-- le **fichier complet** est l'union train ∪ test.
+- produit `annotations_full` : BdF 2024 + historique 2017 + suggester, en un seul jeu.
 
-### Pipeline observations *(prédiction)*
+### Pipeline observations
 
-`build_observations` ne s'exécute que si `--input-file` est fourni. Les colonnes d'entrée
-sont d'abord renommées vers les noms canoniques :
+Les colonnes d'entrée sont d'abord renommées vers les noms canoniques :
 
 ```python
 column_mapping = {
@@ -93,8 +91,18 @@ column_mapping = {
 }
 ```
 
-Comme il n'y a pas de vérité terrain, les colonnes manquantes reçoivent des valeurs par
-défaut pour que les étapes suivantes ne plantent pas :
+Puis, si `--label-column` est fourni, la colonne d'étiquettes est **recopiée dans `code`** —
+la même colonne que celle des annotations, donc rien d'autre ne change dans la chaîne :
+
+```python
+if args.label_column:
+    if args.label_column not in df.columns:
+        raise ValueError(...)          # échoue tout de suite, pas dans 2 h
+    df = df.rename(columns={args.label_column: "code"})
+```
+
+Enfin, le schéma est aligné sur celui des annotations pour que les étapes suivantes ne
+plantent pas. `code` n'est mis à `NA` **que s'il n'a pas été fourni ci-dessus** :
 
 ```python
 prediction_defaults = {
@@ -102,6 +110,9 @@ prediction_defaults = {
     "shop": pd.NA, "shop_type_name": pd.NA, "budget": pd.NA,
     "n_obs": 1, "source": "prediction",
 }
+for col, default in prediction_defaults.items():
+    if col not in df.columns:
+        df[col] = default
 ```
 
 `_source_input_file` conserve le chemin du fichier d'origine (réutilisé par `export-results`
@@ -125,20 +136,15 @@ captée plus loin par la règle regex `^illisible$ → 98.4`.
 
 `{run}` = `s3://projet-budget-famille/data/workflow_runs/{run_date}/{run_id}/build-datasets`
 
-| Fichier | Éval | Prédiction | Contenu |
-|---|:--:|:--:|---|
-| `{run}/annotations_full.parquet` | ✅ | ✅ | annotations consolidées complètes (= `raw_train` ∪ `raw_test`), budget agrégé |
-| `{run}/raw_train.parquet` | ✅ | ✅ | split **train** des annotations (2024-train + tout 2017 + suggester) |
-| `{run}/raw_test.parquet` | ✅ | ✅ | split **test** des annotations (2024-test) |
-| `{run}/suggester.parquet` | ✅ | ✅ | suggester préprocessé (`source="suggester"`), lu directement par [`classify-lcs`](03-classify-lcs.qmd) |
-| `{run}/observations.parquet` | — | ✅ | lignes **à coder** (`id`, `raw_product`, `l_pr_product`, `s_pr_product`, `shop`, `shop_type_name`, `budget`, `code`(NA)…, `_source_input_file`, `source="prediction"`) |
-| `{run}/qa/*.parquet` | ✅ | ✅ | contrôles qualité (doublons suggester, produits multi-codes) |
+| Fichier | Contenu |
+|---|---|
+| `{run}/annotations_full.parquet` | annotations consolidées complètes (BdF 2024 + historique 2017 + suggester), budget agrégé. **C'est la base de connaissance** des classifieurs |
+| `{run}/suggester.parquet` | suggester préprocessé (`source="suggester"`), lu directement par [`classify-lcs`](03-classify-lcs.qmd) |
+| `{run}/observations.parquet` | lignes **à coder** (`id`, `raw_product`, `l_pr_product`, `s_pr_product`, `shop`, `shop_type_name`, `budget`, `code`, `_source_input_file`, `source="prediction"`). `code` est `NA` sauf si `--label-column` a été fourni |
+| `{run}/qa/*.parquet` | contrôles qualité (doublons suggester, produits multi-codes) |
 
-::: {.callout-note}
-En mode **production**, les étapes aval travaillent sur `observations.parquet`
-(`classify-regex` via `test_set_prod`, `reconcile-llm --extra-columns-file`, `export-results`) ;
-en mode **évaluation**, elles travaillent sur `raw_test.parquet`. Voir
-[Généralités — modes prod / éval](00-generalites.qmd).
-:::
+Toutes les étapes aval travaillent sur `observations.parquet` (`classify-regex` via
+`test_set_prod`, `reconcile-llm --extra-columns-file`, `export-results`), et sur
+`annotations_full.parquet` comme KB.
 
 ➡️ Étape suivante : [2. Codif regex](02-classify-regex.qmd)

@@ -21,7 +21,7 @@ classification pipeline and passed in by name — the same arrangement as `class
 
         └── les deux noms sont recopiés dans argo/params.yaml ──┐
                                                                 ▼
-③ argo/codif-pipeline.yaml   (input_file : production / évaluation)
+③ argo/codif-pipeline.yaml   (input_file : OBLIGATOIRE — un seul mode)
    Le DAG ci-dessous tourne DEUX FOIS : `smoke` sur 100 lignes (~8 min), puis `full`.
    Un smoke en échec bloque le vrai run. Échappatoire : `-p skip-smoke=true`.
 build-datasets
@@ -34,14 +34,16 @@ build-datasets
                                        │  les 4 classifieurs convergent
                                        └─→ reconcile-llm  OU  reconcile-sirus   (exclusifs : paramètre `reconciliation`)
                                                └─→ export-results ─→ report  (skip-report)
+                                                          └─→ evaluate  (facultative : label-column)
 ```
 
-Le pruning (troncature niv.4 + élagage des hiérarchies linéaires) est centralisé dans le module `prune-codes/` : une étape unique, après `classify-regex`, qui produit tous les artefacts prunés (nomenclature, mapping, annotations train/test, suggester) sous `…/{run}/prune-codes/`. L'aval ne fait que lire. Le drapeau `--only {all,nomenclature,kb}` restreint son périmètre pour les pipelines d'indexation.
+Le pruning (troncature niv.4 + élagage des hiérarchies linéaires) est centralisé dans le module `prune-codes/` : une étape unique, après `classify-regex`, qui produit tous les artefacts prunés (nomenclature, mapping, KB annotée, jeu à coder, suggester) sous `…/{run}/prune-codes/`. L'aval ne fait que lire. Le drapeau `--only {all,nomenclature,kb}` restreint son périmètre pour les pipelines d'indexation.
 
 | Module | Argo step | Workflow | Language |
 |---|---|---|---|
 | `build-datasets/` | `build-datasets` | ② et ③ | Python |
 | `prune-codes/` | `prune-codes` | ①, ② et ③ | Python |
+| `common/` | — (socle partagé, aucune étape) | — | Python |
 | `rag-notices/` | `index-notices` | ① | Python |
 | `rag-notices/` | `classify-rag-notices` | ③ | Python |
 | `rag-annotations/` | `index-annotations` | ② | Python |
@@ -53,6 +55,7 @@ Le pruning (troncature niv.4 + élagage des hiérarchies linéaires) est central
 | `reconcile-sirus/` | `reconcile-sirus` (entraînement hors pipeline) | ③ | Python + R |
 | `report/` | `report` | ③ | Python + Quarto |
 | `export-results/` | `export-results` | ③ | Python |
+| `evaluate/` | `evaluate` (facultative) | ③ | Python + Quarto |
 
 ## Running the Pipeline
 
@@ -67,7 +70,7 @@ Each prints, at the end, the exact line to paste into `argo/params.yaml`:
 
 ```
 classify-rag-notices-collection: coicop_notices__2026-09-02__index-notices-a7k2p
-classify-rag-annotations-collection: coicop_annotations__full__2026-09-02__index-annotations-b3x9q
+classify-rag-annotations-collection: coicop_annotations__2026-09-02__index-annotations-b3x9q
 ```
 
 Then the classification pipeline:
@@ -80,14 +83,21 @@ argo submit argo/codif-pipeline.yaml --parameter-file argo/params.yaml
 # by every classifier, so all four codify exactly the same rows
 argo submit argo/codif-pipeline.yaml --parameter-file argo/params.yaml -p sample-observations=100
 
-# Disable the accuracy report (on by default in the YAML)
+# Disable the production report (on by default in the YAML)
 argo submit argo/codif-pipeline.yaml --parameter-file argo/params.yaml -p skip-report=true
+
+# Measure the run: only if the input file carries a ground-truth column.
+argo submit argo/codif-pipeline.yaml --parameter-file argo/params.yaml \
+  -p label-column=code -p eval-source-column=source
 ```
 
 Key pipeline parameters:
-- `input_file` — non-empty = **production** (codifies these observations), empty = **evaluation** (codifies the annotation test split). Drives the prod/eval mode everywhere.
+- `input_file` — **required**. The file to codify. The pipeline has a single mode; the prod/eval duality is gone.
+- `label-column` — name of the ground-truth column in `input_file`. **Empty = no evaluation**: the `evaluate` step is skipped, which is the nominal production case. Non-empty, and `build-datasets` copies it into `code`, which carries it through the whole chain.
+- `eval-source-column` — name of the product-provenance column. Adds a per-source accuracy breakdown to the evaluation report. Never restricts what gets codified.
+- `skip-eval` (default `false`), `eval-experiment` — the escape hatch and the MLflow experiment of the `evaluate` step.
 - `classify-rag-notices-collection` / `classify-rag-annotations-collection` — **required**, no default. Qdrant collections produced by workflows ① and ②. Argo has no required-parameter mechanism, so the guard is written twice: a `[ -z ] && exit 1` in the container script *and* `required=True` in argparse. An unset name must fail in seconds, not silently fall back to some other run's index.
-- `sample-observations` — cap the to-codify set, in **both** modes; sampled once at `classify-regex`. To cap the indexed KB instead, that is `kb-sample-size` of workflow ②.
+- `sample-observations` — cap the to-codify set; sampled once at `classify-regex`. To cap the indexed KB instead, that is `kb-sample-size` of workflow ②.
 - `classify-rag-model` (LLM for classify-rag-notices), `reconcile-llm-model` (default `gemma4-26b-moe`), `reconcile-llm-concurrency` (default `5`), `skip-report`.
 - `reconciliation` — `llm` (default, `reconcile-llm`) or `sirus` (`reconcile-sirus`). **Mutually exclusive**: the other step is skipped via `when:`, and `export-results`/`report` depend on both (legacy `dependencies:` tolerates a Skipped node).
 - `reconcile-sirus-model-uri` — MLflow artifact URI, required when `reconciliation: sirus`. Training happens **outside the pipeline** (`cd reconcile-sirus/ && ./train.sh <date>/<run_id>`), so the model can never come from the run it scores — train-on-test is impossible by construction (same pattern as `classify-ttc-model-uri`).
@@ -123,20 +133,20 @@ Inter-module data exchange goes through S3 (parquet files). The path convention 
 
 ## Module Architecture Notes
 
-**`prune-codes/`** — Étape unique de pruning (troncature niveau 4 + élagage des hiérarchies linéaires). Produit tous les artefacts prunés sous `…/{run}/prune-codes/` (nomenclature, mapping, annotations train/test, suggester), lus par les modules RAG. `scripts/main.py`.
+**`prune-codes/`** — Étape unique de pruning (troncature niveau 4 + élagage des hiérarchies linéaires). Produit tous les artefacts prunés sous `…/{run}/prune-codes/` (nomenclature, mapping, KB annotée, jeu à coder, suggester), lus par les modules RAG. `scripts/main.py`.
 
 **`rag-notices/`** — Two scripts, now in **two different workflows** : `0_create_vector_db.py` (workflow ①) encode la nomenclature **prunée** dans Qdrant ; `2_run_rag.py` (workflow ③) fait le RAG sur notices contre une collection existante, dont le nom lui est passé par `--collection_name` (obligatoire). Embeddings et génération via VLLM (OpenAI-compatible), métriques MLflow, prompts tracés dans Langfuse.
 
-**`rag-annotations/`** — RAG sur exemples annotés, également scindé : `0_build_annotation_vector_db.py` (workflow ②) indexe la KB — `annotations_full` + suggester au sens de `build-datasets`, **sans filtrage regex** — avec `--kb-scope {full,train}` ; `1_run_rag.py` (workflow ③) codifie l'input pruné, avec `--collection-name` obligatoire et `--skip-eval` pour le calcul des métriques.
+**`rag-annotations/`** — RAG sur exemples annotés, également scindé : `0_build_annotation_vector_db.py` (workflow ②) indexe la KB — `annotations_full` + suggester au sens de `build-datasets`, **sans filtrage regex** ; `1_run_rag.py` (workflow ③) codifie l'input pruné, avec `--collection-name` obligatoire. Il ne calcule plus aucune métrique : c'est l'étape `evaluate` qui mesure.
 
 ### Vector DBs (workflows ① et ②)
 
 Les collections **ne portent plus de nom fixe partagé**. Chaque indexation en crée une nouvelle :
 
 ```
-{base}[__{kb_scope}]__{run_date}__{run_id}[__sampleN]
+{base}__{run_date}__{run_id}[__sampleN]
 coicop_notices__2026-09-02__index-notices-a7k2p
-coicop_annotations__full__2026-09-02__index-annotations-b3x9q
+coicop_annotations__2026-09-02__index-annotations-b3x9q
 ```
 
 Auparavant, `coicop_lineage` et `coicop_annotations_without_copain_2017` étaient partagées par tous les runs et **détruites puis recréées** à chaque indexation : une réindexation cassait la base que lisait un run concurrent, et le défaut `skip-index=true` faisait coder contre une vector DB de provenance inconnue.
@@ -144,13 +154,19 @@ Auparavant, `coicop_lineage` et `coicop_annotations_without_copain_2017` étaien
 Deux conséquences pour qui touche à ce code :
 
 - La clé de config s'appelle `qdrant.collection_base`, **pas** `collection_name`. Le renommage est délibéré : le même `config.yaml` est lu par le constructeur et par le consommateur. Une clé `collection_name` y ferait retomber le consommateur en silence sur une collection périmée ; et côté constructeur, `0_create_vector_db.py` lisait le nom à deux endroits — en oublier un aurait déversé les points dans l'ancienne collection tout en créant la nouvelle, vide.
-- Chaque collection est accompagnée d'un **manifeste** JSON sous `s3://…/data/vector_db_manifests/{collection_name}.json` (modèle d'embedding, dimension, stratégie, `kb_scope`, nombre de points, sha git). Les étapes `classify-rag-*` le relisent **avant `mlflow.set_experiment`** pour valider la collection : échouer à l'intérieur d'un `start_run` laisserait un run FAILED qui pollue l'expérience. Le nom seul ne peut pas porter ces informations — deux collections de même dimension bâties avec des stratégies différentes sont indistinguables, et interroger la mauvaise ne lève aucune erreur.
+- Chaque collection est accompagnée d'un **manifeste** JSON sous `s3://…/data/vector_db_manifests/{collection_name}.json` (modèle d'embedding, dimension, stratégie, taille d'échantillon, nombre de points, sha git). Les étapes `classify-rag-*` le relisent **avant `mlflow.set_experiment`** pour valider la collection : échouer à l'intérieur d'un `start_run` laisserait un run FAILED qui pollue l'expérience. Le nom seul ne peut pas porter ces informations — deux collections de même dimension bâties avec des stratégies différentes sont indistinguables, et interroger la mauvaise ne lève aucune erreur.
 
-`kb-scope=train` est **transitoire** : le split train/test n'existait que faute de jeu de test indépendant. Les nouveaux produits annotés en fournissent un, donc toute la base historique peut servir de KB (`full`, le défaut). L'option disparaîtra.
+Il y avait ici un segment de périmètre (`__full__` / `__train__`) et une option `kb-scope`, du temps où la KB était un demi-jeu : le split train/test n'existait que faute de jeu de test indépendant. Les nouveaux produits annotés en fournissent un, donc toute la base historique sert de KB, et le segment n'a plus rien à distinguer. Supprimé.
 
 **`reconcile-llm/`** — Module autonome : LLM-as-judge fusionnant les sorties de `classify-lcs`, `classify-rag-notices`, `classify-rag-annotations`, `classify-ttc`. Normalise d'abord les codes LCS/TTC (troncature niv.4 + élagage, via `prune-codes`, dépendance path). Consensus short-circuit : si les quatre s'accordent et que la confiance TTC ≥ 0.90, aucun appel LLM. Reprise supportée : relancer avec le même `run_id`/`run_date` reprend depuis la sortie existante. Entrée `main.py reconcile-llm`.
 
 **`reconcile-sirus/`** — Conciliation alternative au juge LLM, par règles interprétables (SIRUS). Une seule étape Argo, `reconcile-sirus` (**Python pur** : le modèle est une liste de règles en JSON et le scoring une moyenne, donc pas de R ni de compilation en production). L'**entraînement est hors pipeline**, comme celui de `classify-ttc/` : `cd reconcile-sirus/ && ./train.sh <date>/<run_id>` enchaîne la construction de la table candidat-level (Python, réutilisant `reconcile_llm.load_all_observations`), l'ajustement (R) et les mesures + log MLflow (Python). L'équivalence Python ↔ `sirus.predict` est prouvée par un test golden bit-exact et re-vérifiée à chaque entraînement. Voir `reconcile-sirus/README.md` — en particulier sur l'exploitation du score, dont la plage atteignable est une propriété du modèle et non du problème.
+
+**`evaluate/`** — Étape finale **facultative** : mesure la qualité d'un run dont le fichier d'entrée portait des étiquettes. Elle existe pour que le reste du pipeline n'ait qu'un seul mode ; la dualité production/évaluation était testée à treize endroits, et trois étapes de classification calculaient leurs propres métriques — dont `rag-notices`, qui les calculait **même en production** et loguait alors une accuracy ≈ 0 sans rien casser.
+
+Elle lit **trois** artefacts, et pas seulement le parquet de conciliation : celui-ci ignore les lignes captées par la regex (elles n'entrent jamais dans la chaîne) et a perdu les codes récupérés par les RAG (retirés à la fusion). Donc : conciliation + `classify-rag-notices/retrieved_codes.parquet` et `classify-rag-annotations/predictions.parquet` (recall de retrieval) + le livrable d'`export-results` (**l'accuracy de bout en bout, regex comprise — le chiffre métier**). Rend `evaluation_report.qmd` (ex-`report/report.qmd`) sur S3 et logue dans MLflow. `main.py`.
+
+Elle **échoue** si `code_lvl4` est absent au lieu de se rabattre sur `code`. Cette colonne canonique naît en un seul endroit, `reconcile-llm`, et seulement si `--mapping-file` lui est passé ; comparer des prédictions canoniques à une vérité brute compte comme fausses des prédictions justes sur près d'un quart des postes. Repli acceptable dans un rapport qui ne mesure rien, pas quand on a demandé une évaluation.
 
 **`classify-lcs/`** — R scripts only; entry point is `R/main.R`.
 

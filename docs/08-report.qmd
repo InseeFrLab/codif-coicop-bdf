@@ -5,38 +5,27 @@ title: "10. Report"
 ## Rôle de l'étape
 
 `report` génère un **rapport HTML auto-contenu** (Quarto + Python) à la fin du pipeline. Il
-existe en **deux variantes**, choisies automatiquement selon la présence ou non d'une vérité
-terrain.
+décrit la campagne de codification réalisée et **ne suppose aucune vérité terrain** : il ne
+note pas le pipeline, il dit ce qu'il a produit.
+
+Mesurer la qualité est le travail d'une autre étape, facultative :
+[`evaluate`](11-evaluate.qmd).
 
 - Code : [`report/`](https://github.com/InseeFrLab/codif-coicop-bdf/tree/main/report) — entrée `report/main.py`
 - Sortie : `…/{run}/report/report.html`
 - Activé par défaut (`skip-report` vaut `"false"` dans `argo/codif-pipeline.yaml`) ;
   désactivable avec `-p skip-report=true`.
 
-## Détection du mode
-
-`report/main.py` lit les prédictions de `reconcile-llm` et teste si **tous** les codes de
-référence sont nuls :
-
-```python
-row = con.sql(
-    f"SELECT bool_and(code IS NULL) FROM read_parquet('{input_path}')"
-).fetchone()
-...
-qmd = "prediction_report.qmd" if prediction else "report.qmd"
-```
-
-| Mode | Condition | Gabarit | Entrée |
-|---|---|---|---|
-| **Évaluation** | vérité terrain `code` présente | `report.qmd` | `reconcile-llm/predictions.parquet` |
-| **Prédiction** | `code` partout NULL | `prediction_report.qmd` | `export-results/{fichier}` + `reconcile-llm/predictions.parquet` |
-
-::: {.callout-important}
-Le CSV BDF est codé **sans vérité terrain** → c'est le **mode prédiction**
-(`prediction_report.qmd`) qui s'applique.
+::: {.callout-note}
+## Il y avait ici une détection de mode
+`report/main.py` testait `bool_and(code IS NULL)` sur la sortie de conciliation et choisissait
+entre deux gabarits. Un seul code non nul dans un fichier de production suffisait à faire
+basculer tout le rapport en mode évaluation. Le second gabarit est parti dans
+[`evaluate`](11-evaluate.qmd), déclenché par un paramètre explicite ; il ne reste qu'un
+rapport, rendu sans condition.
 :::
 
-## Mode prédiction (cas du CSV BDF)
+## Contenu
 
 Sections réelles du gabarit `prediction_report.qmd`, et la question à laquelle chacune répond :
 
@@ -74,105 +63,30 @@ ressortent ici : leur nombre signale la part de produits non codés automatiquem
 l'éventail des valeurs possibles de `predicted_code` sur la page
 [9. Final output](07-export-results.qmd#quelles-valeurs-pour-predicted_code).
 
-## Mode évaluation (jeu annoté)
-
-Quand une vérité terrain est disponible (jeu de test annoté, hors CSV BDF), `report.qmd`
-calcule l'**exactitude**. Ses sections :
-
-- **Métadonnées du run** (dont la colonne de vérité terrain effectivement scorée) ;
-- **Accuracy globale par niveau** COICOP pour LCS, RAG notices, RAG annotations, TTC
-  et LLM (tableau + graphique), en **convention stricte** ;
-- **Accuracy sur toutes les observations**, en **convention inclusive** (voir ci-dessous) ;
-- **Accuracy par groupe** : niveau COICOP 1 et 2, `shop`, `shop_type_name`, **décile de `budget`** ;
-- **Analyse d'erreurs** : matrice de confusion (top 20 paires `code` vs `llm_code` au
-  niveau 4), **calibration** (accuracy par tranche de `llm_confiance`) ;
-- **Accord entre les classifieurs et valeur ajoutée de l'arbitrage** (combien de modèles
-  trouvent la vérité, et ce que le juge apporte) ;
-- **Accord de chaque classifieur avec le juge LLM** ;
-- **Décisions du juge hors des prédictions des classifieurs** ;
-- **Récapitulatif**.
-
-### Sur quelle vérité terrain le rapport score-t-il ?
-
-Sur **`code_lvl4`**, la version canonique de l'annotation produite par
-[`reconcile-llm`](06-reconcile-llm.qmd) — pas sur `code` brut. Les prédictions vivant dans
-l'espace de codes [pruné](prune-codes.qmd), la vérité doit y vivre aussi : sinon une prédiction
-canonique exacte (`01.3` face à une annotation `01.3.0.0.x`) est comptée fausse, un biais qui
-touche ~24 % des Postes de la nomenclature. Les runs antérieurs à l'introduction de
-`code_lvl4` retombent automatiquement sur `code` ; la colonne réellement utilisée est affichée
-dans les métadonnées du rapport.
-
-### Les deux conventions d'accuracy
-
-Le rapport publie **deux** accuracies par niveau, qui répondent à deux questions distinctes.
-Le tableau récapitulatif les met côte à côte, et MLflow reçoit les deux séries
-(`accuracy_<méthode>_niv<k>` et `accuracy_all_<méthode>_niv<k>`).
-
-| | Convention **stricte** | Convention **inclusive** |
-|---|---|---|
-| Dénominateur | seules les observations dont la vérité atteint le niveau `k` | **toutes** les observations disposant d'une vérité terrain |
-| Vérité moins profonde que `k` | **exclue** (non évaluable) | **incluse** : la prédiction attendue est le code court lui-même |
-| Prédiction plus courte que `k` | erreur | erreur (sauf si elle égale la vérité) |
-| Prédiction plus profonde que la vérité | correcte si le préfixe correspond | **erreur** : dans l'espace pruné, ce code n'existe pas |
-| Question | parmi les observations codables à la profondeur `k`, quelle part est juste ? | sur toute la population, quelle part est correctement placée dans la grille de niveau `k` ? |
-| Comparaison entre niveaux | **impossible** (population variable) | possible (dénominateur constant) |
-
-La convention inclusive est celle qui répond à « quel est mon taux de réussite au niveau 4 ? ».
-Elle n'a de sens que sur des codes canoniques : une fois les hiérarchies linéaires élaguées,
-une vérité `01.3` signifie que `01.3` **est** la réponse de niveau 4 — ce n'est pas une
-troncature faute de mieux, c'est le code le plus fin qui existe pour ce poste (8 codes sont des
-feuilles dès le niveau 2). Le rapport affiche aussi, pour chaque niveau, **combien
-d'observations** ont une vérité moins profonde que `k` : c'est la part de la population qui
-sépare les deux chiffres.
-
-::: {.callout-warning}
-## Pourquoi l'accuracy stricte peut *monter* avec le niveau
-Comme chaque niveau porte sur une population différente, l'accuracy stricte peut augmenter
-quand `k` augmente : les observations qui restent sont celles dont la vérité est fine, souvent
-les plus faciles. Ce n'est pas une amélioration de la codification en profondeur, c'est un
-effet de sélection. C'est la raison d'être de la convention inclusive.
-:::
-
-::: {.callout-note}
-## Limite d'interprétation de la convention inclusive
-Une vérité peu profonde a deux causes possibles : le code est un **code canonique terminal**
-(la convention inclusive est alors exacte), ou **l'annotateur s'est arrêté avant le niveau 4**
-alors que des codes plus fins existent. Dans ce second cas, une prédiction plus fine est
-comptée fausse sans qu'on puisse la vérifier. L'accuracy inclusive est donc une **borne
-inférieure**, la stricte une mesure sur un sous-ensemble : lire les deux ensemble.
-:::
-
-Avec une vérité canonique, le **niveau 5 n'est plus affiché** : les codes prunés ont au plus
-4 segments, la colonne serait structurellement vide.
-
 ## Rendre le rapport à la main
 
 Les gabarits lisent leurs entrées via des **variables d'environnement** plutôt que des
 paramètres Quarto : `REPORT_INPUT_PATH` (fichier de prédictions), `REPORT_DECIDE_PATH`
-(sortie `reconcile-llm`, mode prédiction), `REPORT_RUN_ID`, `REPORT_RUN_DATE`. C'est
+(sortie de conciliation), `REPORT_RUN_ID`, `REPORT_RUN_DATE`. C'est
 `report/main.py` qui les positionne avant d'appeler `quarto render` ; pour itérer sur le
 gabarit en local, il suffit de les exporter soi-même puis de rendre le `.qmd` directement.
 
 ## Traçabilité MLflow
 
 En plus du HTML, l'étape loggue le run dans **MLflow** (`log_to_mlflow()` dans
-`report/main.py`, expérience `codif-coicop-eval` par défaut). C'est facultatif et sans effet
+`report/main.py`, expérience réglée par `report-experiment`). C'est facultatif et sans effet
 de bord : si `MLFLOW_TRACKING_URI` n'est pas défini, l'étape passe l'enregistrement.
 
 Sont enregistrés notamment :
 
 - **Paramètres** du pipeline pour rejouer/comparer un run : `run_id`, `run_date`,
   `model_name` (LLM RAG), `decide_model`, `decide_concurrency`, **`ttc_model_uri`** (URI du
-  modèle utilisé par [`classify-ttc`](05-classify-ttc.qmd)), `skip_vector_db`, `truth_column` (la
-  colonne de vérité terrain scorée), l'emplacement S3 de sortie, etc.
-- **Tags** : mode (`prediction`/`evaluation`), commit et branche git.
+  modèle utilisé par [`classify-ttc`](05-classify-ttc.qmd)), l'emplacement S3 de sortie, etc.
+- **Tags** : commit et branche git.
 - **Métriques** : durées des étapes Argo, nombre d'observations, distribution des codes
-  prédits par niveau ; et en mode évaluation, pour chaque méthode (LCS/RAG/RAG-annot/TTC/LLM)
-  et chaque niveau, les **deux conventions** — `accuracy_<méthode>_niv<k>` (stricte) et
-  `accuracy_all_<méthode>_niv<k>` (inclusive) — plus
-  `truth_shallower_than_niv<k>_count`, qui donne la population séparant les deux.
-- **Artefacts** : le `report.html`, `prediction_distribution.json` et
-  `truth_depth_distribution.json`.
+  prédits par niveau. **Aucune accuracy** : elles sont loguées par
+  [`evaluate`](11-evaluate.qmd), dans sa propre expérience.
+- **Artefacts** : le `report.html` et `prediction_distribution.json`.
 
 Logguer `ttc_model_uri` permet de savoir, pour chaque run, **quel modèle TTC** a produit les
 prédictions — utile pour comparer deux versions du classifieur.
@@ -181,8 +95,10 @@ prédictions — utile pour comparer deux versions du classifieur.
 
 | Fichier | Contenu |
 |---|---|
-| `…/{run}/report/report.html` | rapport HTML auto-contenu (prédiction ou évaluation) |
+| `…/{run}/report/report.html` | rapport HTML auto-contenu |
 
 ---
+
+➡️ Étape suivante, facultative : [11. Evaluate](11-evaluate.qmd)
 
 Retour à l'[accueil](index.qmd)

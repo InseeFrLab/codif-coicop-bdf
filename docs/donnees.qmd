@@ -8,10 +8,9 @@ subtitle: "Sources mobilisées par le pipeline de codification COICOP"
 Le pipeline mobilise plusieurs fichiers **en entrée** (sources externes, non produites par
 le pipeline lui-même). Tous résident dans le bucket S3 `projet-budget-famille`.
 
-À noter que ces fichiers ne sont pas utilisés de la même manière selon qu'on utilise le
-pipeline en mode production (il faut coder un fichier) ou en mode évaluation (on utilise des
-observations déjà labellisées pour évaluer le processus) — voir
-[Généralités](00-generalites.qmd#modes-prod-éval).
+Le pipeline n'a qu'un mode : il code le fichier désigné par `input_file`. Si ce fichier porte
+une colonne d'étiquettes, la désigner par `label-column` rend le run mesurable par l'[étape
+`evaluate`](11-evaluate.qmd) — voir [Généralités](00-generalites.qmd).
 
 | Fichier | Définition | Format | Path S3 | Lu par | Commentaire |
 |---|--------|---|---|---|--------|
@@ -21,7 +20,7 @@ observations déjà labellisées pour évaluer le processus) — voir
 | `liste_magasins.csv` | Table de correspondance enseigne → type de magasin | CSV | `s3://projet-budget-famille/data/input-annotation/liste_magasins.csv` | `build-datasets` | Alimente `shop_type_name`, signal utilisé par LCS, les RAG et le juge |
 | `produit_non_annotable.csv` | Liste des libellés non codables (retirés en amont) | CSV | `s3://projet-budget-famille/data/codification-manuelle-anterieure/produit_non_annotable.csv` | `build-datasets` | |
 | `coicop-2018_envoi_rmes_20251022.csv` | Nomenclature COICOP 2018 brute (référentiel des codes + libellés), export RMES, 949 codes sur 5 niveaux | CSV `;` | `s3://projet-budget-famille/data/coicop-2018_envoi_rmes_20251022.csv` | `prune-codes` | **Seule** source de vérité de la nomenclature : `prune-codes` en dérive la nomenclature prunée et la table de mapping que tout l'aval consomme |
-| *fichier d'observations* | Entrée de **production** : libellés à coder, sans vérité terrain (paramètre Argo `input_file`) | CSV / parquet | `s3://projet-budget-famille/data/workflow_inputs/…` (ex. `BDF_data_tickets_appli_20260320_a_codif.csv`) | `build-datasets` (mode prod) | Noms de colonnes libres, mappés par les paramètres `text_column` / `shop_column` / `budget_column` |
+| *fichier d'observations* | Le fichier à coder (paramètre Argo `input_file`, **obligatoire**) | CSV / parquet | `s3://projet-budget-famille/data/workflow_inputs/…` (ex. `BDF_data_tickets_appli_20260320_a_codif.csv`) | `build-datasets` | Noms de colonnes libres, mappés par les paramètres `text_column` / `shop_column` / `budget_column` |
 
 ::: {.callout-note}
 ## Deux entrées particulières
@@ -60,16 +59,17 @@ Chaque run écrit ses fichiers intermédiaires sous
 
 | Étape | Fichiers clés |
 |---|---|
-| `build-datasets` | `annotations_full`, `raw_train`, `raw_test`, `suggester`, `observations` (prod), `qa/*` |
+| `build-datasets` | `annotations_full` (la KB), `suggester`, `observations` (le jeu à coder), `qa/*` |
 | `classify-regex` | `REGEX_pred`, `raw_test_without_regex`, `raw_train_without_regex` |
 | [`prune-codes`](prune-codes.qmd) | `nomenclature_pruned`, `mapping_lvl4`, `annotations_train_pruned`, `annotations_test_pruned`, `suggester_pruned` |
-| `classify-lcs` | `raw_test_LCS`, `analyse_codif_LCS` (éval) |
+| `classify-lcs` | `raw_test_LCS`, `analyse_codif_LCS` |
 | `classify-rag-notices` | `predictions`, `retrieved_codes` |
 | `classify-rag-annotations` | `predictions` |
 | `classify-ttc` | `predictions` |
 | `reconcile-llm` | `predictions` (toutes les prédictions + la décision) |
 | `export-results` | le fichier livré, sous son nom d'origine |
 | `report` | `report.html` |
+| `evaluate` *(facultative)* | `evaluation_report.html` |
 
 ## Codes techniques BdF
 

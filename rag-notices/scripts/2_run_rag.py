@@ -26,12 +26,6 @@ import random
 from rag_notices.data.parsing import extract_json_from_response
 from rag_notices.utils import create_duckdb_connection, expand_paths, merge_eval_and_retreived, truncate_code
 from codif_common.vector_index import validate_collection
-from rag_notices.eval.metrics import (
-    compute_hierarchical_metrics,
-    calculate_accuracy_at_level,
-    flatten_metrics,
-    write_metrics_report,
-)
 from rag_notices.generation_tools import generate_llm_responses
 
 
@@ -207,11 +201,6 @@ def main():
             path_mapping_lvl4=config["coicop"]["path_mapping_lvl4"],
         )
 
-        # Step 6b: Plot confidence vs accuracy
-        fig = plot_confidence_vs_accuracy(df_eval, level=4)
-        mlflow.log_figure(fig, "confidence_vs_accuracy.png")
-        plt.close(fig)
-
         # Step 7: Export RAG predictions
         eval_path, retrieved_path = export_predictions(
             con,
@@ -219,54 +208,18 @@ def main():
             df_retrieved_codes,
             config,
         )
-        
+
         mlflow.log_param("eval_output_path", eval_path)
         mlflow.log_param("retrieved_codes_output_path", retrieved_path)
-        
-        # Step 8: Compute and log metrics
 
-        metrics, by_nature_metrics = compute_and_log_metrics(
-            df_eval,
-            df_retrieved_codes,
-            config,
-        )
+        # L'évaluation a quitté cette étape pour l'étape finale `evaluate`, qui la
+        # rejoue depuis les deux parquets exportés ci-dessus.
+        #
+        # Ce module était le seul à évaluer SANS CONDITION — il n'a jamais connu la
+        # dualité production/évaluation. En production la vérité est nulle, et la
+        # garde correspondante de `eval/metrics.py` est commentée : chaque run
+        # loguait donc dans MLflow une accuracy ≈ 0, sans que rien n'échoue.
 
-        # Step 9 : get sample of tricky errors
-
-        df_tricky_errors = get_tricky_errors(
-            sample_size=40,
-            df_eval=df_eval,
-            df_retrieved_codes=df_retrieved_codes,
-            config=config,
-            level=4,
-        )
-
-        mlflow.log_table(
-            df_tricky_errors, 
-            artifact_file="tricky_errors.json"
-        )
-        
-        # -----------------------------------------------------------------------
-        # Generate and save metrics report
-        # -----------------------------------------------------------------------
-        
-        logger.info("=" * 80)
-        logger.info("GENERATING METRICS REPORT")
-        logger.info("=" * 80)
-        
-        # write_metrics_report(metrics, "report.txt")
-        write_metrics_report(
-            metrics=metrics,
-            output_path="report.txt",
-            include_product_types=True,
-            include_comparison=True,
-            by_nature_metrics=by_nature_metrics,
-            )
-        
-        mlflow.log_artifact("report.txt", artifact_path="reports")
-        logger.info("✓ Metrics report saved")
-        
-        # Log config as artifact
         mlflow.log_dict(config, "config.yaml")
         
         # -----------------------------------------------------------------------
@@ -897,101 +850,6 @@ def create_evaluation_dataframe(
     logger.info(f"✓ Evaluation dataset created: {len(df_eval)} rows")
 
     return df_eval, df_retrieved_codes
-  
-
-
-def plot_confidence_vs_accuracy(df_eval: pd.DataFrame, level: int = 4) -> plt.Figure:
-    """
-    Plot confidence (from LLM) against prediction accuracy at a given COICOP level.
-
-    Produces two vertically stacked subplots:
-      - Top: accuracy per confidence bin (bar chart)
-      - Bottom: number of predictions per bin (histogram)
-
-    Only rows with parsed=True and codable=True are included.
-
-    Args:
-        df_eval: Evaluation dataframe with columns 'confidence', 'code_predict',
-                 'code', 'parsed', 'codable'.
-        level: COICOP level at which to evaluate accuracy.
-
-    Returns:
-        matplotlib Figure
-    """
-    df = df_eval.copy()
-
-    # Filter to parsed & codable rows
-    mask = df.get("parsed", pd.Series(True, index=df.index)) == True
-    if "codable" in df.columns:
-        mask &= df["codable"] == True
-    df = df[mask].copy()
-
-    if df.empty:
-        fig, ax = plt.subplots()
-        ax.text(0.5, 0.5, "No data (parsed & codable)", ha="center", va="center")
-        return fig
-
-    # Correct prediction at the requested level
-    df["correct"] = df.apply(
-        lambda r: truncate_code(str(r["code_predict"]), level) == truncate_code(str(r["code"]), level),
-        axis=1,
-    )
-    df["confidence"] = pd.to_numeric(df["confidence"], errors="coerce")
-    df = df.dropna(subset=["confidence"])
-
-    # Weighted mean accuracy (computed on all rows, not as mean of bin means)
-    overall_accuracy = df["correct"].mean()
-
-    bins = np.arange(0.0, 1.05, 0.1)
-    bin_labels = [f"{b:.1f}–{b+0.1:.1f}" for b in bins[:-1]]
-    df["bin"] = pd.cut(df["confidence"], bins=bins, labels=bin_labels, include_lowest=True)
-
-    grouped = df.groupby("bin", observed=False)["correct"]
-    accuracy = grouped.mean()
-    counts = grouped.count()
-    proportions = counts / counts.sum()
-
-    # Drop bins with no data for display
-    has_data = counts > 0
-    accuracy = accuracy[has_data]
-    counts = counts[has_data]
-    proportions = proportions[has_data]
-    x_labels = list(accuracy.index.astype(str))
-
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 7), sharex=True,
-                                    gridspec_kw={"height_ratios": [3, 1]})
-    fig.suptitle(
-        f"Confidence vs Accuracy (level {level}) — parsed & codable (n={len(df)})",
-        fontsize=13, fontweight="bold"
-    )
-
-    # Top: accuracy bars
-    colors = ["#d9534f" if v < 0.5 else "#5cb85c" if v >= 0.7 else "#f0ad4e"
-              for v in accuracy.values]
-    bars = ax1.bar(x_labels, accuracy.values, color=colors, edgecolor="white", width=0.8)
-    ax1.set_ylim(0, 1.05)
-    ax1.set_ylabel("Accuracy")
-    ax1.axhline(overall_accuracy, color="steelblue", linestyle="--", linewidth=1.2,
-                label=f"Overall accuracy = {overall_accuracy:.2%}")
-    ax1.legend(fontsize=9)
-    ax1.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f"{y:.0%}"))
-    for bar, val in zip(bars, accuracy.values):
-        if not np.isnan(val):
-            ax1.text(bar.get_x() + bar.get_width() / 2, val + 0.02,
-                     f"{val:.0%}", ha="center", va="bottom", fontsize=8)
-
-    # Bottom: proportion histogram
-    ax2.bar(x_labels, proportions.values, color="steelblue", edgecolor="white", width=0.8, alpha=0.7)
-    ax2.set_ylabel("Proportion")
-    ax2.set_xlabel("Confidence bin")
-    ax2.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f"{y:.0%}"))
-    for bar, val in zip(ax2.patches, proportions.values):
-        ax2.text(bar.get_x() + bar.get_width() / 2, val + 0.003,
-                 f"{val:.0%}", ha="center", va="bottom", fontsize=8)
-
-    plt.xticks(rotation=30, ha="right")
-    fig.tight_layout()
-    return fig
 
 
 def export_predictions(con, df_eval, df_retrieved_codes, config):
@@ -1051,137 +909,6 @@ def get_git_branch():
         ).decode('ascii').strip()
     except:
         return None
-
-
-def compute_and_log_metrics(df_eval, df_retrieved_codes, config):
-    """
-    Compute evaluation metrics and log to MLflow.
-
-    Also computes metrics broken down by annotation nature (``source`` column)
-    if more than one nature is present in df_eval.
-
-    Args:
-        df_eval: Evaluation dataframe
-        df_retrieved_codes: Retrieved codes dataframe
-        config: Configuration dictionary
-
-    Returns:
-        tuple: (metrics, by_nature_metrics) where by_nature_metrics is a
-        dict {nature: metrics_dict} or None if only one nature is present.
-    """
-    logger.info("=" * 80)
-    logger.info("STEP 7: COMPUTING METRICS")
-    logger.info("=" * 80)
-
-    records = merge_eval_and_retreived(
-        df_eval=df_eval,
-        retrieved_codes=df_retrieved_codes,
-        retrieval_size=config["retrieval"]["size"],
-        code_name="code",
-        col_retrieved_codes_name="list_retrieved_codes",
-    )
-
-    metrics = compute_hierarchical_metrics(
-        records=records,
-        threshold=config["eval"]["threshold_confidence"],
-        predicted_col="code_predict",
-        label_col="code",
-        retrieved_col="list_retrieved_codes"
-    )
-
-    # Only log overall metrics to MLflow (by_product_type is in the report)
-    metrics_mlflow = flatten_metrics(metrics, include_product_types=False)
-    mlflow.log_metrics(metrics_mlflow)
-
-    # Per-nature metrics (only if multiple natures present)
-    by_nature_metrics = None
-    if "source" in df_eval.columns:
-        natures = df_eval["source"].dropna().unique().tolist()
-        if len(natures) > 1:
-            logger.info(f"  → Computing metrics per annotation nature: {natures}")
-            by_nature_metrics = {}
-            for nature in sorted(natures):
-                nature_ids = set(df_eval.loc[df_eval["source"] == nature, "id"])
-                nature_records = [r for r in records if r.get("id") in nature_ids]
-                by_nature_metrics[nature] = compute_hierarchical_metrics(
-                    records=nature_records,
-                    threshold=config["eval"]["threshold_confidence"],
-                    predicted_col="code_predict",
-                    label_col="code",
-                    retrieved_col="list_retrieved_codes",
-                    by_product_type=False,
-                )
-
-    logger.info("✓ Metrics computed and logged")
-
-    return metrics, by_nature_metrics
-
-
-def get_tricky_errors(
-    sample_size: int,
-    df_eval,
-    df_retrieved_codes,
-    config,
-    level,
-):
-    """
-    Return a random sample of hard prediction errors for qualitative analysis.
-
-    "Hard" errors are wrong predictions on products that are:
-      - codable (the LLM flagged them as codable)
-      - not in the uncodable/misc categories (codes starting with 98 or 99)
-
-    Args:
-        sample_size: Maximum number of errors to return.
-        df_eval: Evaluation dataframe (predictions + annotations).
-        df_retrieved_codes: Retrieved codes dataframe.
-        config: Configuration dictionary (used for retrieval_size).
-        level: COICOP level at which to evaluate correctness.
-
-    Returns:
-        DataFrame with columns: l_pr_product, shop, code, code_predict,
-        confidence, codable, budget, in_retrieved.
-    """
-    # Merge predictions with retrieved codes into flat records
-    records = merge_eval_and_retreived(
-        df_eval=df_eval,
-        retrieved_codes=df_retrieved_codes,
-        retrieval_size=config["retrieval"]["size"],
-        code_name="code",
-        col_retrieved_codes_name="list_retrieved_codes",
-    )
-
-    # Identify which records are wrong at the requested level
-    (
-        overall_accuracy,
-        result_list,
-        retrieval_accuracy,
-        generation_accuracy_when_retrieved,
-        label_in_retrieved_list
-    ) = calculate_accuracy_at_level(
-        records=records,
-        predicted_col="code_predict",
-        label_col="code",
-        level=level,
-        retrieved_col="list_retrieved_codes"
-    )
-
-    # Keep only wrong predictions on codable, non-misc products
-    errors_list = [x for x, m in zip(records, result_list) if not m]
-    codable_errors = [x for x in errors_list if x["codable"]]
-    real_errors = [x for x in codable_errors if x["code"] is not None and (x["code"][:2] not in ("98", "99"))]
-
-    keys_to_keep = [
-        "l_pr_product", "shop", "code",
-        "code_predict", "confidence", "codable", "budget",
-        "in_retrieved"
-    ]
-    sample_size = min(sample_size, len(real_errors))
-    real_errors_sample = random.sample(real_errors, sample_size)
-
-    res = [{ k: e.get(k) for k in keys_to_keep } for e in real_errors_sample]
-    return pd.DataFrame(res)
-
 
 
 # ============================================================================

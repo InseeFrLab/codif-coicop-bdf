@@ -46,7 +46,7 @@ class TestArtifactPaths:
 
     def test_run_root_is_shared_by_all_steps(self):
         root = run_root(**RUN)
-        for step, key in [("build-datasets", "raw_test"), ("classify-lcs", "predictions")]:
+        for step, key in [("build-datasets", "observations"), ("classify-lcs", "predictions")]:
             assert artifact(step, key, **RUN).startswith(root)
 
     def test_extra_placeholders_are_supported(self):
@@ -75,9 +75,16 @@ class TestConsumers:
             "classify-rag-notices", "export-results", "reconcile-llm", "reconcile-sirus",
         ]
 
+    def test_retrieved_codes_feeds_the_evaluation(self):
+        """Écrits puis jamais relus pendant longtemps, les codes récupérés
+        alimentent désormais le recall de retrieval — seul indicateur qui dise
+        si un RAG échoue à retrouver ou à générer."""
+        assert consumers("classify-rag-notices", "retrieved_codes") == ["evaluate"]
+
     def test_an_orphan_output_has_no_consumer(self):
-        """`retrieved_codes` est écrit puis jamais relu — le registre le dit."""
-        assert consumers("classify-rag-notices", "retrieved_codes") == []
+        """Le registre dit aussi ce que plus personne ne lit : les contrôles
+        qualité de build-datasets sont écrits à chaque run sans lecteur."""
+        assert consumers("build-datasets", "qa_multiple_codes") == []
 
 
 class TestExternalInputs:

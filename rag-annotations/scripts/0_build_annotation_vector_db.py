@@ -8,12 +8,6 @@ Ce qu'on indexe, ce sont les **produits déjà annotés** : `annotations_full` +
 `suggester` au sens de build-datasets. Rien à voir avec les produits *à classer*
 — d'où l'absence de toute notion de fichier d'entrée ici.
 
-`--kb-scope` :
-  full  (défaut) — tous les produits annotés ;
-  train          — l'ancien split, conservé pour la transition et destiné à
-                   disparaître. Il n'existait que faute de jeu de test
-                   indépendant ; les nouveaux produits annotés en fournissent un.
-
 Le **suggester** (`prune-codes/suggester_pruned.parquet`) est ajouté à l'index
 comme candidats de retrieval supplémentaires. La KB peut être plafonnée par
 `--sample-size` (essais rapides).
@@ -53,14 +47,6 @@ def main():
     parser.add_argument("--run-id", required=True, help="Workflow run identifier")
     parser.add_argument("--run-date", required=True, help="Workflow run date (YYYY-MM-DD)")
     parser.add_argument(
-        "--kb-scope", choices=["full", "train"], default="full",
-        help="Quels produits annotés composent la KB. 'full' (défaut) : tous "
-             "(annotations_full). 'train' : l'ancien split, conservé pour la "
-             "transition et destiné à disparaître — il n'existait que faute de jeu "
-             "de test indépendant. Sélectionne aussi le profil de sources exclues "
-             "(annotations.exclude_sources_prod vs exclude_sources).",
-    )
-    parser.add_argument(
         "--sample-size", type=int, default=None,
         help="Limite le nombre d'annotations indexées dans la vector DB (KB). "
              "Vide = toutes. Échantillonnage sans remise, graine eval.seed.",
@@ -75,11 +61,6 @@ def main():
         ),
     )
     args = parser.parse_args()
-
-    # `train` (l'ancien split) applique le profil de sources restreint,
-    # `full` le profil large — les deux listes sont identiques aujourd'hui,
-    # la distinction est conservée le temps de la transition.
-    is_train_split = args.kb_scope == "train"
 
     with open(args.config, "r") as f:
         config = yaml.safe_load(f)
@@ -116,14 +97,10 @@ def main():
         annotations = annotations.loc[annotations["source"] == nature]
     logger.info(f"  → {len(annotations)} annotations loaded (nature={nature or 'all'})")
 
-    # Exclude configured sources from the vector DB.
-    # train : exclude_sources (profil restreint de l'ancien split).
-    # full  : exclude_sources_prod (profil large, toutes les annotations voulues).
-    if is_train_split:
-        exclude_sources = config["annotations"].get("exclude_sources") or []
-    else:
-        exclude_sources = config["annotations"].get("exclude_sources_prod") or []
-    logger.info(f"  → kb_scope={args.kb_scope}, exclude_sources={exclude_sources}")
+    # Sources exclues de l'index. Le second profil, qui n'existait que pour
+    # l'ancien split train/test, a disparu avec lui.
+    exclude_sources = config["annotations"].get("exclude_sources") or []
+    logger.info(f"  → exclude_sources={exclude_sources}")
     if exclude_sources:
         before = len(annotations)
         annotations = annotations[~annotations["source"].isin(exclude_sources)]
@@ -194,18 +171,14 @@ def main():
     # STEP 5: create Qdrant collection and upload
     # -----------------------------------------------------------------------
     logger.info("STEP 5: creating collection and uploading points")
-    # Le mode est dans le NOM, pas seulement dans le manifeste : une KB de
-    # production contient *toutes* les annotations, donc l'interroger depuis un
-    # run d'évaluation gonfle l'accuracy sans lever d'erreur. C'est le champ
-    # qu'un humain confond le plus en recopiant, autant qu'il soit visible.
-    # L'ancien suffixe `_test`, accordé par convention entre ce script et
-    # 1_run_rag.py, disparaît : le nom unique le rend inutile, et
+    # Nom unique par indexation : deux runs n'écrivent jamais dans la même
+    # collection. L'ancien suffixe `_test`, accordé par convention entre ce
+    # script et 1_run_rag.py, disparaît — le nom unique le rend inutile, et
     # `sample_size` reste visible via le suffixe `__sampleN`.
     collection_name = args.collection_name or build_collection_name(
         base=config["qdrant"]["collection_base"],
         run_date=args.run_date,
         run_id=args.run_id,
-        mode=args.kb_scope,
         sample_size=args.sample_size,
     )
     logger.info(f"  → collection cible : {collection_name}")
@@ -252,7 +225,6 @@ def main():
     manifest = {
         "collection_name": collection_name,
         "kind": "annotations",
-        "kb_scope": args.kb_scope,
         "run_id": args.run_id,
         "run_date": args.run_date,
         "embedding_model": config["embedding"]["model_name"],

@@ -10,7 +10,9 @@ Les termes et colonnes qui reviennent dans toute la documentation, regroupés pa
 |---|---|
 | **COICOP** | *Classification of Individual Consumption According to Purpose* — nomenclature hiérarchique des dépenses de consommation (voir [l'accueil](index.qmd#la-nomenclature-coicop-en-bref)). |
 | **BDF** | Enquête **Budget de Famille** : collecte des tickets de caisse des ménages ; chaque ligne de ticket est un produit à coder. |
-| **Mode prédiction / mode évaluation** | Prédiction : le fichier d'entrée n'a pas de vérité terrain (cas du CSV BDF) ; évaluation : une colonne `code` de référence existe et permet de calculer l'exactitude ([Généralités](00-generalites.qmd#modes-prod-éval)). |
+| **`label-column`** | Nom de la colonne d'étiquettes dans le fichier d'entrée. Vide (le cas nominal) : l'étape [`evaluate`](11-evaluate.qmd) est sautée. Renseignée : `build-datasets` la recopie dans `code`, elle traverse la chaîne, et le run devient mesurable. Il y avait auparavant deux **modes** dérivés du seul fait qu'`input_file` soit vide ou non ; le pipeline n'en a plus qu'un ([Généralités](00-generalites.qmd)). |
+| **`eval-source-column`** | Nom de la colonne de provenance du produit. Ajoute une ventilation de l'accuracy par source au rapport d'évaluation. Ne restreint **jamais** le périmètre codé. |
+| **`evaluate`** | Étape finale **facultative** qui mesure la qualité d'un run étiqueté : rapport HTML sur S3 et métriques dans MLflow ([Evaluate](11-evaluate.qmd)). |
 | **LCS** | *Longest Common Substring* — codification par plus longue sous-chaîne commune avec un pool de libellés déjà codés ([Codif LCS](03-classify-lcs.qmd)). |
 | **RAG** | *Retrieval-Augmented Generation* — recherche sémantique puis choix par un LLM. Deux branches : sur les **notices** de la nomenclature ([RAG COICOP](04-rag-notices.qmd)) et sur des **exemples déjà codifiés** ([RAG annotations](09-rag-annotations.qmd)). |
 | **TTC** | Classifieur neuronal de texte (package *torchTextClassifiers*), pré-entraîné sur des données de caisses ([TTC](05-classify-ttc.qmd)). |
@@ -21,7 +23,7 @@ Les termes et colonnes qui reviennent dans toute la documentation, regroupés pa
 | **Pruning / élagage** | Repli des hiérarchies linéaires : un parent à enfant unique est équivalent à cet enfant, la chaîne est ramenée à son **code canonique** ([Prune](prune-codes.qmd)). |
 | **Fil rouge** | Les quatre libellés réels du CSV BDF suivis de bout en bout dans chaque page d'étape ([accueil](index.qmd#fil-rouge)). |
 | **`run_id` / `run_date`** | Identifiant et date du run de pipeline ; ils déterminent le dossier S3 du run — et, pour un run d'indexation, le nom de la collection Qdrant produite. À fournir explicitement pour [relancer une étape](09-lancer-une-etape.qmd). |
-| **`sample-observations`** | Unique curseur d'échantillonnage du pipeline de codification : plafonne le jeu **à coder**, en production comme en évaluation. Tiré une seule fois à `classify-regex`, hérité par les quatre classifieurs. Remplace l'ancien couple `sample-observations` / `sample-annotations`. |
+| **`sample-observations`** | Unique curseur d'échantillonnage du pipeline de codification : plafonne le jeu **à coder**. Tiré une seule fois à `classify-regex`, hérité par les quatre classifieurs. Remplace l'ancien couple `sample-observations` / `sample-annotations`. |
 | **`kb-sample-size`** | Curseur d'échantillonnage du pipeline `index-annotations` : plafonne le nombre de points **indexés** dans la collection (donc le temps d'embedding). Le nom de la collection porte alors un suffixe `__sampleN`. |
 
 ## Codes
@@ -50,7 +52,7 @@ Les termes et colonnes qui reviennent dans toute la documentation, regroupés pa
 | `s_pr_product` | Normalisation **forte** (bruit, stopwords retirés) — utilisée par les regex et LCS. |
 | `shop`, `budget`, `annee`, `source` | Enseigne, montant (€), année, source — renommées depuis le mappage de colonnes. |
 | `shop_type_code` / `shop_type_name` | Type de magasin déduit de l'enseigne (supermarché, restauration rapide…). |
-| `code` | Vérité terrain COICOP **brute**, telle qu'annotée (NA en mode prédiction). |
+| `code` | Vérité terrain COICOP **brute**, telle qu'annotée. `NA` sauf si le run a été lancé avec `label-column`. |
 | `_source_input_file` | Chemin du fichier d'entrée d'origine (réutilisé par `export-results`). |
 
 ### Prédictions des quatre classifieurs
@@ -89,7 +91,7 @@ Tous ces codes sont **tronqués au niveau 4 et élagués** par `reconcile-llm` q
 | `predicted_code` | `export-results` | Code livré : `llm_code` s'il existe, sinon `predict_code` (regex), sinon vide. |
 | `prediction_source` | `export-results` | Origine du code : `consensus` > `regex` > `llm` > *(vide)* — un indicateur de fiabilité. |
 | `code_parent_equivalent` | `prune-codes` | Code canonique d'un code replié, dans `mapping_lvl4.parquet`. |
-| `code_lvl4` | `reconcile-llm` | Vérité terrain **canonique** : `code` tronqué au niveau 4 puis élagué. C'est la colonne que le [rapport](08-report.qmd) score. |
+| `code_lvl4` | `reconcile-llm` | Vérité terrain **canonique** : `code` tronqué au niveau 4 puis élagué. C'est la colonne que l'étape [`evaluate`](11-evaluate.qmd) score — son absence la fait **échouer**. |
 | `llm_comment` | `export-results` | Copie de `llm_explication` dans le fichier livré. |
 
 ## Infrastructure
@@ -99,9 +101,8 @@ Tous ces codes sont **tronqués au niveau 4 et élagués** par `reconcile-llm` q
 | **Argo Workflows** | Orchestrateur Kubernetes. **Trois** workflows : `argo/codif-pipeline.yaml` (codification), `argo/index-notices-pipeline.yaml` et `argo/index-annotations-pipeline.yaml` (construction des collections Qdrant). Chaque étape est un conteneur. |
 | **S3 (run root)** | Stockage de tous les artefacts : `s3://projet-budget-famille/data/workflow_runs/{run_date}/{run_id}/<étape>/`. |
 | **Qdrant** | Base vectorielle (distance cosinus). Chaque indexation crée une collection au **nom unique** (voir *Collection Qdrant* ci-dessous) : les noms fixes `coicop_lineage` et `coicop_annotations_without_copain_2017` n'existent plus. |
-| **Collection Qdrant** | Index vectoriel nommé `{base}[__{kb_scope}]__{run_date}__{run_id}[__sampleN]` — bases `coicop_notices` et `coicop_annotations` (clé `qdrant.collection_base`). Ex. `coicop_notices__2026-09-02__index-notices-a7k2p`. Désignée au pipeline de codification par les paramètres **obligatoires** `classify-rag-notices-collection` / `classify-rag-annotations-collection`. |
-| **Manifeste d'index** | JSON écrit à côté de chaque collection, sous `s3://projet-budget-famille/data/vector_db_manifests/{collection_name}.json` : modèle d'embedding, dimension, stratégie, `kb_scope`, nombre de points, SHA git. Relu par les étapes `classify-rag-*` au démarrage pour valider la collection avant tout travail coûteux. |
-| **`kb-scope`** | Portée de la base d'exemples indexée par `index-annotations` : `full` (tous les produits annotés, défaut) ou `train` (l'ancien split, **transitoire**, conservé le temps que les nouveaux produits annotés fournissent un jeu de test indépendant). |
+| **Collection Qdrant** | Index vectoriel nommé `{base}__{run_date}__{run_id}[__sampleN]` — bases `coicop_notices` et `coicop_annotations` (clé `qdrant.collection_base`). Ex. `coicop_notices__2026-09-02__index-notices-a7k2p`. Désignée au pipeline de codification par les paramètres **obligatoires** `classify-rag-notices-collection` / `classify-rag-annotations-collection`. |
+| **Manifeste d'index** | JSON écrit à côté de chaque collection, sous `s3://projet-budget-famille/data/vector_db_manifests/{collection_name}.json` : modèle d'embedding, dimension, stratégie, taille d'échantillon, nombre de points, SHA git. Relu par les étapes `classify-rag-*` au démarrage pour valider la collection avant tout travail coûteux. |
 | **LLMLab** | Endpoint OpenAI-compatible servant **tous** les modèles du pipeline — embeddings (`qwen3-embedding-8b`) et génération (`gemma4-26b-moe`) — via `LLMLAB_URL` / `LLMLAB_API_KEY`. |
 | **Langfuse** | Traçage des appels LLM des deux branches RAG et gestion des gabarits de prompt (`prompt-multi-level` v12, `prompt-annotation-rag` v2). |
 | **MLflow** | Suivi des runs : expériences `test` (classify-rag-notices), `rag-annotation` (classify-rag-annotations) et `codif-coicop-eval` (report, avec `report.html` en artefact) ; héberge aussi le modèle TTC (`classify-ttc-model-uri`) et le modèle SIRUS (`reconcile-sirus-model-uri`). |

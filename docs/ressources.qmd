@@ -10,8 +10,8 @@ subtitle: "Liens utiles, outils et contacts du projet"
 - **Présentation du projet à ISI 2026** : <https://github.com/Lagaims/prez-coicop-isi>
 - **Guide opérationnel Argo** : `argo/argo_helper.md` dans le dépôt (installation de la CLI,
   `argo submit` / `logs` / `retry`, table des paramètres)
-- **Paramétrage d'un run** : `argo/params.yaml` (fichier à codifier, mode production ou
-  évaluation, échantillonnage, branche git…)
+- **Paramétrage d'un run** : `argo/params.yaml` (fichier à codifier, colonne d'étiquettes,
+  échantillonnage, branche git…)
 
 ## Nomenclature COICOP (références externes)
 
