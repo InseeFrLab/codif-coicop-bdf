@@ -39,6 +39,11 @@ TARGET_LEVEL = 4
 # des deux configs RAG, qui valent 0.7 toutes les deux.
 CONFIDENCE_THRESHOLD = 0.7
 
+# Grille du balayage de seuils. Pas de 0,05 et non 0,1 : c'est la table qui
+# instruit une décision de relecture, et un pas de 10 points laisse choisir
+# entre deux compromis très éloignés.
+CONFIDENCE_SWEEP = tuple(round(0.5 + 0.05 * i, 2) for i in range(9))
+
 # Les cinq régimes de réponse, du plus permissif au plus strict. Lire la colonne
 # `n` autant que l'accuracy : une accuracy qui monte de régime en régime sur une
 # population qui fond n'est pas une amélioration, c'est une sélection.
@@ -214,6 +219,40 @@ def load_classifier_records(
 # Les indicateurs
 # ---------------------------------------------------------------------------
 
+def has_response_flags(records: List[Dict]) -> bool:
+    """La brique porte-t-elle un drapeau de codabilité ?
+
+    `build_records` pose `codable = None` pour TTC et LCS, qui n'ont pas cette
+    notion. Le découpage par régime n'a alors aucun sens : les régimes
+    `codable_only`, `parsed_and_codable` et `threshold` sont **vides**.
+
+    Ce test remplace une heuristique fausse qui vivait dans le rapport
+    (« tous les régimes ont le même effectif »). Ils n'ont pas le même effectif,
+    ils sont vides : la colonne `n` vaut `[N, N, 0, 0, 0]`, donc deux valeurs
+    distinctes, donc le garde ne se déclenchait jamais et TTC et LCS avaient
+    droit à un sous-tableau de zéros et de tirets.
+    """
+    return any(r.get("codable") is not None for r in records)
+
+
+def retrieval_size(records: List[Dict]) -> Optional[tuple[int, int]]:
+    """``(min, max)`` du nombre de codes récupérés par produit, ou ``None``.
+
+    Mesuré sur les données du run et non lu dans `retrieval.size` des configs
+    RAG : c'est la valeur qui a servi à *ce* run qu'il faut afficher, pas celle
+    du fichier de configuration d'aujourd'hui. Sans elle, le recall se lit sans
+    échelle — « recall de 80 % » ne veut rien dire tant qu'on ignore si le
+    retriever ramenait 5 candidats ou 50.
+
+    Le minimum peut être inférieur au maximum : Qdrant renvoie *au plus*
+    `limit` points, et une collection réduite en rend moins.
+    """
+    tailles = [len(r["list_retrieved_codes"]) for r in records if r["list_retrieved_codes"]]
+    if not tailles:
+        return None
+    return min(tailles), max(tailles)
+
+
 def hierarchical(records: List[Dict]) -> Dict:
     """Accuracy, recall de retrieval et accuracy conditionnelle, par régime et
     par niveau. Une seule passe sur les données, réutilisée par trois tableaux."""
@@ -264,7 +303,9 @@ def retrieval_table(overall: Dict, regime: str = "all_raw") -> pd.DataFrame:
     return pd.DataFrame(rows).set_index("niveau")
 
 
-def regime_table(overall: Dict, level: int = TARGET_LEVEL) -> pd.DataFrame:
+def regime_table(
+    overall: Dict, level: int = TARGET_LEVEL, *, has_retrieval: bool = True
+) -> pd.DataFrame:
     """Accuracy par régime de réponse, au niveau demandé.
 
     Un RAG peut échouer de quatre façons distinctes : ne pas rendre de JSON
@@ -278,12 +319,18 @@ def regime_table(overall: Dict, level: int = TARGET_LEVEL) -> pd.DataFrame:
         if not g:
             continue
         n = g.get("n_samples", 0)
+        # `_metrics_for_group` renvoie 0.0 — et non None — quand aucun code n'a
+        # été récupéré. Pour une brique sans retriever cela se lit « le
+        # retriever ne ramène jamais rien », ce qui décrit un échec là où il n'y
+        # a pas de retriever du tout. D'où `has_retrieval`, que l'appelant sait
+        # et que le dictionnaire de métriques ne dit pas.
+        recall = g.get(f"level_{level}_retrieval_accuracy") if (n and has_retrieval) else None
         rows.append({
             "régime": label,
             "n": n,
             "part": None,
             f"accuracy niv{level}": g.get(f"level_{level}") if n else None,
-            f"recall niv{level}": g.get(f"level_{level}_retrieval_accuracy") if n else None,
+            f"recall niv{level}": recall,
         })
     out = pd.DataFrame(rows)
     if len(out):
@@ -329,7 +376,10 @@ def threshold_sweep_table(records: List[Dict]) -> pd.DataFrame:
     C'est la table qui instruit une décision de relecture — pas l'AUROC, qui
     dit seulement si un seuil peut exister.
     """
-    rel = confidence_reliability(records, TARGET_LEVEL)
+    # Grille passée explicitement : le défaut de `confidence_reliability` est
+    # (0.5 … 0.9) par pas de 0,1, et ce défaut est partagé avec `rag-annotations`
+    # qui s'en sert pour ses propres mesures. Le resserrer ici, pas là-bas.
+    rel = confidence_reliability(records, TARGET_LEVEL, thresholds=CONFIDENCE_SWEEP)
     if not rel["threshold_sweep"]:
         return pd.DataFrame()
     return pd.DataFrame(rel["threshold_sweep"]).rename(columns={
@@ -409,17 +459,28 @@ def end_to_end(
     deliverable_path: Optional[str],
     observations_path: Optional[str],
     mapping_path: Optional[str],
-) -> Optional[pd.DataFrame]:
-    """Accuracy du livrable, **lignes captées par la regex comprises**.
+) -> Optional[Dict]:
+    """Accuracy du fichier livré, **lignes captées par la regex comprises**.
 
-    C'est le seul chiffre qui décrive ce que reçoit l'utilisateur. Tous les
-    autres tableaux de ce rapport partent du parquet de conciliation, où les
-    lignes tranchées par la regex n'entrent jamais : elles sortent du circuit
-    avant les classifieurs. Elles sont peu nombreuses mais très justes, donc
-    l'accuracy de bout en bout est mécaniquement supérieure — et c'est celle
-    qu'il faut annoncer.
+    C'est le seul chiffre qui décrive ce que reçoit l'utilisateur : tous les
+    autres tableaux du rapport partent du parquet de conciliation, où les lignes
+    tranchées par la regex n'entrent jamais — elles sortent du circuit avant les
+    classifieurs.
 
-    Trois lectures, parce que le livrable ne se suffit pas : `export-results`
+    PÉRIMÈTRE — le point qui rendait ce tableau faux. `export-results` construit
+    le livrable sur la **totalité** de `observations.parquet`, alors que
+    l'échantillonnage a lieu en aval, à `classify-regex`. Sur un run
+    `sample-observations=100`, le livrable compte donc toujours ses ~16 000
+    lignes, dont ~15 900 sans aucune prédiction — et une prédiction absente est
+    comptée comme une erreur. Le tableau annonçait « 16 000 observations » avec
+    une accuracy diluée d'autant, en la présentant comme le chiffre métier.
+
+    Le tri se fait sur `prediction_source`, que le livrable porte déjà
+    (`regex | consensus | llm | sirus`, vide si le run n'a pas codé la ligne) et
+    que cette étape ne lisait pas. Les deux volumes sont renvoyés pour que
+    l'écart reste visible plutôt qu'absorbé.
+
+    Trois lectures parce que le livrable ne se suffit pas : `export-results`
     retire `code` et `code_lvl4` (ils sont dans son `PIPELINE_COLS`), la vérité
     est donc rejointe depuis `observations`, puis rendue canonique par le
     mapping — sans quoi une prédiction canonique juste serait comptée fausse.
@@ -446,21 +507,90 @@ def end_to_end(
     truth = trunc_and_prune_lvl4(truth.copy(), mapping, code_name="code")
     truth_col = "code_tpruned" if "code_tpruned" in truth.columns else "code"
 
-    merged = deliverable[["id", "predicted_code"]].merge(
-        truth[["id", truth_col]], how="inner", on="id"
+    keep = ["id", "predicted_code"]
+    # Absente des runs antérieurs à `prediction_source` : on retombe alors sur
+    # « une ligne décidée est une ligne portant un code », qui est la même chose
+    # à ceci près qu'elle ne permet pas la ventilation par source.
+    has_source = "prediction_source" in deliverable.columns
+    if has_source:
+        keep.append("prediction_source")
+    livre = deliverable[keep].copy()
+
+    decided = (
+        livre[livre["prediction_source"].notna()]
+        if has_source
+        else livre[livre["predicted_code"].notna()]
     )
+
+    merged = decided.merge(truth[["id", truth_col]], how="inner", on="id")
     if not len(merged):
         return None
 
     from codif_common.metrics import accuracy
 
-    rows = []
-    for k in LEVELS:
-        n_ok, n_app, acc = accuracy(
-            merged[truth_col], merged["predicted_code"], k, inclusive=True
+    def _rows(frame: pd.DataFrame) -> Dict[int, tuple]:
+        return {k: accuracy(frame[truth_col], frame["predicted_code"], k) for k in LEVELS}
+
+    ensemble = _rows(merged)
+    hors_regex = (
+        _rows(merged[merged["prediction_source"] != "regex"]) if has_source else None
+    )
+
+    levels = pd.DataFrame(
+        [
+            {
+                "niveau": k,
+                "n évaluable": ensemble[k][1],
+                "justes": ensemble[k][0],
+                "accuracy livrée": ensemble[k][2],
+                **(
+                    {
+                        "n hors regex": hors_regex[k][1],
+                        "accuracy hors regex": hors_regex[k][2],
+                        # L'apport de la regex, en points : c'est la question
+                        # « qu'est-ce que l'étape regex change au chiffre
+                        # global ? », posée dans la seule unité qui y réponde.
+                        "apport regex": (
+                            ensemble[k][2] - hors_regex[k][2]
+                            if pd.notna(ensemble[k][2]) and pd.notna(hors_regex[k][2])
+                            else None
+                        ),
+                    }
+                    if hors_regex
+                    else {}
+                ),
+            }
+            for k in LEVELS
+        ]
+    ).set_index("niveau")
+
+    by_source = None
+    if has_source:
+        rows = []
+        for src, sub in merged.groupby("prediction_source"):
+            n_ok, n_app, acc = accuracy(sub[truth_col], sub["predicted_code"], TARGET_LEVEL)
+            rows.append(
+                {
+                    "source": src,
+                    "n livré": len(sub),
+                    "part du livré": len(sub) / len(merged),
+                    f"n évaluable niv{TARGET_LEVEL}": n_app,
+                    f"accuracy niv{TARGET_LEVEL}": acc,
+                }
+            )
+        by_source = (
+            pd.DataFrame(rows).sort_values("n livré", ascending=False).set_index("source")
         )
-        rows.append({"niveau": k, "n": n_app, "justes": n_ok, "accuracy": acc})
-    return pd.DataFrame(rows).set_index("niveau")
+
+    return {
+        "levels": levels,
+        "by_source": by_source,
+        "has_source": has_source,
+        # Volumes, pour rendre visible l'écart d'un run échantillonné.
+        "n_deliverable": len(livre),
+        "n_decided": len(decided),
+        "n_scored": len(merged),
+    }
 
 
 # ---------------------------------------------------------------------------

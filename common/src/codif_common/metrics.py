@@ -41,8 +41,8 @@ CONCILIATIONS = [
 LEVELS = [1, 2, 3, 4, 5]
 
 # Canonical codes never exceed 4 segments (level 5 is truncated away by the
-# `prune` step), so the inclusive convention saturates at level 4: comparing
-# parts[:4] already compares the codes in full.
+# `prune` step), so no row is ever evaluable at level 5: a level-5 column would
+# be structurally empty. `LEVELS` is kept for the runs predating `code_lvl4`.
 CANONICAL_LEVELS = [1, 2, 3, 4]
 
 # Ground-truth columns produced by reconcile-llm: the raw annotation, and its
@@ -139,21 +139,27 @@ def code_parts(s) -> list[str]:
     return s.split(".")
 
 
-def level_result(truth: str, pred: str, k: int, *, inclusive: bool = False):
+def level_result(truth: str, pred: str, k: int):
     """Return True/False/None for one observation at level ``k``.
 
-    None means the observation is not counted at all (see the module docstring
-    for the two conventions): with ``inclusive=False`` when the truth is
-    shallower than ``k``, with ``inclusive=True`` only when there is no truth.
+    Convention **stricte**, et c'est désormais la seule du dépôt : une
+    observation dont la vérité compte moins de ``k`` segments n'est pas
+    évaluable à ce niveau et renvoie ``None`` — elle sort du dénominateur. Le
+    ``n`` décroît donc avec ``k``, et les niveaux ne se comparent pas entre eux
+    (voir ``truth_depth_distribution`` pour la population que chaque niveau
+    écarte).
+
+    Deux propriétés dont dépend ``coverage_table``, à ne pas casser :
+
+    - ``None`` ne dépend **que de la vérité**, jamais de la prédiction. Le
+      sous-ensemble évaluable au niveau ``k`` est donc le même pour toutes les
+      méthodes ;
+    - toute prédiction plus courte que ``k`` — abstention, chaîne vide, ou
+      sentinelle textuelle du genre ``"N/A"``, qui ne compte qu'un segment — est
+      une **erreur**, pas une exclusion. Autrement dit « juste ⇒ a répondu ».
     """
     tp = code_parts(truth)
     pp = code_parts(pred)
-    if inclusive:
-        if not tp:
-            return None
-        if not pp:
-            return False
-        return tp[:k] == pp[:k]
     if len(tp) < k:
         return None
     if len(pp) < k:
@@ -161,41 +167,41 @@ def level_result(truth: str, pred: str, k: int, *, inclusive: bool = False):
     return tp[:k] == pp[:k]
 
 
-def accuracy_series(
-    truth: pd.Series, pred: pd.Series, k: int, *, inclusive: bool = False
-) -> pd.Series:
-    """Series of True/False/NA indexed like truth."""
-    out = [level_result(t, p, k, inclusive=inclusive) for t, p in zip(truth, pred)]
+def accuracy_series(truth: pd.Series, pred: pd.Series, k: int) -> pd.Series:
+    """Series of True/False/NA indexed like truth.
+
+    ``dtype="object"`` et non ``bool`` : le ``None`` des lignes non évaluables
+    doit survivre. Attention chez l'appelant — ``serie == True`` écrase ces
+    ``None`` en ``False`` et compte donc comme fausses des lignes qui ne sont
+    pas mesurables. Filtrer sur ``.notna()`` **avant** de comparer.
+    """
+    out = [level_result(t, p, k) for t, p in zip(truth, pred)]
     return pd.Series(out, index=truth.index, dtype="object")
 
 
-def accuracy(
-    truth: pd.Series, pred: pd.Series, k: int, *, inclusive: bool = False
-) -> tuple[int, int, float]:
-    s = accuracy_series(truth, pred, k, inclusive=inclusive)
+def accuracy(truth: pd.Series, pred: pd.Series, k: int) -> tuple[int, int, float]:
+    s = accuracy_series(truth, pred, k)
     applicable = s.notna()
     n_app = int(applicable.sum())
     n_ok = int((s == True).sum())  # noqa: E712
     return n_ok, n_app, (n_ok / n_app if n_app else float("nan"))
 
 
-def accuracy_table(
-    data: pd.DataFrame, *, inclusive: bool = False, levels: list[int] | None = None
-) -> pd.DataFrame:
+def accuracy_table(data: pd.DataFrame, *, levels: list[int] | None = None) -> pd.DataFrame:
     """Accuracy per method and per level, scored against ``truth_column(data)``.
 
-    With ``inclusive=True`` the denominator is the same at every level (all rows
-    carrying a ground truth), so it is reported once in the table caption rather
-    than per column.
+    Le ``n`` est porté par l'en-tête de chaque colonne parce qu'il **change d'un
+    niveau à l'autre** : c'est la population évaluable à ce niveau-là. Deux
+    colonnes ne se comparent donc pas entre elles.
     """
     truth = data[truth_column(data)]
-    levels = levels or (CANONICAL_LEVELS if inclusive else LEVELS)
+    levels = levels or LEVELS
     rows = []
     for name, col in available_methods(data):
         row = {"méthode": name}
         for k in levels:
-            _, n_app, acc = accuracy(truth, data[col], k, inclusive=inclusive)
-            row[f"niv{k}" if inclusive else f"niv{k} (n={n_app})"] = acc
+            _, n_app, acc = accuracy(truth, data[col], k)
+            row[f"niv{k} (n={n_app})"] = acc
         rows.append(row)
     return pd.DataFrame(rows).set_index("méthode")
 
@@ -210,37 +216,53 @@ def answer_mask(pred: pd.Series) -> pd.Series:
     return pred.map(is_answer)
 
 
-def coverage_table(
-    data: pd.DataFrame, k: int = REGIME_LEVEL, *, inclusive: bool = True
-) -> pd.DataFrame:
+def coverage_table(data: pd.DataFrame, k: int = REGIME_LEVEL) -> pd.DataFrame:
     """Split each method's accuracy into coverage × accuracy-when-answering.
 
-    The global accuracy conflates two very different failures: coding the wrong
-    thing, and refusing to code. Under the inclusive convention an abstention is
-    counted as an error, so the global figure factorises exactly:
+    L'accuracy globale confond deux échecs opposés : coder faux, et refuser de
+    coder. Le premier demande un meilleur modèle, le second une meilleure
+    couverture.
+
+    Les trois grandeurs partagent **un seul dénominateur** — les lignes
+    évaluables au niveau ``k``, c'est-à-dire celles dont la vérité atteint ``k``
+    segments — et c'est ce qui rend la décomposition exacte :
 
         accuracy globale = couverture × accuracy sur les réponses
 
-    A method can therefore look mediocre because it is wrong, or because it is
-    silent — two problems with opposite remedies.
+    Elle tient parce qu'une abstention reste une **erreur** sous la convention
+    stricte (aucun code ne fait ``k`` segments) : le numérateur des deux
+    accuracies est le même entier, seuls les dénominateurs diffèrent.
+
+    Le piège, si l'on rapporte la couverture à ``len(data)`` comme le faisait la
+    version inclusive : les deux facteurs ne portent plus sur la même
+    population et le produit cesse de retomber sur l'accuracy globale, **sans
+    qu'aucune erreur ne soit levée**. Les lignes dont la vérité est trop peu
+    profonde sortent des trois grandeurs, leurs abstentions comprises — d'où la
+    colonne ``n évaluable``, sans laquelle la couverture se lit de travers.
     """
     truth = data[truth_column(data)]
-    n_total = len(data)
     rows = []
     for name, col in available_methods(data):
-        answered = answer_mask(data[col])
+        pred = data[col]
+        res = accuracy_series(truth, pred, k)
+        # `notna()` ne dépend que de la vérité (cf. level_result) : même
+        # sous-population évaluable pour toutes les méthodes.
+        evaluable = res.notna()
+        n_eval = int(evaluable.sum())
+        answered = evaluable & answer_mask(pred)
         n_ans = int(answered.sum())
-        _, _, acc_all = accuracy(truth, data[col], k, inclusive=inclusive)
-        _, _, acc_ans = accuracy(
-            truth[answered], data[col][answered], k, inclusive=inclusive
-        )
+        # Compté sur `answered` et non sur `evaluable` : « juste ⇒ a répondu »
+        # est vrai, mais l'écrire ainsi rend l'identité vraie par construction
+        # plutôt que par raisonnement.
+        n_ok = int((res[answered] == True).sum())  # noqa: E712
         rows.append(
             {
                 "méthode": name,
-                "couverture": (n_ans / n_total) if n_total else float("nan"),
-                "abstentions": n_total - n_ans,
-                f"accuracy niv{k} sur réponses": acc_ans,
-                f"accuracy niv{k} globale": acc_all,
+                f"n évaluable niv{k}": n_eval,
+                "couverture": (n_ans / n_eval) if n_eval else float("nan"),
+                "abstentions": n_eval - n_ans,
+                f"accuracy niv{k} sur réponses": (n_ok / n_ans) if n_ans else float("nan"),
+                f"accuracy niv{k} globale": (n_ok / n_eval) if n_eval else float("nan"),
             }
         )
     return pd.DataFrame(rows).set_index("méthode")
@@ -265,17 +287,26 @@ def declared_refusal_table(data: pd.DataFrame, k: int = REGIME_LEVEL) -> pd.Data
             for ans_label, ans_mask in (("code émis", answered), ("abstention", ~answered)):
                 mask = decl_mask & ans_mask
                 # Sur les lignes d'abstention l'accuracy vaut 0 par construction
-                # (pas de code = erreur) : on la laisse vide plutôt que d'afficher
-                # un chiffre qui n'apporte rien.
+                # (aucun code n'a k segments) : on la laisse vide plutôt que
+                # d'afficher un chiffre qui n'apporte rien.
+                #
+                # `n` compte la cellule entière, `n évaluable` le dénominateur
+                # réel de l'accuracy : sous la convention stricte les deux
+                # diffèrent, et sans la seconde colonne un lecteur divise l'une
+                # par l'autre. La cellule qui fait l'intérêt du tableau — refus
+                # déclaré ET code émis — est petite par nature ; c'est là que
+                # l'écart se voit le plus.
                 acc = float("nan")
+                n_app = 0
                 if ans_label == "code émis" and mask.any():
-                    _, _, acc = accuracy(truth[mask], data[col][mask], k, inclusive=True)
+                    _, n_app, acc = accuracy(truth[mask], data[col][mask], k)
                 rows.append(
                     {
                         "méthode": name,
                         "drapeau": f"{flag} = {decl_label}",
                         "sortie": ans_label,
                         "n": int(mask.sum()),
+                        f"n évaluable niv{k}": n_app,
                         f"accuracy niv{k}": acc,
                     }
                 )
@@ -297,9 +328,7 @@ def regime_masks(data: pd.DataFrame) -> list[tuple[str, str, pd.Series]] | None:
     return [(label, suffix, masks[suffix]) for label, suffix in REGIMES]
 
 
-def regime_accuracy_table(
-    data: pd.DataFrame, k: int = 4, *, inclusive: bool = True
-) -> pd.DataFrame | None:
+def regime_accuracy_table(data: pd.DataFrame, k: int = 4) -> pd.DataFrame | None:
     """Accuracy at level ``k`` per method, split by arbitration regime.
 
     The pooled figures mix two regimes that measure different things. On the
@@ -318,13 +347,11 @@ def regime_accuracy_table(
     rows = []
     for name, col in available_methods(data):
         row = {"méthode": name}
-        _, n_all, acc_all = accuracy(truth, data[col], k, inclusive=inclusive)
+        _, n_all, acc_all = accuracy(truth, data[col], k)
         row[f"Ensemble (n={n_all})"] = acc_all
         for label, _suffix, mask in masks:
             sub = data[mask]
-            _, n_sub, acc_sub = accuracy(
-                sub[truth_column(data)], sub[col], k, inclusive=inclusive
-            )
+            _, n_sub, acc_sub = accuracy(sub[truth_column(data)], sub[col], k)
             row[f"{label} (n={n_sub})"] = acc_sub
         rows.append(row)
     return pd.DataFrame(rows).set_index("méthode")
@@ -333,9 +360,11 @@ def regime_accuracy_table(
 def truth_depth_distribution(truth: pd.Series) -> dict:
     """How deep the ground truth actually goes.
 
-    Needed to read the inclusive accuracy: at level ``k``, the rows whose truth
-    is shallower than ``k`` are the ones the strict convention drops and the
-    inclusive one requires to be predicted *exactly*.
+    C'est ce qui explique le ``n`` décroissant des tableaux d'accuracy : au
+    niveau ``k``, les lignes dont la vérité compte moins de ``k`` segments ne
+    sont pas évaluables et sortent du dénominateur. Sans ce décompte, un lecteur
+    ne peut pas savoir si une accuracy de niveau 4 porte sur toute la population
+    ou sur un quart.
     """
     depths = [len(code_parts(t)) for t in truth]
     depths = [d for d in depths if d]

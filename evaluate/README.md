@@ -105,7 +105,7 @@ Testé par `tests/test_truth.py`.
 | Destination | Contenu |
 |---|---|
 | `…/{run}/evaluate/evaluation_report.html` | le rapport, HTML auto-contenu |
-| MLflow (`--experiment-name`, `codif-coicop-eval` par défaut) | les deux conventions d'accuracy par méthode et par niveau, `truth_shallower_than_niv<k>_count`, `llm_prompt_tokens_total`, `llm_latency_s_mean`, et toute la décomposition interne (`retrieval/…`, `regime/…`, `confidence/…`, `codable/…`, `distortion/…`) |
+| MLflow (`--experiment-name`, `codif-coicop-eval` par défaut) | l'accuracy par méthode et par niveau avec son dénominateur (`accuracy_*` et `n_evaluable_*`), `truth_shallower_than_niv<k>_count`, `llm_prompt_tokens_total`, `llm_latency_s_mean`, et toute la décomposition interne (`retrieval/…`, `regime/…`, `confidence/…`, `codable/…`, `distortion/…`) |
 
 L'expérience est **distincte** de celle du rapport de production : les deux ne mesurent pas la
 même chose et n'ont pas le même schéma de métriques.
@@ -126,7 +126,7 @@ n'importe quelle prédiction :
 
 | Module | Ce qu'il apporte |
 |---|---|
-| [`common/`](../common/) | `codif_common.metrics` : accuracy par niveau (2 conventions), couverture, régimes, `final_decision` |
+| [`common/`](../common/) | `codif_common.metrics` : accuracy par niveau (convention stricte, la seule), couverture, régimes, `final_decision` ; `codif_common.tracking` : URLs de runs MLflow |
 | [`rag-notices/`](../rag-notices/) | les 5 filtres, le recall de retrieval, l'accuracy de génération conditionnelle |
 | [`rag-annotations/`](../rag-annotations/) | AUROC, distorsion de distribution (TV et KL), fiabilité du `codable`, `accuracy_by_source` |
 | [`prune-codes/`](../prune-codes/) | vocabulaire de code COICOP (troncature, sentinelles d'abstention) |

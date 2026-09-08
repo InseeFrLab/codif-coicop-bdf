@@ -67,7 +67,7 @@ for _p in (_ROOT / "common" / "src", _ROOT / "prune-codes" / "src"):
     if str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
 
-from codif_common.metrics import accuracy, accuracy_series  # noqa: E402
+from codif_common.metrics import accuracy, code_parts  # noqa: E402
 from prune_codes.utils import truncate_code  # noqa: E402
 
 RUN_ID = os.environ.get("BILAN_RUN_ID", "codif-sj4jz")
@@ -149,20 +149,39 @@ df["truth"] = (
     .map(lambda c: _to_parent.get(str(c), c))
 )
 
-# Convention `inclusive=True` : toutes les lignes portant une vérité comptent, à
-# quelle que profondeur que ce soit. C'est la seule convention qui ait un sens
-# sur des codes canoniques — une vérité `01.3` **est** la réponse de niveau 4, et
-# non une troncature de celle-ci (cf. docstring de common/src/codif_common/metrics.py).
 LEVEL = 4
-df["ok"] = accuracy_series(df["truth"], df["predicted_code"], LEVEL, inclusive=True)
+
+
+# Scoreur local, et c'est délibéré : `codif_common.metrics` ne connaît plus que
+# la convention stricte, qui écarte du dénominateur les lignes dont la vérité
+# n'atteint pas le niveau `k`.
+#
+# Cette annexe ne mesure pas une accuracy contre une vérité terrain, mais un
+# **taux d'accord** avec une codification antérieure. La distinction change tout :
+# un `code_previous` valant `11.2` est une réponse complète de l'annotateur
+# précédent, pas une troncature faute de mieux — l'écarter reviendrait à ne pas
+# compter un désaccord réel. Toutes les lignes portant un code antérieur doivent
+# donc compter, à quelque profondeur que ce soit.
+#
+# Ces huit lignes sont le prix à payer pour que le rapport d'évaluation, lui,
+# n'ait plus qu'une convention.
+def _accord(truth, pred, k):
+    tp, pp = code_parts(truth), code_parts(pred)
+    if not tp:
+        return None
+    return bool(pp) and tp[:k] == pp[:k]
+
+
+df["ok"] = [_accord(t, p, LEVEL) for t, p in zip(df["truth"], df["predicted_code"])]
 
 n_tot = len(df)
-n_ok, n_app, acc_glob = accuracy(df["truth"], df["predicted_code"], LEVEL, inclusive=True)
+_scored = [v for v in df["ok"] if v is not None]
+n_app = len(_scored)
+n_ok = sum(_scored)
+acc_glob = n_ok / n_app if n_app else float("nan")
 # Convention stricte, à titre de comparaison : exclut du dénominateur les
 # observations dont la vérité canonique est moins profonde que 4.
-_, n_strict, acc_strict = accuracy(
-    df["truth"], df["predicted_code"], LEVEL, inclusive=False
-)
+_, n_strict, acc_strict = accuracy(df["truth"], df["predicted_code"], LEVEL)
 ```
 
 ## Ce que mesure ce bilan

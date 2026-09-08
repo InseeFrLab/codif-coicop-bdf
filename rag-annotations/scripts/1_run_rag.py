@@ -135,12 +135,32 @@ def main():
         mlflow.set_tag("index.git_sha", str(index_manifest.get("git_sha")))
         mlflow.set_tag("index.run_id", str(index_manifest.get("run_id")))
 
+        # Rattachement au run de pipeline : c'est la seule clé qui relie ce run
+        # MLflow au run Argo, et donc le seul moyen pour le rapport d'évaluation
+        # d'en donner l'URL. Le `run_name` ne porte qu'un horodatage, qui ne
+        # désigne rien. À ne pas confondre avec `index.run_id` ci-dessus, qui
+        # désigne le run d'INDEXATION de la vector DB — un autre workflow.
+        #
+        # `pipeline.step` est indispensable : toutes les étapes d'un même run
+        # portent le même `pipeline.run_id`, et une recherche sur ce seul tag
+        # renverrait celle qui a fini en dernier, quelle qu'elle soit.
+        mlflow.set_tags({
+            "pipeline.run_id": args.run_id,
+            "pipeline.run_date": args.run_date,
+            "pipeline.step": "classify-rag-annotations",
+        })
+
         mlflow.log_params({
             "collection_name": config["qdrant"]["collection_name"],
             "index_point_count": index_manifest["point_count_live"],
             "model_name": config["llm"]["model_name"],
             "embedding_model": config["embedding"]["model_name"],
             "retrieval_size": config["retrieval"]["size"],
+            # Nom et version du prompt : `rag-notices` les loguait déjà, pas
+            # cette étape. Sans eux, savoir quel prompt a servi à un run passé
+            # oblige à ouvrir l'artefact `config.yaml`.
+            "prompt_name": config["llm"]["prompt_name"],
+            "prompt_version": config["llm"]["prompt_version"],
             "input": input_path,
             "vectordb_exclude_sources": ",".join(config["annotations"].get("exclude_sources") or []) or "none",
             "testset_include_sources": ",".join(config["eval"].get("include_sources") or []) or "all",

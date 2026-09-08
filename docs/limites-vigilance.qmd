@@ -210,15 +210,20 @@ périmètre et avec sa propre convention. Pour un même modèle et un même jeu,
 différaient de ceux du rapport, sans que rien ne le signale.
 
 Ces calculs ont disparu des étapes de classification : seule l'[étape
-`evaluate`](11-evaluate.qmd) mesure, et elle publie explicitement les **deux conventions**
-(`accuracy_*` stricte et `accuracy_all_*` inclusive) — voir
-[la page evaluate](11-evaluate.qmd#les-deux-conventions-daccuracy).
+`evaluate`](11-evaluate.qmd) mesure, et elle n'a plus qu'**une** convention, la stricte —
+voir [la page evaluate](11-evaluate.qmd#une-seule-convention-daccuracy-la-stricte).
 
-Subsiste aussi une ambiguïté propre à la convention inclusive : une vérité terrain peu profonde
-peut être un code canonique terminal (mesure exacte) ou une annotation incomplète (une
-prédiction plus fine est alors comptée fausse sans pouvoir être vérifiée). L'accuracy inclusive
-est donc une borne inférieure. Distinguer les deux cas demanderait de marquer les feuilles de
-la nomenclature prunée — voir le point suivant.
+**Subsiste**, et c'est la contrepartie du choix : la convention stricte **écarte** du
+dénominateur les observations dont la vérité est moins profonde que le niveau mesuré, au
+lieu de les compter. Au niveau 4, cela peut représenter près d'un quart de la population.
+Le rapport affiche donc, en regard de chaque tableau d'accuracy, la part écartée à chaque
+niveau. Distinguer une vérité peu profonde *terminale* d'une annotation *incomplète*
+demanderait de marquer les feuilles de la nomenclature prunée — voir le point suivant.
+
+**Subsiste aussi** : la section « Décomposition interne des classifieurs » du rapport est
+calculée par les bibliothèques de mesure des modules RAG, à dénominateur constant. Ses
+accuracies ne sont donc pas comparables chiffre à chiffre avec celles du reste du rapport ;
+un `callout` le signale sur place.
 
 ### Suggester : des codes agrégés indexés comme candidats
 
@@ -242,10 +247,10 @@ tous indexés dans Qdrant comme candidats. Aucun drapeau `is_leaf`, aucun niveau
 une sous-codification**, et rien ne permet de distinguer les deux automatiquement.
 
 **Piste** : ajouter une colonne `is_leaf` à `nomenclature_pruned.parquet` (un code sans enfant
-dans la nomenclature prunée). Elle permettrait de lever l'ambiguïté de la convention d'accuracy
-inclusive — une vérité terrain peu profonde *et* terminale est une mesure exacte, une vérité
-peu profonde *non* terminale est une annotation incomplète — et de signaler une
-sous-codification dans le fichier livré.
+dans la nomenclature prunée). Elle permettrait de mesurer ce que la convention stricte se
+contente aujourd'hui d'écarter — une vérité peu profonde *et* terminale est évaluable au
+niveau 4, une vérité peu profonde *non* terminale est une annotation incomplète — et de
+signaler une sous-codification dans le fichier livré.
 
 ## Résolus par la sortie de l'évaluation
 

@@ -72,13 +72,18 @@ comptée fausse.
 
 - **Métadonnées du run** (dont la colonne de vérité terrain effectivement scorée) ;
 - **Accuracy globale par niveau** COICOP pour LCS, RAG notices, RAG annotations, TTC
-  et la conciliation (tableau + graphique), en **convention stricte** ;
-- **Accuracy sur toutes les observations**, en **convention inclusive** (voir ci-dessous) ;
+  et la conciliation (tableau + graphique), et la profondeur de la vérité terrain qui
+  explique le `n` décroissant ;
+- **Accuracy du fichier livré, regex comprise** — le chiffre métier, ventilé par
+  source de décision et assorti d'une ligne « hors regex » ;
 - **Accuracy par groupe** : niveau COICOP 1 et 2, `shop`, `shop_type_name`, **décile de `budget`** ;
 - **Accuracy par provenance du produit**, si `eval-source-column` est renseigné ;
 - **Analyse d'erreurs** : matrice de confusion (top 20 paires au niveau 4), **calibration**
   (accuracy par tranche de confiance, AUROC) ;
 - **Coût et latence de l'arbitrage LLM** (tokens de prompt, latence moyenne) ;
+- **Les règles du modèle SIRUS**, en clair, quand c'est la conciliation du run ;
+- **Traçabilité** : URL du run MLflow de chaque brique et template de prompt Langfuse
+  de chaque RAG ;
 - **Décomposition interne de chaque brique** — voir la section suivante ;
 - **Accord entre les classifieurs et valeur ajoutée de l'arbitrage** ;
 - **Décisions du juge hors des prédictions des classifieurs** ;
@@ -105,48 +110,42 @@ dans un rapport qui ne mesure rien ; pas quand quelqu'un a explicitement demand�
 Le message d'échec liste les colonnes présentes et nomme la cause probable.
 :::
 
-### Les deux conventions d'accuracy
+### Une seule convention d'accuracy : la stricte
 
-Le rapport publie **deux** accuracies par niveau, qui répondent à deux questions distinctes.
-Le tableau récapitulatif les met côte à côte, et MLflow reçoit les deux séries
-(`accuracy_<méthode>_niv<k>` et `accuracy_all_<méthode>_niv<k>`).
+| | Convention **stricte** |
+|---|---|
+| Dénominateur | les seules observations dont la vérité atteint le niveau `k` |
+| Vérité moins profonde que `k` | **exclue** — non évaluable |
+| Prédiction plus courte que `k` | erreur |
+| Prédiction plus profonde que la vérité | correcte si le préfixe correspond |
+| Question | parmi les observations codables à la profondeur `k`, quelle part est juste ? |
+| Comparaison entre niveaux | **impossible** : la population change d'un niveau à l'autre |
 
-| | Convention **stricte** | Convention **inclusive** |
-|---|---|---|
-| Dénominateur | seules les observations dont la vérité atteint le niveau `k` | **toutes** les observations disposant d'une vérité terrain |
-| Vérité moins profonde que `k` | **exclue** (non évaluable) | **incluse** : la prédiction attendue est le code court lui-même |
-| Prédiction plus courte que `k` | erreur | erreur (sauf si elle égale la vérité) |
-| Prédiction plus profonde que la vérité | correcte si le préfixe correspond | **erreur** : dans l'espace pruné, ce code n'existe pas |
-| Question | parmi les observations codables à la profondeur `k`, quelle part est juste ? | sur toute la population, quelle part est correctement placée dans la grille de niveau `k` ? |
-| Comparaison entre niveaux | **impossible** (population variable) | possible (dénominateur constant) |
-
-La convention inclusive est celle qui répond à « quel est mon taux de réussite au niveau 4 ? ».
-Elle n'a de sens que sur des codes canoniques : une fois les hiérarchies linéaires élaguées,
-une vérité `01.3` signifie que `01.3` **est** la réponse de niveau 4 — ce n'est pas une
-troncature faute de mieux, c'est le code le plus fin qui existe pour ce poste (8 codes sont des
-feuilles dès le niveau 2). Le rapport affiche aussi, pour chaque niveau, **combien
-d'observations** ont une vérité moins profonde que `k` : c'est la part de la population qui
-sépare les deux chiffres.
+Le rapport publiait auparavant une seconde convention, dite *inclusive*, à dénominateur
+constant. Elle a été retirée : deux chiffres pour la même question obligeaient chaque
+lecteur à trancher lequel regarder, et le tableau qui les comparait ne servait qu'à
+expliquer pourquoi il y en avait deux.
 
 ::: {.callout-warning}
-## Pourquoi l'accuracy stricte peut *monter* avec le niveau
-Comme chaque niveau porte sur une population différente, l'accuracy stricte peut augmenter
-quand `k` augmente : les observations qui restent sont celles dont la vérité est fine, souvent
-les plus faciles. Ce n'est pas une amélioration de la codification en profondeur, c'est un
-effet de sélection. C'est la raison d'être de la convention inclusive.
+## Pourquoi l'accuracy peut *monter* avec le niveau
+Chaque niveau porte sur une population différente : les observations qui restent au
+niveau 4 sont celles dont la vérité est fine, souvent les plus faciles. Une accuracy qui
+croît avec `k` est un effet de sélection, pas un progrès. Le tableau **« Ce que chaque
+niveau écarte »** donne, pour chaque `k`, la part de la population non évaluable — c'est
+lui qui rend le `n` lisible.
 :::
+
+Le **niveau 5 n'est jamais affiché** avec une vérité canonique : les codes prunés ont au
+plus 4 segments, la colonne serait structurellement vide.
 
 ::: {.callout-note}
-## Limite d'interprétation de la convention inclusive
-Une vérité peu profonde a deux causes possibles : le code est un **code canonique terminal**
-(la convention inclusive est alors exacte), ou **l'annotateur s'est arrêté avant le niveau 4**
-alors que des codes plus fins existent. Dans ce second cas, une prédiction plus fine est
-comptée fausse sans qu'on puisse la vérifier. L'accuracy inclusive est donc une **borne
-inférieure**, la stricte une mesure sur un sous-ensemble : lire les deux ensemble.
+## Une exception assumée, hors pipeline
+`annexes/benchmarking/bilan-codification.qmd` garde un scoreur local à dénominateur
+constant. Il ne mesure pas une accuracy contre une vérité terrain mais un **taux d'accord**
+avec une codification antérieure : un `code_previous` valant `11.2` est une réponse
+complète de l'annotateur précédent, pas une troncature, et l'écarter reviendrait à ne pas
+compter un désaccord réel.
 :::
-
-Avec une vérité canonique, le **niveau 5 n'est plus affiché** : les codes prunés ont au plus
-4 segments, la colonne serait structurellement vide.
 
 ## La décomposition interne des classifieurs
 
@@ -201,10 +200,10 @@ Sont enregistrés :
 - **Paramètres** : `run_id`, `run_date`, la conciliation retenue, la colonne de vérité terrain
   scorée, la colonne de provenance ;
 - **Métriques** : pour chaque méthode (LCS / RAG notices / RAG annotations / TTC /
-  conciliation) et chaque niveau, les **deux conventions** — `accuracy_<méthode>_niv<k>`
-  (stricte) et `accuracy_all_<méthode>_niv<k>` (inclusive) — plus
-  `truth_shallower_than_niv<k>_count`, la population qui sépare les deux ;
-  `llm_prompt_tokens_total` et `llm_latency_s_mean` ;
+  conciliation) et chaque niveau, `accuracy_<méthode>_niv<k>` et son dénominateur
+  `n_evaluable_<méthode>_niv<k>` — sans lui, deux runs dont les annotations n'ont pas la
+  même profondeur semblent comparables alors qu'ils ne le sont pas ; plus
+  `truth_shallower_than_niv<k>_count`, `llm_prompt_tokens_total`, `llm_latency_s_mean` ;
 - **La décomposition interne**, préfixée par famille pour que l'UI MLflow les regroupe et
   qu'une comparaison entre deux runs porte sur des séries alignées :
   `retrieval/<brique>/recall_niv<k>` et `…/generation_when_retrieved_niv<k>`,
@@ -212,6 +211,43 @@ Sont enregistrés :
   `confidence/<brique>/auroc`, `…/accuracy_at_<seuil>`, `…/coverage_at_<seuil>`,
   `codable/<brique>/lift`, `distortion/<brique>/level_<k>/{tv_distance,kl_divergence}` ;
 - **Artefacts** : `evaluation_report.html` et `truth_depth_distribution.json`.
+
+::: {.callout-warning}
+## Rupture de série sur les runs antérieurs
+Les métriques `accuracy_all_<méthode>_niv<k>` (convention inclusive) ne sont plus émises, et
+`coverage_<méthode>` / `abstention_<méthode>_count` sont devenues
+`coverage_niv4_<méthode>` / `abstention_niv4_<méthode>_count` : leur dénominateur a changé
+— elles portent désormais sur les seules lignes évaluables au niveau 4 — et les tracer sous
+l'ancien nom mettrait deux définitions incompatibles sur une même courbe. Comparer un run
+d'avant et un run d'après montrera donc un trou dans l'UI MLflow.
+:::
+
+## Comment le rapport retrouve les runs des autres étapes
+
+Aucune étape ne persistait son identifiant de run MLflow : ni en colonne, ni en artefact S3,
+ni en paramètre de sortie Argo, et les `run_name` des deux étapes RAG ne portent qu'un
+horodatage. Le raccordement se fait par deux tags posés au moment du run :
+
+| Tag | Rôle |
+|---|---|
+| `pipeline.run_id` | le run Argo. À ne pas confondre avec `index.run_id`, déjà présent, qui désigne le run d'**indexation** de la vector DB |
+| `pipeline.step` | le nom de l'étape. Indispensable : toutes les étapes d'un run portent le même `pipeline.run_id`, une recherche sur ce seul tag renverrait celle qui a fini en dernier |
+
+`codif_common.tracking` fait la recherche et construit l'URL. Trois cas se distinguent dans
+le rapport, et il ne laisse jamais une case vide :
+
+- **un lien** — l'étape logue et son run a été retrouvé ;
+- **« ne logue pas dans MLflow »** — `build-datasets`, `classify-regex`, `classify-lcs`,
+  `prune-codes`, `reconcile-llm`, `export-results` n'y touchent jamais ;
+- **« run non retrouvé »** — run antérieur aux tags, ou serveur injoignable.
+
+`classify-ttc` et `reconcile-sirus` n'ouvrent aucun run pendant le pipeline : ils ne font
+qu'inférer. Leur run d'**entraînement** est retrouvé autrement, à partir de l'URI de leur
+modèle (`mlflow-artifacts:/{experiment}/{run}/artifacts/model`), qui porte les deux
+identifiants — celle de SIRUS est déjà une colonne du parquet de conciliation.
+
+Toute cette section est sous `try/except` : un tableau de liens ne doit jamais faire échouer
+une évaluation.
 
 ## Sortie
 

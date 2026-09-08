@@ -1,4 +1,4 @@
-"""Tests des deux conventions d'accuracy et de la résolution de la vérité terrain.
+"""Tests de la convention d'accuracy et de la résolution de la vérité terrain.
 
 Lancer depuis `common/` : `uv run pytest tests/test_metrics.py`
 """
@@ -6,6 +6,7 @@ Lancer depuis `common/` : `uv run pytest tests/test_metrics.py`
 import json
 
 import pandas as pd
+import pytest
 
 from codif_common.metrics import (
     CANONICAL_LEVELS,
@@ -14,6 +15,7 @@ from codif_common.metrics import (
     TRUTH_COL_CANONICAL,
     TRUTH_COL_RAW,
     accuracy,
+    accuracy_series,
     accuracy_table,
     answer_mask,
     coverage_table,
@@ -52,32 +54,30 @@ class TestStrictConvention:
         assert level_result("01.1.1", "01.1.1.3", 3) is True
 
 
-class TestInclusiveConvention:
-    def test_shallow_truth_is_scored_at_every_level(self):
-        """C'est la différence de fond : la ligne compte à tous les niveaux."""
-        for k in CANONICAL_LEVELS:
-            assert level_result("01.3", "01.3", k, inclusive=True) is True
-
-    def test_prediction_deeper_than_canonical_truth_is_wrong(self):
-        """Dans l'espace pruné, `01.3.0.1` n'existe pas si la vérité canonique
-        est `01.3` : la prédiction désigne un code inexistant."""
-        assert level_result("01.3", "01.3.0.1", 4, inclusive=True) is False
-        # ... mais elle reste juste aux niveaux où les préfixes coïncident
-        assert level_result("01.3", "01.3.0.1", 2, inclusive=True) is True
-
-    def test_missing_prediction_is_an_error_not_an_exclusion(self):
-        assert level_result("01.3", None, 4, inclusive=True) is False
-
     def test_missing_truth_is_unscorable(self):
-        assert level_result(None, "01.3", 4, inclusive=True) is None
+        assert level_result(None, "01.3", 4) is None
 
-    def test_saturates_at_level_4(self):
-        """Les codes canoniques ont au plus 4 segments : k=4 compare les codes
-        en entier, donc k=5 donnerait le même résultat."""
-        for truth, pred in [("01.3", "01.3"), ("01.1.1.3", "01.1.1"), ("01.1.1.3", "02.1")]:
-            assert level_result(truth, pred, 4, inclusive=True) == level_result(
-                truth, pred, 5, inclusive=True
-            )
+    def test_level_5_is_structurally_empty_on_canonical_truth(self):
+        """Les codes canoniques ont au plus 4 segments : aucune ligne n'est
+        évaluable au niveau 5. C'est ce qui justifie STRICT_LEVELS =
+        CANONICAL_LEVELS dans le rapport."""
+        for truth in ["01.3", "01.1.1.3"]:
+            assert level_result(truth, truth, 5) is None
+
+    def test_deeper_prediction_is_not_scored_when_the_truth_is_shallow(self):
+        """Perte assumée du passage à la convention unique : dans l'espace pruné
+        `01.3.0.1` désigne un code qui n'existe pas si la vérité canonique est
+        `01.3`, mais la ligne n'est simplement pas comptée au niveau 4."""
+        assert level_result("01.3", "01.3.0.1", 4) is None
+        assert level_result("01.3", "01.3.0.1", 2) is True
+
+    def test_a_correct_row_is_always_an_answered_row(self):
+        """Le lemme sur lequel repose l'identité de `coverage_table` : toute
+        forme d'abstention compte moins de k segments, donc est une erreur —
+        jamais une exclusion."""
+        for sentinel in [None, "", "   ", "N/A", "none", "-"]:
+            for k in CANONICAL_LEVELS:
+                assert level_result("01.1.1.3", sentinel, k) is not True
 
 
 class TestDenominators:
@@ -96,29 +96,20 @@ class TestDenominators:
         _, n4, _ = accuracy(df[TRUTH_COL_CANONICAL], df["llm_code"], 4)
         assert n2 == 4 and n4 == 2
 
-    def test_inclusive_denominator_is_constant(self):
+    def test_shallow_rows_leave_the_denominator(self):
         df = self._frame()
-        counts = {
-            k: accuracy(df[TRUTH_COL_CANONICAL], df["llm_code"], k, inclusive=True)[1]
-            for k in CANONICAL_LEVELS
-        }
-        assert set(counts.values()) == {4}, counts
-
-    def test_inclusive_accuracy_counts_shallow_rows(self):
-        df = self._frame()
-        # niveau 4 : 01.3→01.3 juste, 01.3→01.4 faux, 01.1.1.3→01.1.1.3 juste,
-        # 01.1.1.3→01.1.1 faux  =>  2/4
-        n_ok, n_all, acc = accuracy(
-            df[TRUTH_COL_CANONICAL], df["llm_code"], 4, inclusive=True
-        )
-        assert (n_ok, n_all) == (2, 4)
-        assert acc == 0.5
+        # Niveau 4 : seules les deux lignes 01.1.1.3 sont évaluables. L'une est
+        # juste, l'autre trop courte (01.1.1) => 1/2. Les deux lignes 01.3
+        # (profondeur 2) sortent du dénominateur au lieu d'y entrer comme
+        # erreurs.
+        assert accuracy(df[TRUTH_COL_CANONICAL], df["llm_code"], 4) == (1, 2, 0.5)
 
 
 class TestTables:
     def test_accuracy_table_uses_canonical_truth(self):
-        """Une prédiction canonique correcte face à une annotation brute de
-        niveau 5 ne doit pas être comptée fausse."""
+        """Scorer contre l'annotation brute compterait fausse une prédiction
+        canonique correcte. La vérité canonique `01.3` n'est pas évaluable au
+        niveau 3 ; la brute `01.3.0.0.1` l'est, et y juge `01.3` fausse."""
         df = pd.DataFrame(
             {
                 TRUTH_COL_RAW: ["01.3.0.0.1"],
@@ -126,14 +117,9 @@ class TestTables:
                 "llm_code": ["01.3"],
             }
         )
-        tbl = accuracy_table(df, inclusive=True)
-        assert tbl.loc["LLM", "niv4"] == 1.0
-
-    def test_inclusive_table_stops_at_level_4(self):
-        df = pd.DataFrame({TRUTH_COL_CANONICAL: ["01.3"], "llm_code": ["01.3"]})
-        assert list(accuracy_table(df, inclusive=True).columns) == [
-            f"niv{k}" for k in CANONICAL_LEVELS
-        ]
+        assert list(accuracy_table(df, levels=[3]).columns) == ["niv3 (n=0)"]
+        legacy = accuracy_table(df.drop(columns=[TRUTH_COL_CANONICAL]), levels=[3])
+        assert legacy.loc["LLM", "niv3 (n=1)"] == 0.0
 
     def test_strict_table_reports_per_level_counts(self):
         df = pd.DataFrame({TRUTH_COL_CANONICAL: ["01.3"], "llm_code": ["01.3"]})
@@ -155,19 +141,28 @@ class TestAbstention:
 
     @staticmethod
     def _frame():
-        """Quatre observations : deux codes justes, un code faux, une abstention."""
+        """Quatre observations évaluables au niveau 4 : deux codes justes, un code
+        faux, une abstention.
+
+        Les quatre vérités atteignent la profondeur 4 délibérément : une vérité
+        plus courte ferait sortir la ligne d'abstention du dénominateur avant
+        qu'on ait pu l'observer, et le tableau ne mesurerait plus rien.
+        """
         return pd.DataFrame(
             {
-                TRUTH_COL_CANONICAL: ["01.3", "01.1.1.3", "02.1.1.1", "03.2"],
-                "llm_code": ["01.3", "01.1.1.3", "02.1.1.9", None],
+                TRUTH_COL_CANONICAL: ["01.3.1.1", "01.1.1.3", "02.1.1.1", "03.2.1.1"],
+                "llm_code": ["01.3.1.1", "01.1.1.3", "02.1.1.9", None],
             }
         )
 
     def test_global_accuracy_factorises_into_coverage_times_answered(self):
-        """C'est l'identité qui justifie le tableau : sous la convention inclusive,
-        une abstention est une erreur, donc globale = couverture × sur réponses."""
+        """L'identité qui justifie le tableau : une abstention est une erreur
+        (aucun code ne fait 4 segments), donc globale = couverture × sur
+        réponses — à condition que les trois grandeurs partagent le dénominateur
+        des lignes évaluables."""
         tbl = coverage_table(self._frame(), 4)
         row = tbl.loc["LLM"]
+        assert row["n évaluable niv4"] == 4
         assert row["couverture"] == 0.75
         assert row["abstentions"] == 1
         assert row["accuracy niv4 sur réponses"] == 2 / 3
@@ -184,12 +179,18 @@ class TestAbstention:
         tbl = coverage_table(df, 4)
         assert tbl.loc["LLM", "couverture"] == 0.75
         assert tbl.loc["LLM", "accuracy niv4 sur réponses"] == 2 / 3
+        # La sentinelle reste une ERREUR dans le chiffre global, et non une
+        # exclusion : c'est ce qui rend l'identité exacte.
+        assert tbl.loc["LLM", "accuracy niv4 globale"] == 0.5
 
     def test_declared_flag_is_crossed_with_the_emitted_code(self):
+        # Vérité de profondeur 4 : avec une vérité plus courte la colonne
+        # accuracy serait entièrement vide et le test n'exercerait plus qu'un
+        # comptage.
         df = pd.DataFrame(
             {
-                TRUTH_COL_CANONICAL: ["01.3", "01.3", "01.3", "01.3"],
-                "ragann_code": ["01.3", None, "01.3", None],
+                TRUTH_COL_CANONICAL: ["01.3.1.1"] * 4,
+                "ragann_code": ["01.3.1.1", None, "01.3.1.1", None],
                 "ragann_codable": [True, True, False, False],
             }
         )
@@ -202,10 +203,64 @@ class TestAbstention:
             & (tbl["sortie"] == "code émis")
         ]
         assert int(contradiction["n"].iloc[0]) == 1
+        # `n` compte la cellule, `n évaluable` le dénominateur de l'accuracy.
+        emitted = tbl[
+            (tbl["drapeau"] == "ragann_codable = codable") & (tbl["sortie"] == "code émis")
+        ]
+        assert int(emitted["n évaluable niv4"].iloc[0]) == 1
+        assert float(emitted["accuracy niv4"].iloc[0]) == 1.0
 
     def test_no_flag_column_yields_none(self):
         df = pd.DataFrame({TRUTH_COL_CANONICAL: ["01.3"], "llm_code": ["01.3"]})
         assert declared_refusal_table(df) is None
+
+
+class TestCoverageDecomposition:
+    """Le dénominateur partagé de `coverage_table`.
+
+    Ces tests existent parce que l'erreur est silencieuse : rapporter la
+    couverture à `len(data)` plutôt qu'aux lignes évaluables laisse le tableau
+    se rendre normalement, avec un produit qui ne retombe plus sur l'accuracy
+    globale.
+    """
+
+    def test_identity_holds_at_every_level(self):
+        df = TestAbstention._frame()
+        for k in CANONICAL_LEVELS:
+            row = coverage_table(df, k).loc["LLM"]
+            if not row["couverture"]:
+                continue
+            assert row[f"accuracy niv{k} globale"] == pytest.approx(
+                row["couverture"] * row[f"accuracy niv{k} sur réponses"]
+            ), k
+
+    def test_shallow_truth_takes_its_abstention_with_it(self):
+        """Le piège : une abstention sur une ligne dont la vérité est trop peu
+        profonde n'est pas comptée dans les abstentions au niveau k. La
+        couverture affichée est donc celle du sous-ensemble évaluable, et non
+        celle du fichier."""
+        df = pd.DataFrame(
+            {
+                TRUTH_COL_CANONICAL: ["01.1.1.3", "03.2"],
+                "llm_code": ["01.1.1.3", None],
+            }
+        )
+        row = coverage_table(df, 4).loc["LLM"]
+        assert row["n évaluable niv4"] == 1
+        assert row["abstentions"] == 0
+        assert row["couverture"] == 1.0
+
+    def test_accuracy_series_keeps_the_unscorable_rows_apart(self):
+        """`accuracy_series` renvoie None, pas False, sur une ligne non
+        évaluable. Un appelant qui écrit `serie == True` écrase ces None en
+        False et compte comme fausses des lignes qui ne sont pas mesurables :
+        c'est exactement ce que `coverage_table` évite en filtrant d'abord."""
+        res = accuracy_series(
+            pd.Series(["01.1.1.3", "03.2"]), pd.Series(["01.1.1.3", "03.2"]), 4
+        )
+        assert list(res) == [True, None]
+        assert list(res == True) == [True, False]  # noqa: E712
+        assert list(res[res.notna()] == True) == [True]  # noqa: E712
 
 
 class TestRegimes:
@@ -213,12 +268,23 @@ class TestRegimes:
     def _frame():
         """Deux consensus (le juge reprend TTC top-1, juste dans les deux cas) et
         trois arbitrages : le juge casse deux bons codes TTC et en répare un.
-        TTC arbitré = 2/3, LLM arbitré = 1/3, LLM d'ensemble = 3/5."""
+        TTC arbitré = 2/3, LLM arbitré = 1/3, LLM d'ensemble = 3/5.
+
+        Les cinq vérités atteignent la profondeur 4 : sous la convention stricte
+        une vérité plus courte sortirait du dénominateur au niveau 4 et les
+        effectifs annoncés ci-dessus ne tiendraient plus.
+        """
         return pd.DataFrame(
             {
-                TRUTH_COL_CANONICAL: ["01.3", "01.1.1.3", "02.1.1.1", "03.2", "04.1.1.1"],
-                "ttc_code_1": ["01.3", "01.1.1.3", "02.1.1.1", "03.2", "04.1.1.9"],
-                "llm_code": ["01.3", "01.1.1.3", "02.1.1.9", "03.9", "04.1.1.1"],
+                TRUTH_COL_CANONICAL: [
+                    "01.3.1.1", "01.1.1.3", "02.1.1.1", "03.2.1.1", "04.1.1.1",
+                ],
+                "ttc_code_1": [
+                    "01.3.1.1", "01.1.1.3", "02.1.1.1", "03.2.1.1", "04.1.1.9",
+                ],
+                "llm_code": [
+                    "01.3.1.1", "01.1.1.3", "02.1.1.9", "03.9.1.1", "04.1.1.1",
+                ],
                 REGIME_COL: [
                     CONSENSUS_LABEL,
                     CONSENSUS_LABEL,

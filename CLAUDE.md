@@ -129,7 +129,64 @@ supports pandas 3, `uv lock --upgrade-package pandas` moves the whole repo at on
 No package index is configured in the repo — uv resolves against PyPI directly. Python ≥ 3.13
 required everywhere (`.python-version` at the root).
 
-Inter-module data exchange goes through S3 (parquet files). The path convention is `s3://<bucket>/<run_id>/<run_date>/<step_name>/`.
+### Chemins S3 : `contracts.yaml`, jamais une f-string
+
+Les échanges entre étapes sont des Parquet sur S3, et **aucune étape ne construit le chemin d'une
+autre** : elle le demande au registre `contracts.yaml` (racine), qui déclare pour chaque étape ses
+`inputs` (par référence `étape.clé`) et ses `outputs`.
+
+```python
+from codif_common.contracts import artifact
+artifact("prune-codes", "mapping_lvl4", run_date=..., run_id=...)
+# → s3://projet-budget-famille/data/workflow_runs/2026-09-03/codif-abc/prune-codes/mapping_lvl4.parquet
+```
+
+`run_root` vaut `data/workflow_runs/{run_date}/{run_id}` — **date puis run_id**. Une étape ou une clé
+inconnue lève un `KeyError` explicite au lieu de produire une URI plausible que personne n'a jamais
+écrite. Le registre est en YAML et non en Python parce que `classify-lcs` est en R et lit le même
+fichier : `{run_date}` est compris tel quel par `str.format()` comme par `glue::glue()`. Surcharges
+d'environnement : `$COICOP_BUCKET`, `$COICOP_CONTRACTS`.
+
+Conséquence pratique : ajouter ou renommer un artefact se fait dans `contracts.yaml`, pas chez les
+appelants. `common/tests/test_contracts.py` vérifie que toute entrée déclarée désigne bien une sortie
+déclarée. Avant ce registre, renommer une étape avait demandé 162 modifications dans 29 fichiers.
+
+## Checks and Tests
+
+Four mechanical checks, under a minute, no cluster — exactly what the CI runs
+(`.github/workflows/checks.yml`). Run them before pushing:
+
+```bash
+uv lock --check                                          # lock still matches every pyproject.toml
+uv run --with ruff ruff check .                          # name used without being imported (F82)
+uv run --with pyyaml python scripts/check_pipeline.py .  # Argo params / templates / dependencies
+argo lint --offline argo/codif-pipeline.yaml             # Argo schema itself
+```
+
+Deliberately **not** a full CI: no formatting, no doc rendering, and no test run — none of the three
+outages that motivated it would have been caught by those. Ruff is scoped to `E9,F63,F7,F82` in the
+root `pyproject.toml`, and `rag-notices/scripts/eval.py` is its only excluded file. `argo lint` skips
+`argo/ttc-pipeline.yaml`, which the schema rejects — it is not submittable as it stands. Both
+exclusions are to be removed one day, never extended.
+
+Tests live per module and **must be run from the module directory** (they import `src.…`):
+
+```bash
+cd <module>/ && uv run --group dev pytest tests -q
+cd <module>/ && uv run --group dev pytest tests/test_scorer_golden.py::test_name -q   # a single test
+```
+
+Modules carrying tests: `common`, `prune-codes`, `evaluate`, `reconcile-sirus` (including the
+bit-exact golden proving the Python scorer ≡ `sirus.predict`), `classify-ttc`, `rag-notices`.
+
+**One shared `.venv` for the whole workspace**: `uv sync` from a module directory installs that
+module's dependencies *and prunes the other modules'*. Switching modules therefore means re-syncing —
+`classify-ttc`'s tests need `torchTextClassifiers`, which is absent unless `classify-ttc` is the
+module currently synced. Known broken: `rag-notices/tests/test_llms.py` (fixture `client` never
+defined anywhere).
+
+Documentation site: `quarto render docs` — published to GitHub Pages from `main` by
+`publish-website.yml`. The `.qmd` pages hold no executable chunk, so no Python/R setup is involved.
 
 ## Module Architecture Notes
 
@@ -167,6 +224,8 @@ Il y avait ici un segment de périmètre (`__full__` / `__train__`) et une optio
 Elle lit **trois** artefacts, et pas seulement le parquet de conciliation : celui-ci ignore les lignes captées par la regex (elles n'entrent jamais dans la chaîne) et a perdu les codes récupérés par les RAG (retirés à la fusion). Donc : conciliation + `classify-rag-notices/retrieved_codes.parquet` et `classify-rag-annotations/predictions.parquet` (recall de retrieval) + le livrable d'`export-results` (**l'accuracy de bout en bout, regex comprise — le chiffre métier**). Rend `evaluation_report.qmd` (ex-`report/report.qmd`) sur S3 et logue dans MLflow. `main.py`.
 
 Elle **échoue** si `code_lvl4` est absent au lieu de se rabattre sur `code`. Cette colonne canonique naît en un seul endroit, `reconcile-llm`, et seulement si `--mapping-file` lui est passé ; comparer des prédictions canoniques à une vérité brute compte comme fausses des prédictions justes sur près d'un quart des postes. Repli acceptable dans un rapport qui ne mesure rien, pas quand on a demandé une évaluation.
+
+**`common/`** — Socle partagé, paquet importable **`codif_common`** (pas `common` : trop générique dans le site-packages du consommateur). **Ne dépend d'aucun autre membre du workspace et ne doit jamais en dépendre** — c'est ce qui rend tout cycle impossible, donc tous les autres peuvent en dépendre librement. Regroupe ce qui existait en 2 à 5 copies recopiées, donc vouées à diverger sans que personne ne le voie : `paths.expand_paths`, `codes.truncate_code`/`get_parents`, `s3` (connexions DuckDB), `vector_index` (nommage, manifeste et validation des collections Qdrant), `contracts` (le registre ci-dessus), `schema.require_columns`/`declare_output` (contrôles de frontière), `metrics` (accuracy par niveau, couverture, régimes — lu par `report/` **et** `evaluate/`). Deux des quatre dialectes de connexion S3 en sont délibérément absents : les unifier changerait l'authentification effective, ce qui ne se vérifie pas hors du cluster. Voir `common/README.md`.
 
 **`classify-lcs/`** — R scripts only; entry point is `R/main.R`.
 

@@ -67,6 +67,15 @@ def parse_args() -> argparse.Namespace:
             "restreint jamais le périmètre : c'est une dimension d'analyse."
         ),
     )
+    p.add_argument(
+        "--classify-ttc-model-uri", default=None,
+        help=(
+            "URI MLflow du modèle TTC. Sert uniquement à la traçabilité : l'étape "
+            "`classify-ttc` du pipeline n'ouvre aucun run MLflow (elle ne fait "
+            "qu'inférer), mais l'URI de son modèle porte l'expérience et le run de "
+            "son ENTRAÎNEMENT, seul endroit où la brique est traçable."
+        ),
+    )
     p.add_argument("--experiment-name", default="codif-coicop-eval")
     p.add_argument("--step-timings", default="")
     return p.parse_args()
@@ -171,20 +180,30 @@ def log_to_mlflow(args, df, scorable, truth_col, output_s3, internal=None) -> No
                 n_ok, n_app, acc = accuracy(truth, scorable[col], k)
                 if n_app:
                     mlflow.log_metric(f"accuracy_{slug}_niv{k}", acc)
-            # Convention inclusive : toute observation compte à tout niveau.
-            for k in CANONICAL_LEVELS:
-                _, n_all, acc_all = accuracy(truth, scorable[col], k, inclusive=True)
-                if n_all:
-                    mlflow.log_metric(f"accuracy_all_{slug}_niv{k}", acc_all)
+                # Le dénominateur change d'un niveau à l'autre : sans lui, deux
+                # runs dont les annotations n'ont pas la même profondeur
+                # semblent comparables alors qu'ils ne le sont pas.
+                mlflow.log_metric(f"n_evaluable_{slug}_niv{k}", n_app)
 
         # Couverture contre accuracy-sur-réponses : l'accuracy globale compte un
         # refus de coder comme une erreur, ce qui masque si une méthode se trompe
         # ou se tait.
+        #
+        # Les trois grandeurs sont désormais rapportées aux lignes évaluables au
+        # niveau REGIME_LEVEL, et non plus à tout le scorable : c'est ce qui rend
+        # la décomposition exacte. Le dénominateur ayant changé, les métriques
+        # changent de nom — les tracer sous `coverage_<méthode>` mettrait deux
+        # définitions incompatibles sur une même série MLflow.
         cov = coverage_table(scorable, REGIME_LEVEL)
         for name in cov.index:
             slug = name.lower()
-            mlflow.log_metric(f"coverage_{slug}", float(cov.loc[name, "couverture"]))
-            mlflow.log_metric(f"abstention_{slug}_count", int(cov.loc[name, "abstentions"]))
+            mlflow.log_metric(
+                f"coverage_niv{REGIME_LEVEL}_{slug}", float(cov.loc[name, "couverture"])
+            )
+            mlflow.log_metric(
+                f"abstention_niv{REGIME_LEVEL}_{slug}_count",
+                int(cov.loc[name, "abstentions"]),
+            )
             acc_ans = cov.loc[name, f"accuracy niv{REGIME_LEVEL} sur réponses"]
             if pd.notna(acc_ans):
                 mlflow.log_metric(f"accuracy_answered_{slug}_niv{REGIME_LEVEL}", float(acc_ans))
@@ -202,12 +221,10 @@ def log_to_mlflow(args, df, scorable, truth_col, output_s3, internal=None) -> No
                 for name, col in METHODS:
                     if col not in sub.columns:
                         continue
-                    _, n_sub, acc_sub = accuracy(
-                        sub[truth_col], sub[col], REGIME_LEVEL, inclusive=True
-                    )
+                    _, n_sub, acc_sub = accuracy(sub[truth_col], sub[col], REGIME_LEVEL)
                     if n_sub:
                         mlflow.log_metric(
-                            f"accuracy_all_{name.lower()}_niv{REGIME_LEVEL}_{suffix}", acc_sub
+                            f"accuracy_{name.lower()}_niv{REGIME_LEVEL}_{suffix}", acc_sub
                         )
             mlflow.log_metric("consensus_share", float(masks[0][2].mean()))
 
@@ -287,6 +304,7 @@ def main() -> int:
         "EVAL_RUN_ID": args.run_id,
         "EVAL_RUN_DATE": args.run_date,
         "EVAL_SOURCE_COLUMN": args.source_column or "",
+        "EVAL_TTC_MODEL_URI": args.classify_ttc_model_uri or "",
         "AWS_S3_ENDPOINT": resolve_endpoint(),
     }
     if args.input_file:

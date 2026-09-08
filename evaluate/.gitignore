@@ -1,0 +1,5 @@
+# Rendu local du gabarit (cf. docs/11-evaluate.qmd) et sous-produits Quarto.
+# `main.py` écrit ce HTML ici avant de le déposer sur S3 : il ne se versionne pas.
+evaluation_report.html
+evaluation_report_files/
+.quarto/

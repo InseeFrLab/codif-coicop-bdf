@@ -447,6 +447,11 @@ spec:
                   value: "{{workflow.parameters.eval-source-column}}"
                 - name: eval-experiment
                   value: "{{inputs.parameters.eval-experiment}}"
+                # Le rapport en tire le lien vers le run MLflow d'ENTRAÎNEMENT de
+                # TTC : l'URI porte l'expérience et le run. L'étape `classify-ttc`
+                # du pipeline n'ouvre aucun run, elle ne fait qu'inférer.
+                - name: classify-ttc-model-uri
+                  value: "{{workflow.parameters.classify-ttc-model-uri}}"
 
     - name: build-datasets
       inputs:
@@ -1435,6 +1440,7 @@ spec:
           - name: reconciliation
           - name: eval-source-column
           - name: eval-experiment
+          - name: classify-ttc-model-uri
       retryStrategy:          # cf. « Reprise sur échec » en tête de fichier
         limit: "2"
         retryPolicy: OnFailure
@@ -1459,6 +1465,8 @@ spec:
 
             # Vide => la ventilation par provenance est omise du rapport.
             [ -n "{{inputs.parameters.eval-source-column}}" ] && ARGS="$ARGS --source-column {{inputs.parameters.eval-source-column}}"
+            # Vide => le rapport n'affiche pas de lien vers le run d'entraînement TTC.
+            [ -n "{{inputs.parameters.classify-ttc-model-uri}}" ] && ARGS="$ARGS --classify-ttc-model-uri {{inputs.parameters.classify-ttc-model-uri}}"
 
             uv run --locked --no-dev main.py $ARGS
         env:
@@ -1502,6 +1510,24 @@ spec:
               secretKeyRef:
                 name: secret-codif-coicop-bdf
                 key: AWS_ENDPOINT_URL
+          # Langfuse : uniquement pour construire les liens vers les templates
+          # de prompts des deux étapes RAG. Le rapport n'appelle aucun modèle ;
+          # sans ces clés il affiche le nom et la version du prompt, sans lien.
+          - name: LANGFUSE_BASE_URL
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: LANGFUSE_BASE_URL
+          - name: LANGFUSE_PUBLIC_KEY
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: LANGFUSE_PUBLIC_KEY
+          - name: LANGFUSE_SECRET_KEY
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: LANGFUSE_SECRET_KEY
         resources:
           requests:
             memory: 2Gi

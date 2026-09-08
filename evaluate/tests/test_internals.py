@@ -202,3 +202,126 @@ class TestFlattenInternal:
         recs = I.build_records(frame(["01.1"] * 5, ["01.1"] * 5), "code_lvl4", "rag_code")
         flat = I.flatten_internal({"RAG-annot": recs})
         assert any(k.startswith("regime/rag_annot/") for k in flat)
+
+
+class TestResponseFlags:
+    def test_a_brick_without_a_codable_flag_is_recognised(self):
+        """TTC et LCS n'ont pas de notion de codabilité : `build_records` leur
+        pose `codable = None`. Le rapport s'en servait via une heuristique
+        fausse (« tous les régimes ont le même effectif »), qui ne se
+        déclenchait jamais — les régimes sont vides, pas identiques."""
+        recs = I.build_records(frame(["01.1.1.1"], ["01.1.1.1"]), "code_lvl4", "rag_code")
+        assert I.has_response_flags(recs) is False
+
+    def test_a_brick_carrying_the_flag_is_recognised(self):
+        flags = pd.DataFrame({"id": [0], "parsed": [True], "codable": [True]})
+        recs = I.build_records(
+            frame(["01.1.1.1"], ["01.1.1.1"]), "code_lvl4", "rag_code", flags=flags
+        )
+        assert I.has_response_flags(recs) is True
+
+    def test_the_empty_regimes_are_what_the_old_guard_missed(self):
+        """La preuve du défaut : sans drapeau, la colonne `n` vaut [N, N, 0, 0, 0]
+        — deux valeurs distinctes, donc `nunique() == 1` était toujours faux."""
+        recs = I.build_records(frame(["01.1.1.1"] * 5, ["01.1.1.1"] * 5),
+                               "code_lvl4", "rag_code")
+        counts = list(I.regime_table(I.hierarchical(recs))["n"])
+        assert counts == [5, 5, 0, 0, 0]
+        assert len(set(counts)) == 2
+
+    def test_recall_is_empty_not_zero_without_a_retriever(self):
+        """0 % se lirait « le retriever ne ramène rien » pour une brique qui n'a
+        pas de retriever."""
+        recs = I.build_records(frame(["01.1.1.1"] * 3, ["01.1.1.1"] * 3),
+                               "code_lvl4", "rag_code")
+        tbl = I.regime_table(I.hierarchical(recs), has_retrieval=False)
+        assert tbl[f"recall niv{I.TARGET_LEVEL}"].isna().all()
+
+
+class TestRetrievalSize:
+    def test_reports_the_observed_range(self):
+        """Mesurée sur les données du run, jamais lue dans `retrieval.size` des
+        configs : c'est la valeur qui a servi à ce run-là qui compte."""
+        retrieved = pd.DataFrame({"id": [0, 1], "0": ["01.1", "02.1"], "1": ["01.2", None]})
+        recs = I.build_records(
+            frame(["01.1.1.1", "02.1.1.1"], ["01.1.1.1", "02.1.1.1"]),
+            "code_lvl4", "rag_code", retrieved=I.widen_retrieved(retrieved),
+        )
+        assert I.retrieval_size(recs) == (1, 2)
+
+    def test_none_without_any_retrieval(self):
+        recs = I.build_records(frame(["01.1.1.1"], ["01.1.1.1"]), "code_lvl4", "rag_code")
+        assert I.retrieval_size(recs) is None
+
+
+class TestEndToEnd:
+    """Périmètre du chiffre métier.
+
+    Le défaut corrigé ici : `export-results` construit le livrable sur toutes les
+    observations, alors que l'échantillonnage a lieu en aval à `classify-regex`.
+    Sur un run de 100 produits le tableau annonçait ~16 000 observations, avec
+    une accuracy diluée par les lignes jamais codées — et se présentait comme
+    « le chiffre métier ».
+    """
+
+    @staticmethod
+    def _paths(monkeypatch, deliverable, observations):
+        mapping = pd.DataFrame({"code": [], "code_parent_equivalent": []})
+        frames = {"d": deliverable, "o": observations, "m": mapping}
+        monkeypatch.setattr(I, "_read", lambda con, path: frames[path])
+        return I.end_to_end(None, "d", "o", "m")
+
+    @staticmethod
+    def _deliverable():
+        """Quatre lignes livrées, deux seulement décidées par ce run — la forme
+        exacte d'un run échantillonné."""
+        return pd.DataFrame(
+            {
+                "id": [1, 2, 3, 4],
+                "predicted_code": ["01.1.1.1", "02.1.1.1", None, None],
+                "prediction_source": ["regex", "llm", None, None],
+            }
+        )
+
+    @staticmethod
+    def _observations():
+        return pd.DataFrame(
+            {
+                "id": [1, 2, 3, 4],
+                "code": ["01.1.1.1", "02.1.1.9", "03.1.1.1", "04.1.1.1"],
+            }
+        )
+
+    def test_uncodified_rows_leave_the_denominator(self, monkeypatch):
+        out = self._paths(monkeypatch, self._deliverable(), self._observations())
+        assert out["n_deliverable"] == 4
+        assert out["n_decided"] == 2
+        assert out["levels"].loc[4, "n évaluable"] == 2
+
+    def test_regex_contribution_is_isolated(self, monkeypatch):
+        """La demande « impact de l'étape regex » : la regex code juste,
+        la conciliation se trompe, donc retirer la regex fait chuter le chiffre."""
+        out = self._paths(monkeypatch, self._deliverable(), self._observations())
+        row = out["levels"].loc[4]
+        assert row["accuracy livrée"] == 0.5
+        assert row["n hors regex"] == 1
+        assert row["accuracy hors regex"] == 0.0
+        assert row["apport regex"] == 0.5
+
+    def test_breakdown_by_source(self, monkeypatch):
+        out = self._paths(monkeypatch, self._deliverable(), self._observations())
+        by_source = out["by_source"]
+        assert set(by_source.index) == {"regex", "llm"}
+        assert by_source.loc["regex", f"accuracy niv{I.TARGET_LEVEL}"] == 1.0
+        assert by_source.loc["llm", f"accuracy niv{I.TARGET_LEVEL}"] == 0.0
+        assert by_source["n livré"].sum() == out["n_scored"]
+
+    def test_legacy_deliverable_without_the_source_column(self, monkeypatch):
+        """Runs antérieurs à `prediction_source` : on retombe sur « décidée =
+        porte un code », sans ventilation."""
+        deliverable = self._deliverable().drop(columns=["prediction_source"])
+        out = self._paths(monkeypatch, deliverable, self._observations())
+        assert out["has_source"] is False
+        assert out["by_source"] is None
+        assert out["n_decided"] == 2
+        assert "apport regex" not in out["levels"].columns

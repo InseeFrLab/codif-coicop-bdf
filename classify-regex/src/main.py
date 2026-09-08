@@ -1,7 +1,6 @@
 import argparse
 import os
 import s3fs
-import pandas as pd
 
 from utils.load_config import load_config, expand_paths
 from utils.logging import setup_logging
@@ -81,7 +80,9 @@ def main():
     # -----------------------------------------------------------------------
 
     # Apply rules on KB raws
-    kb_data_regex_predicted, kb_data_without_regex = apply_regex(kb_data, rules, logger)
+    # La moitié gauche n'est plus exportée (cf. `regex_predicted` plus bas) ; la
+    # droite l'est, la KB élaguée sert à l'indexation en aval.
+    _kb_regex_hits, kb_data_without_regex = apply_regex(kb_data, rules, logger)
 
     # Apply rules on observations raws
     observations_regex_predicted, observations_without_regex = apply_regex(observations, rules, logger)
@@ -95,14 +96,33 @@ def main():
         )
         logger.info(f"Échantillon observations : {len(observations_without_regex)} libellés (seed=42)")
 
-    # Final dataframe with regex predictions
-    regex_predicted = pd.concat([kb_data_regex_predicted, observations_regex_predicted])
+    # Prédictions regex exportées : les observations à coder, et elles seules.
+    #
+    # Ce fichier concaténait aussi `kb_data_regex_predicted`, les correspondances
+    # trouvées sur la base de connaissance annotée — ~16 000 lignes historiques
+    # qui n'ont rien à faire dans la sortie d'un run de codification. C'est le
+    # mélange que signale le commentaire des métriques plus bas : elles se
+    # calculaient dessus et « ne mesuraient rien d'interprétable ». Les métriques
+    # sont parties dans `evaluate`, l'artefact mélangé était resté.
+    #
+    # La correction est sans effet de bord : les identifiants des deux
+    # populations sont des UUID tirés séparément par `build-datasets`, donc les
+    # lignes de KB ne se rattachaient jamais à un produit du livrable — elles ne
+    # faisaient que gonfler le fichier, la ligne de log d'`export-results`, et le
+    # dénominateur du tableau de bout en bout du rapport d'évaluation.
+    #
+    # `kb_data_without_regex`, lui, reste exporté : la KB en a besoin en aval.
+    regex_predicted = observations_regex_predicted
 
     # -----------------------------------------------------------------------
     # METRICS
     # -----------------------------------------------------------------------
 
     # contingence table
+    logger.info(
+        f"Observations captées par la regex : {len(regex_predicted)} "
+        f"sur {len(observations)}"
+    )
     logger.info("Nombre de libellés prédits selon leur code :")
     logger.info(regex_predicted["predict_code"].value_counts())
 
