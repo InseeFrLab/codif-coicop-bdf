@@ -25,7 +25,8 @@ mkdir -p "$ART"
 uv sync --locked
 Rscript R/install_deps.R
 
-# `rag-annotation` au SINGULIER, contrairement au nom de l'étape Argo.
+# Les chemins ci-dessous sont ceux déclarés dans `contracts.yaml` à la racine :
+# une étape renommée là-bas doit l'être ici aussi.
 uv run main.py build-table \
   --lcs-file "$ROOT/classify-lcs/raw_test_LCS.parquet" \
   --rag-file "$ROOT/classify-rag-notices/predictions.parquet" \

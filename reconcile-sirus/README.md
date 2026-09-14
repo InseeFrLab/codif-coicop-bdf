@@ -1,4 +1,4 @@
-# sirus — conciliation COICOP par règles interprétables
+# reconcile-sirus — conciliation COICOP par règles interprétables
 
 Alternative au juge LLM (`reconcile-llm/`) pour choisir le code COICOP final
 parmi les candidats des 4 classifieurs de base. Là où le juge produit une
@@ -22,7 +22,7 @@ sans relecture est une question métier, qui s'instruit sur la section
  └───────────────────────────────┬──────────────────────────────────────┘
                                  │  URI MLflow, à recopier dans params.yaml
                                  ▼
-  DANS LE PIPELINE — étape reconcile-sirus, quand `conciliation: sirus`
+  DANS LE PIPELINE — étape reconcile-sirus, quand `reconciliation: sirus`
   4 classifieurs ──→ reconcile-sirus (Python pur) ──→ reconcile-sirus/predictions.parquet
                           charge rules.json,              sirus_code, sirus_proba,
                           moyenne des règles              sirus_n_candidats
@@ -49,12 +49,33 @@ Le run désigné doit être un run terminé et **étiqueté** — soumis avec
 terrain. L'ajustement en a besoin.
 
 Réglages optionnels, par variables d'environnement (les défauts conviennent
-dans la quasi-totalité des cas) :
+dans la quasi-totalité des cas). Elles se placent **avant** le nom du script,
+sur la même ligne :
 
 ```bash
-NUM_RULE=20 MAX_DEPTH=2 SEED=42 EXPERIMENT=codif-coicop-sirus \
-  ./train.sh 2026-06-29/codif-vvkv9
+NUM_RULE=10 ./train.sh 2026-06-29/codif-vvkv9              # une seule
+NUM_RULE=10 MAX_DEPTH=3 SEED=7 ./train.sh 2026-06-29/codif-vvkv9   # combinées
 ```
+
+⚠️ **Ce ne sont pas des options.** `./train.sh <run> --NUM_RULE=10` ne produit
+aucune erreur et entraîne quand même — avec la valeur par défaut : le script ne
+lit que son premier argument, le reste part à la poubelle. Le symptôme est un
+« 20 règles retenues » alors qu'on en demandait 10, constaté après plusieurs
+minutes d'ajustement R et un run MLflow déjà écrit. Vérifier `num_rule_requested`
+dans MLflow lève le doute.
+
+| Variable | Défaut | Effet |
+|---|---|---|
+| `NUM_RULE` | `20` | Nombre de règles demandé à `sirus.fit`. **Le levier principal** : c'est lui qui arbitre entre lisibilité de la fiche métier et accuracy |
+| `MAX_DEPTH` | `2` | Nombre maximal de conditions par règle. À `2`, une règle reste lisible d'un coup d'œil ; au-delà, la relecture métier devient coûteuse |
+| `SEED` | `42` | Graine de l'ajustement. À changer uniquement pour vérifier qu'un résultat ne tient pas au tirage |
+| `EXPERIMENT` | `codif-coicop-sirus` | Expérience MLflow de destination |
+| `SIRUS_RUNS_ROOT` | `s3://projet-budget-famille/data/workflow_runs` | Racine S3 des runs, pour lire ailleurs que la production |
+
+`NUM_RULE` est un **plafond, pas une garantie** : le filtrage des dépendances
+linéaires peut en écarter, et le modèle livré en compte alors moins. C'est
+pourquoi MLflow logue `num_rule_requested` et `num_rule_selected` séparément —
+ne jamais supposer que le second vaut le premier.
 
 Le script vérifie une seule chose avant de travailler : que
 `MLFLOW_TRACKING_URI` soit définie. C'est le seul échec qui n'arriverait qu'au
@@ -98,7 +119,7 @@ n'applique aucun seuil).
 
 ```bash
 argo submit argo/codif-pipeline.yaml --parameter-file argo/params.yaml \
-  -p conciliation=sirus \
+  -p reconciliation=sirus \
   -p reconcile-sirus-model-uri=mlflow-artifacts:/12/9f3c.../artifacts/model
 ```
 
