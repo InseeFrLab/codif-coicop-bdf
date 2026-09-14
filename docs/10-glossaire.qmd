@@ -16,7 +16,11 @@ Les termes et colonnes qui reviennent dans toute la documentation, regroupés pa
 | **LCS** | *Longest Common Substring* — codification par plus longue sous-chaîne commune avec un pool de libellés déjà codés ([Codif LCS](03-classify-lcs.qmd)). |
 | **RAG** | *Retrieval-Augmented Generation* — recherche sémantique puis choix par un LLM. Deux branches : sur les **notices** de la nomenclature ([RAG COICOP](04-rag-notices.qmd)) et sur des **exemples déjà codifiés** ([RAG annotations](09-rag-annotations.qmd)). |
 | **TTC** | Classifieur neuronal de texte (package *torchTextClassifiers*), pré-entraîné sur des données de caisses ([TTC](05-classify-ttc.qmd)). |
-| **LLM-as-judge** | Arbitrage final : un LLM compare les prédictions des quatre classifieurs et tranche ([Decide](06-reconcile-llm.qmd)). |
+| **LLM-as-judge** | Arbitrage final : un LLM compare les prédictions des quatre classifieurs et tranche ([reconcile-llm](06-reconcile-llm.qmd)). |
+| **Conciliation** | Étape qui choisit le code final parmi les candidats des quatre classifieurs. Deux implémentations, **exclusives** : [`reconcile-llm`](06-reconcile-llm.qmd), un juge LLM, et [`reconcile-sirus`](06b-reconcile-sirus.qmd), une vingtaine de règles à seuils lisibles. |
+| **`reconciliation`** | Paramètre Argo qui choisit la conciliation : `llm` (défaut) ou `sirus`. L'autre étape est *Skipped*. Attention, il s'est appelé `conciliation` : Argo accepte une clé inconnue **sans rien dire**, donc une faute de frappe fait silencieusement tourner le défaut. |
+| **SIRUS** | *Stable and Interpretable RUle Set* — modèle de conciliation par règles. Entraîné **hors pipeline** (`reconcile-sirus/train.sh`), livré par `reconcile-sirus-model-uri` ([SIRUS](06b-reconcile-sirus.qmd)). |
+| **Run smoke** | Passe préalable du DAG complet sur 100 lignes, jouée automatiquement avant chaque run réel : si elle échoue, le vrai run ne démarre pas. `run_id` et espace MLflow distincts. Contournement : `skip-smoke` ([Généralités](00-generalites.qmd)). |
 | **Consensus** | Court-circuit de l'arbitrage : si tous les codes disponibles (`lcs_code`, `rag_code`, `ragann_code`) sont égaux à `ttc_code_1` et que `ttc_conf_1 ≥ 0,90`, la décision est prise **sans appel LLM** (`llm_model = "consensus"`, `llm_confiance = 5`). |
 | **Suggester** | Pool de libellés de référence **déjà codés à la main** (issu de la table COPAIN), auquel LCS compare les libellés à coder ; également indexé dans la base vectorielle des RAG annotations. |
 | **Troncature** | Réduction d'un code à ses 4 premiers segments (`01.1.1.3.2` → `01.1.1.3`) : le niveau 5 n'est jamais prédit ([Prune](prune-codes.qmd)). |
@@ -108,6 +112,8 @@ Tous ces codes sont **tronqués au niveau 4 et élagués** par `reconcile-llm` q
 | **MLflow** | Suivi des runs : expériences `test` (classify-rag-notices), `rag-annotation` (classify-rag-annotations) et `codif-coicop-eval` (report, avec `report.html` en artefact) ; héberge aussi le modèle TTC (`classify-ttc-model-uri`) et le modèle SIRUS (`reconcile-sirus-model-uri`). |
 | **DuckDB** | Lecture/écriture des parquet S3 dans les étapes Python et pour [inspecter un run](09-lancer-une-etape.qmd#déboguer-un-run). |
 | **uv** | Gestionnaire d'environnements Python : un **workspace** unique, un `pyproject.toml` par module et un seul `uv.lock` à la racine. |
+| **`contracts.yaml`** | Registre, à la racine du dépôt, des artefacts échangés entre étapes : `inputs` et `outputs` de chacune. Une étape ne construit plus le chemin d'une autre, elle le demande (`codif_common.contracts.artifact()`). En YAML parce que `classify-lcs` est en R et doit le lire aussi ([Généralités](00-generalites.qmd)). |
+| **`common/` (`codif_common`)** | Socle Python partagé, sans étape Argo : accès au registre (`contracts`), chemins (`paths`), manipulation de codes (`codes`), connexions S3 (`s3`), nommage des collections (`vector_index`), contrôles de frontière (`schema`), métriques (`metrics`), URLs MLflow (`tracking`). Il ne dépend d'aucun autre module du workspace — c'est ce qui rend tout cycle impossible. |
 
 ---
 

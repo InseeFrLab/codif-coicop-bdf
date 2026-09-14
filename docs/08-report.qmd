@@ -79,9 +79,14 @@ de bord : si `MLFLOW_TRACKING_URI` n'est pas défini, l'étape passe l'enregistr
 
 Sont enregistrés notamment :
 
-- **Paramètres** du pipeline pour rejouer/comparer un run : `run_id`, `run_date`,
-  `model_name` (LLM RAG), `decide_model`, `decide_concurrency`, **`ttc_model_uri`** (URI du
-  modèle utilisé par [`classify-ttc`](05-classify-ttc.qmd)), l'emplacement S3 de sortie, etc.
+- **Paramètres** du pipeline pour rejouer/comparer un run : `run_id`, `run_date`, `bucket`,
+  `sample_size`, `classify_rag_model` (LLM des RAG), `reconcile_llm_model`,
+  `reconcile_llm_concurrency`, **`classify_ttc_model_uri`** (URI du modèle utilisé par
+  [`classify-ttc`](05-classify-ttc.qmd)), les deux noms de collections Qdrant
+  (`classify_rag_notices_collection`, `classify_rag_annotations_collection`), `skip_report`,
+  l'emplacement S3 de sortie — et surtout **`reconciliation`** et
+  `reconcile_sirus_model_uri` : sans eux, deux runs aux métriques différentes seraient
+  indistinguables, puisqu'on ne saurait pas laquelle des deux conciliations a tranché.
 - **Tags** : commit et branche git.
 - **Métriques** : durées des étapes Argo, nombre d'observations, distribution des codes
   prédits par niveau. **Aucune accuracy** : elles sont loguées par

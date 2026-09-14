@@ -27,7 +27,8 @@ BUDGET_GROUP_COLUMNS = [
 ]
 
 # Sources considérées comme données BdF 2024 (le reste — dont 2017 et suggester —
-# part dans le lot « historique » et n'est donc pas inclus dans le split test).
+# part dans le lot « historique »). Les deux lots ne servent plus qu'à agréger le
+# budget séparément : ils sont concaténés juste après, cf. `build_annotations`.
 # NB : "copain" est conservé ici à titre de trace (source exclue du pipeline depuis
 # 2026-06, cf. load_data.py) ; n'étant plus chargée, elle matche 0 ligne.
 SOURCES_2024 = ["copain", "receipts_from_app", "manual_from_app", "manual_from_book"]
@@ -139,8 +140,8 @@ def normalize_products(
 
 # ---------------------------------------------------------------------------
 # Pipeline ANNOTATIONS — exécuté dans tous les cas.
-# Construit le dataset annoté consolidé (2024 + 2017 + suggester), le split
-# train/test, et le jeu complet.
+# Construit le dataset annoté consolidé (2024 + 2017 + suggester), qui sert
+# intégralement de base de connaissance. Il n'y a plus de split train/test.
 # ---------------------------------------------------------------------------
 def build_annotations(
     config,
@@ -208,8 +209,8 @@ def build_annotations(
     )
     logger.info("Fin des contrôles sur les données annotées")
 
-    # -- Agrégation budget + split train/test -------------------------------
-    logger.info("[4/4] Agrégation du budget et split train/test")
+    # -- Agrégation budget ---------------------------------------------------
+    logger.info("[4/4] Agrégation du budget")
 
     # Dédoublonnage et somme du budget : données 2024 d'un côté, historique de l'autre.
     annotations_with_budget_test = aggregate_budget(

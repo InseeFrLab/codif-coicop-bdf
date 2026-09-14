@@ -60,7 +60,7 @@ Construit le dataset d'annotations à partir des sources brutes (COPAIN, histori
 Encode les notices COICOP **prunées** dans une base vectorielle Qdrant.
 
 - Code dans [`rag-notices/`](./rag-notices/) (`scripts/0_create_vector_db.py`)
-- Lit `prune-codes/nomenclature_pruned.parquet` ; embeddings via VLLM, index Qdrant
+- Lit `prune-codes/nomenclature_pruned.parquet` ; embeddings via llm.lab (`LLMLAB_URL`), index Qdrant
 - Autonome : la nomenclature dérive d'un CSV statique, donc `prune-codes --only nomenclature` suffit — ni `build-datasets` ni `classify-regex`
 
 ### index-annotations *(workflow ② — hors pipeline de classification)*
@@ -94,7 +94,7 @@ Codification des libellés produits par approche LCS (Longest Common Subsequence
 Code le jeu à coder via un RAG sur les **notices** de la nomenclature COICOP.
 
 - Code dans [`rag-notices/`](./rag-notices/) (`scripts/2_run_rag.py`)
-- Récupère les notices proches depuis Qdrant, génère via VLLM (`VLLM_GENERATION_URL`)
+- Récupère les notices proches depuis Qdrant, génère via llm.lab (`LLMLAB_URL`)
 - Paramètres et compteurs MLflow (`MLFLOW_TRACKING_URI`), traces Langfuse (`LANGFUSE_BASE_URL`). Il ne calcule plus d'accuracy : c'est `evaluate` qui mesure
 
 ### classify-rag-annotations
@@ -197,7 +197,7 @@ appartiennent), mais tous sont membres d'un même **workspace `uv`**.
 
 ## Environnement Python
 
-Un `pyproject.toml` à la racine déclare les 10 modules Python comme membres d'un workspace, ce
+Un `pyproject.toml` à la racine déclare les 12 modules Python comme membres d'un workspace, ce
 qui donne **un seul `uv.lock`** pour tout le dépôt : une seule version de `pandas`, `duckdb`,
 `pyarrow`… partagée par toutes les étapes. C'est nécessaire parce que les étapes se passent des
 Parquet : avec un lock par module, `classify-regex` écrivait en pandas 3 ce que `classify-ttc` relisait
@@ -209,7 +209,7 @@ cd prune-codes/ && uv sync --locked
 uv run scripts/main.py --help
 
 # Ajouter une dépendance à un module, depuis n'importe où dans le dépôt
-uv add --package prune polars
+uv add --package prune-codes polars
 
 # Faire monter un paquet pour TOUT le dépôt (le lock est commun)
 uv lock --upgrade-package duckdb
@@ -233,15 +233,27 @@ Le secret Kubernetes `secret-codif-coicop-bdf` doit exister dans le namespace et
 ```
 AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN,
 AWS_S3_ENDPOINT, AWS_ENDPOINT_URL,
-VLLM_EMBEDDING_URL, VLLM_EMBEDDING_API_KEY,
-VLLM_GENERATION_URL, VLLM_GENERATION_API_KEY,
 QDRANT_URL, QDRANT_API_KEY, QDRANT_API_PORT,
 LANGFUSE_BASE_URL, LANGFUSE_PUBLIC_KEY, LANGFUSE_SECRET_KEY,
 MLFLOW_TRACKING_URI, MLFLOW_TRACKING_USERNAME, MLFLOW_TRACKING_PASSWORD,
-OLLAMA_URL, OLLAMA_API_KEY,
 DDC_ENCRYPTION_KEY,
-LLMLAB_API_KEY, LLMLAB_URL   # requis pour reconcile-llm (LLMLAB_URL optionnel)
+LLMLAB_API_KEY, LLMLAB_URL,
+OLLAMA_URL, OLLAMA_API_KEY
 ```
+
+Deux clés appellent un avertissement, parce qu'un `grep` ne les trouve pas et
+qu'on est tenté de les croire mortes :
+
+- **`LANGFUSE_*` n'apparaît dans aucun fichier Python** et reste pourtant
+  indispensable : `Langfuse()` est instancié **sans argument**
+  (`rag-notices/scripts/2_run_rag.py`), le SDK lit l'environnement de lui-même.
+  Les retirer du secret casserait le chargement des prompts, sans que rien dans
+  le code ne le laisse prévoir.
+- **`OLLAMA_*` n'est lu que par `rag-notices/tests/test_llms.py`**, jamais par
+  une étape du pipeline. Conservées pour que le test puisse tourner.
+
+`LLMLAB_URL` / `LLMLAB_API_KEY` servent à **l'embedding comme à la génération** :
+llm.lab expose les deux sur le même serveur.
 
 ### Avec la CLI Argo
 

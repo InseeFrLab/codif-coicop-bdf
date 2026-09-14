@@ -53,7 +53,7 @@ Each prints, at the end, the exact line to paste into `params.yaml`:
 
 ```
 classify-rag-notices-collection: coicop_notices__2026-09-02__index-notices-a7k2p
-classify-rag-annotations-collection: coicop_annotations__full__2026-09-02__index-annotations-b3x9q
+classify-rag-annotations-collection: coicop_annotations__2026-09-02__index-annotations-b3x9q
 ```
 
 They are reusable: rebuild them only when the nomenclature or the annotation base changes.

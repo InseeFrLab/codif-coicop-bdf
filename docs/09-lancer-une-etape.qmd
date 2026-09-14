@@ -303,7 +303,7 @@ uv run main.py reconcile-llm --id <uuid-de-la-ligne> --output json \
 ### 8bis. reconcile-sirus (depuis `reconcile-sirus/`)
 
 Alternative au juge LLM (cf. [8bis. SIRUS](06b-reconcile-sirus.qmd)) : ne tourne dans le pipeline que
-si `conciliation: sirus`. Python pur, aucun besoin de R.
+si `reconciliation: sirus`. Python pur, aucun besoin de R.
 
 ```bash
 cd reconcile-sirus && uv sync --locked

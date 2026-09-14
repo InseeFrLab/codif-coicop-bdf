@@ -16,7 +16,7 @@ Elle se compose de deux traitements, désormais répartis dans **deux workflows 
 | `index-notices` | `argo/index-notices-pipeline.yaml` | `rag-notices/scripts/0_create_vector_db.py` | encode la nomenclature prunée dans Qdrant |
 | `classify-rag-notices` | `argo/codif-pipeline.yaml` | `rag-notices/scripts/2_run_rag.py` | recherche vectorielle + génération LLM |
 
-- Code : [`rag-notices/`](https://github.com/InseeFrLab/codif-coicop-bdf/tree/main/coicop-rag) · config : `rag-notices/config/config.yaml`
+- Code : [`rag-notices/`](https://github.com/InseeFrLab/codif-coicop-bdf/tree/main/rag-notices) · config : `rag-notices/config/config.yaml`
 
 ## index-notices — un workflow autonome
 

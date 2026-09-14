@@ -10,7 +10,7 @@ les prédictions candidates — [LCS](03-classify-lcs.qmd), [RAG](04-rag-notices
 choisit le code COICOP final, soit automatiquement (consensus), soit en interrogeant un LLM
 qui pèse les indices.
 
-- Code : [`reconcile-llm/src/decide_coicop.py`](https://github.com/InseeFrLab/codif-coicop-bdf/blob/main/reconcile-llm/src/decide_coicop.py)
+- Code : [`reconcile-llm/src/reconcile_llm.py`](https://github.com/InseeFrLab/codif-coicop-bdf/blob/main/reconcile-llm/src/reconcile_llm.py)
   (module autonome `reconcile-llm/`)
 - Commande : sous-commande `reconcile-llm` de `reconcile-llm/main.py`
 

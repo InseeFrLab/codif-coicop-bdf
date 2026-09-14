@@ -23,7 +23,7 @@ L'évaluation, elle, est devenue une [étape finale facultative](11-evaluate.qmd
 sur les étiquettes du fichier d'entrée lui-même, quand il en porte.
 :::
 
-- Code : [`build-datasets/`](https://github.com/InseeFrLab/codif-coicop-bdf/tree/main/preprocessing) — entrée `build-datasets/main.py`
+- Code : [`build-datasets/`](https://github.com/InseeFrLab/codif-coicop-bdf/tree/main/build-datasets) — entrée `build-datasets/main.py`
 - Commande : `python main.py --run-id=<id> --run-date=YYYY-MM-DD --input-file=<s3> --text-column=NAT_DEP --shop-column=MAG_DEP --budget-column=MONT_DEP`
 - `--input-file` est **obligatoire**. Ajouter `--label-column=<colonne>` si le fichier porte
   une vérité terrain : elle est alors recopiée dans `code`, et le run devient évaluable.

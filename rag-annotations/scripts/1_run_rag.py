@@ -26,10 +26,6 @@ from openai import OpenAI
 from qdrant_client import QdrantClient
 from tqdm import tqdm
 
-# to remove
-# os.chdir("codif-coicop-bdf/coicop-rag-annotations")
-# import types
-# args = types.SimpleNamespace(config="config/config.yaml",run_id="pipeline-5jqsd", run_date="2026-06-03",sample_size=100,model_name=None, experiment_name=None,)
 
 from rag_annotations.eval import (
     detailed_evaluation,

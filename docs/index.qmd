@@ -72,7 +72,7 @@ flowchart LR
   PRU -- annotations_test_pruned.parquet --> RAG
   PRU -- annotations_test_pruned.parquet --> RAGA
   PRU -- mapping_lvl4.parquet --> RAG
-  LCS -- raw_test_LCS.parquet --> DEC[reconcile-llm]
+  LCS -- raw_test_LCS.parquet --> DEC{{"conciliation<br/>reconcile-llm OU reconcile-sirus"}}
   RAG -- predictions.parquet --> DEC
   RAGA -- predictions.parquet --> DEC
   TTC -- predictions.parquet --> DEC
@@ -82,9 +82,18 @@ flowchart LR
   DEC -- predictions.parquet --> REP[report]
   FIN --> out[/"CSV livré<br/>(+ predicted_code)"/]
   REP --> html[/report.html/]
+  FIN -.-> EVA["evaluate<br/>(si label-column)"]
+  DEC -.-> EVA
+  EVA -.-> evahtml[/evaluation_report.html/]
   style VDB stroke-dasharray: 5 5
   style VDBA stroke-dasharray: 5 5
+  style EVA stroke-dasharray: 5 5
 ```
+
+Le nœud de conciliation est **exclusif** : le paramètre `reconciliation` (`llm` ou `sirus`)
+décide lequel des deux tourne, l'autre est skippé. `evaluate` est en pointillé parce qu'elle
+est facultative : elle ne tourne que si le fichier d'entrée porte une colonne d'étiquettes
+(`label-column`).
 
 Les deux nœuds en pointillé ne sont **pas** des étapes de ce workflow : ce sont des
 **collections Qdrant construites à l'avance**, par deux workflows d'indexation autonomes, et
@@ -119,7 +128,7 @@ donnée par le paramètre **`git-branch`** (défaut : `main`).
 
 | # | Étape | Rôle | Page |
 |---|---|---|---|
-| 1 | `build-datasets` | Construit toujours les annotations (complet + train/test) ; en prédiction, prépare aussi les observations à coder | [→](01-build-datasets.qmd) |
+| 1 | `build-datasets` | Consolide toute la base annotée (la KB) et prépare les observations à coder | [→](01-build-datasets.qmd) |
 | 2 | `classify-regex` | Code les libellés évidents par règles regex ; point unique d'échantillonnage | [→](02-classify-regex.qmd) |
 | 3 | `prune-codes` | Troncature niveau 4 + élagage des hiérarchies linéaires : produit tous les artefacts prunés | [→](prune-codes.qmd) |
 | 4 | `classify-lcs` | Code par similarité de chaîne (LCS) sur un pool de référence | [→](03-classify-lcs.qmd) |
@@ -127,7 +136,8 @@ donnée par le paramètre **`git-branch`** (défaut : `main`).
 | 6 | `classify-rag-notices` | Codification sémantique par RAG sur les notices COICOP prunées (collection bâtie par `index-notices`) | [→](04-rag-notices.qmd) |
 | 7 | `classify-rag-annotations` | Codification par RAG sur exemples déjà codifiés, few-shot (collection bâtie par `index-annotations`) | [→](09-rag-annotations.qmd) |
 | 8 | `reconcile-llm` | Arbitrage final LLM-as-judge entre LCS / RAG notices / RAG annotations / TTC | [→](06-reconcile-llm.qmd) |
-| 9 | `export-results` | Assemble le résultat utilisateur (regex + décision LLM) | [→](07-export-results.qmd) |
+| 8bis | `reconcile-sirus` | Conciliation alternative par règles interprétables. **Exclusive** de `reconcile-llm` : le paramètre `reconciliation` choisit | [→](06b-reconcile-sirus.qmd) |
+| 9 | `export-results` | Assemble le résultat utilisateur (regex + code concilié) | [→](07-export-results.qmd) |
 | 10 | `report` | Rapport Quarto de production | [→](08-report.qmd) |
 | 11 | `evaluate` | Rapport d'évaluation, **facultatif** (`label-column`) | [→](11-evaluate.qmd) |
 
@@ -137,7 +147,26 @@ donnée par le paramètre **`git-branch`** (défaut : `main`).
 
 Un script d'aide est présent dans le repo : **codif-coicop-bdf/argo/argo_helper.md**.
 
-Il donne les commandes d'installation et de lancement. Par ailleurs, le script de paramétrages du workflow se trouve ici **codif-coicop-bdf/argo/params.yaml** (il permet notamment de choisir sur quel fichier s'applique la codification, choisir entre une approche de production courante ou d'évaluation, coder sur un échantillon de produits, etc.).
+Il donne les commandes d'installation et de lancement. Par ailleurs, le fichier de paramétrage
+du workflow se trouve ici **codif-coicop-bdf/argo/params.yaml** : il permet notamment de choisir
+sur quel fichier s'applique la codification, quelle conciliation tranche (`reconciliation`),
+s'il faut mesurer la qualité du run (`label-column`), ou coder sur un échantillon de produits.
+
+::: {.callout-important}
+## Tout `argo submit` passe d'abord par un run « smoke »
+
+Le DAG complet tourne **deux fois** : une première passe sur `smoke-observations` lignes
+(100 par défaut, ~8 min), puis le vrai run. **Si le smoke échoue, le vrai run ne démarre
+pas** — c'est ce qui évite de découvrir une erreur de paramétrage après plusieurs heures de
+codification.
+
+Les deux passes écrivent sous des `run_id` distincts (`<workflow>-smoke` et `<workflow>`), et
+le smoke logue dans son propre espace MLflow : il ne pollue donc ni les sorties S3 ni les
+métriques du run réel.
+
+Échappatoire, pour une urgence ou un smoke en faux positif qui immobilise la production :
+`-p skip-smoke=true`.
+:::
 
 
 ## Fil rouge
@@ -173,15 +202,15 @@ argo submit argo/index-annotations-pipeline.yaml            # la KB = toute la b
 # 2. Pipeline complet (input_file et les collections viennent de params.yaml)
 argo submit argo/codif-pipeline.yaml --parameter-file argo/params.yaml
 
-# Mode production : sur un fichier d'entrée et son mappage de colonnes
+# Tout passer en ligne de commande : fichier d'entrée et mappage de colonnes
 argo submit argo/codif-pipeline.yaml \
   -p input_file=s3://projet-budget-famille/data/workflow_inputs/mon_fichier.csv \
   -p text_column=NAT_DEP -p shop_column=MAG_DEP -p budget_column=MONT_DEP \
   -p classify-rag-notices-collection=coicop_notices__2026-09-02__index-notices-a7k2p \
-  -p classify-rag-annotations-collection=coicop_annotations__full__2026-09-02__index-annotations-b3x9q
+  -p classify-rag-annotations-collection=coicop_annotations__2026-09-02__index-annotations-b3x9q
 
 # Limiter le jeu à coder à N observations (sampling centralisé à classify-regex,
-# hérité par les quatre classifieurs) — vaut en production comme en évaluation
+# hérité par les quatre classifieurs)
 argo submit argo/codif-pipeline.yaml --parameter-file argo/params.yaml -p sample-observations=100
 
 # Plafonner la BASE indexée, elle, se fait au moment de l'indexation :

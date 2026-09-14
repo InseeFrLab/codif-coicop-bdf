@@ -16,7 +16,7 @@ C'est l'une des quatre prédictions « candidates » (avec [LCS](03-classify-lcs
 [RAG notices](04-rag-notices.qmd) et [RAG annotations](09-rag-annotations.qmd)) que
 l'arbitrage final combinera.
 
-- Code : [`classify-ttc/`](https://github.com/InseeFrLab/codif-coicop-bdf/tree/main/codif-ttc) —
+- Code : [`classify-ttc/`](https://github.com/InseeFrLab/codif-coicop-bdf/tree/main/classify-ttc) —
   classifieur basique (`classify-ttc/src/classifiers/basic_classifier.py`)
 - L'étape Argo construit depuis les sources comme les autres étapes : `git clone` du dépôt
   puis `uv sync` + `uv run main.py predict-basic …` dans `classify-ttc/`.

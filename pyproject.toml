@@ -3,7 +3,7 @@
 # membres d'un même workspace, ce qui force UNE résolution commune et donc UN
 # seul `uv.lock` (à côté de ce fichier).
 #
-# Pourquoi : les 10 modules se passent des Parquet d'étape en étape. Avec un
+# Pourquoi : les 12 modules se passent des Parquet d'étape en étape. Avec un
 # lock par module, ils avaient divergé sur les briques qui écrivent et relisent
 # ces fichiers — pandas 2.3.3 pour classify-ttc contre 3.0.5 pour reconcile-llm,
 # duckdb 1.4.4 contre 1.5.5, pyarrow 22 contre 25. Une seule résolution rend

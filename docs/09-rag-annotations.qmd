@@ -18,7 +18,7 @@ La différence avec la [branche RAG notices](04-rag-notices.qmd) est fondamental
 | Force | couvre toute la nomenclature, même les codes jamais rencontrés | colle aux usages réels de codification et au vocabulaire des enquêtés |
 | Faiblesse | la définition officielle ressemble rarement à « bagu. tradition U » | ne peut proposer qu'un code déjà présent dans la KB |
 
-- Code : [`rag-annotations/`](https://github.com/InseeFrLab/codif-coicop-bdf/tree/main/coicop-rag-annotations) ·
+- Code : [`rag-annotations/`](https://github.com/InseeFrLab/codif-coicop-bdf/tree/main/rag-annotations) ·
   config : `rag-annotations/config/config.yaml`
 - Deux étapes Argo, dans **deux workflows distincts** : `index-annotations`
   (`argo/index-annotations-pipeline.yaml`) construit la base vectorielle ;

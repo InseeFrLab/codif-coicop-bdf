@@ -110,7 +110,7 @@ def main():
         )
 
     # -----------------------------------------------------------------------
-    # STEP 2: cleanup (les codes sont déjà tronqués/prunés en amont par `prune`)
+    # STEP 2: cleanup (les codes sont déjà tronqués/prunés en amont par `prune-codes`)
     # -----------------------------------------------------------------------
     logger.info("STEP 2: drop des lignes sans libellé ou code exploitable")
     before = len(annotations)
@@ -119,10 +119,10 @@ def main():
     logger.info(f"  → {len(annotations)} usable annotations (dropped {before - len(annotations)})")
 
     # -----------------------------------------------------------------------
-    # STEP 3: add suggester examples to the index (déjà prunés par l'étape `prune`)
+    # STEP 3: add suggester examples to the index (déjà prunés par l'étape `prune-codes`)
     # -----------------------------------------------------------------------
-    # No train/test split here: preprocessing already split train (this input)
-    # from the evaluation test set. ALL loaded annotations are indexed.
+    # Aucun split ici : toute la base annotée sert de KB. Le split train/test a
+    # disparu avec la dualité production/évaluation (cf. STEP 1 plus haut).
     kb_data = annotations
     suggester_excluded = "suggester" in exclude_sources
     if config.get("suggester", {}).get("enabled") and not suggester_excluded:

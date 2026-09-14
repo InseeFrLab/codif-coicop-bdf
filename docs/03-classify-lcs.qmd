@@ -12,7 +12,7 @@ Substring*).
 
 C'est une approche robuste pour les libellés qui ressemblent fortement à des libellés déjà vus.
 
-- Code : [`classify-lcs/`](https://github.com/InseeFrLab/codif-coicop-bdf/tree/main/stats-annotations) (R) — entrée `R/main.R`
+- Code : [`classify-lcs/`](https://github.com/InseeFrLab/codif-coicop-bdf/tree/main/classify-lcs) (R) — entrée `R/main.R`
 - Exécution : `Rscript R/main.R --run-id=<id> --run-date=YYYY-MM-DD`
 
 ## Entrées

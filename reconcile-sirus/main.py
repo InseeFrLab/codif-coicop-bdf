@@ -5,7 +5,7 @@ Trois sous-commandes, réparties sur les deux étapes Argo :
 
     entraînement   build-table  (Python)  →  R/fit_sirus.R  (R)  →  finalize (Python)
                    hors pipeline, enchaîné par `train.sh`
-    reconcile-sirus  predict      (Python)  —  étape Argo, si `conciliation: sirus`
+    reconcile-sirus  predict      (Python)  —  étape Argo, si `reconciliation: sirus`
 
 `build-table` et `predict` partagent `src/candidates.py` : c'est ce qui garantit
 que les sentinelles et l'ordre des features vus à l'entraînement sont ceux vus à

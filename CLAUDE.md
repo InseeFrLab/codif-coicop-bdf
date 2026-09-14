@@ -97,11 +97,37 @@ Key pipeline parameters:
 - `eval-source-column` — name of the product-provenance column. Adds a per-source accuracy breakdown to the evaluation report. Never restricts what gets codified.
 - `skip-eval` (default `false`), `eval-experiment` — the escape hatch and the MLflow experiment of the `evaluate` step.
 - `classify-rag-notices-collection` / `classify-rag-annotations-collection` — **required**, no default. Qdrant collections produced by workflows ① and ②. Argo has no required-parameter mechanism, so the guard is written twice: a `[ -z ] && exit 1` in the container script *and* `required=True` in argparse. An unset name must fail in seconds, not silently fall back to some other run's index.
+- `git-branch` (default `main`) — **every Argo step clones the repo from GitHub at this branch**; nothing in the working copy reaches the cluster. Code changes must be pushed, and a feature branch is tested with `-p git-branch=<branch>`, never by editing files locally.
 - `sample-observations` — cap the to-codify set; sampled once at `classify-regex`. To cap the indexed KB instead, that is `kb-sample-size` of workflow ②.
+- Smoke pass: `skip-smoke` (skip it), `smoke-only` (run *only* the smoke — checks a branch in ~8 min), `smoke-observations` (default `100`), `smoke-experiment` (default `codif-coicop-smoke`; without a dedicated experiment the 100-row metrics would be indistinguishable from real ones in MLflow).
+- MLflow experiments: `report-experiment`, `eval-experiment`, `rag-experiment` (base name, suffixed `-notices` / `-annotations`; empty = each module's default).
 - `classify-rag-model` (LLM for classify-rag-notices), `reconcile-llm-model` (default `gemma4-26b-moe`), `reconcile-llm-concurrency` (default `5`), `skip-report`.
 - `reconciliation` — `llm` (default, `reconcile-llm`) or `sirus` (`reconcile-sirus`). **Mutually exclusive**: the other step is skipped via `when:`, and `export-results`/`report` depend on both (legacy `dependencies:` tolerates a Skipped node).
 - `reconcile-sirus-model-uri` — MLflow artifact URI, required when `reconciliation: sirus`. Training happens **outside the pipeline** (`cd reconcile-sirus/ && ./train.sh <date>/<run_id>`), so the model can never come from the run it scores — train-on-test is impossible by construction (same pattern as `classify-ttc-model-uri`).
 - `reconcile-sirus` applies **no threshold**: it emits `sirus_code` + `sirus_proba` per product and nothing else. Deciding what score is good enough to skip review is a business call, informed by the "Calibration de SIRUS" section of the evaluation report.
+
+## Running a Single Step
+
+The usual debugging loop is one step, not the whole DAG. Two modes, both documented command by
+command in `docs/09-lancer-une-etape.qmd` (including the environment variables each step needs):
+
+```bash
+# Via Argo: each step is a named template of the workflow
+argo submit argo/codif-pipeline.yaml --entrypoint classify-regex \
+  -p run_id=codif-abc12 -p run_date=2026-03-20
+
+# Locally: the same command the container runs, from the module directory
+cd classify-regex/ && uv sync --locked
+uv run src/main.py --run-id codif-abc12 --run-date 2026-03-20
+```
+
+**Always pass `run_id` *and* `run_date`.** They default to the Argo workflow's own name and
+creation date, so a step relaunched on its own writes into a brand-new empty S3 folder and finds
+none of its inputs. Recover them from `argo list` or from the S3 path
+`…/workflow_runs/{run_date}/{run_id}/`.
+
+`index-notices` and `index-annotations` are **not** templates of `codif-pipeline.yaml`; they live
+in their own short workflows and are relaunched whole.
 
 ## Developing a Module
 
@@ -160,7 +186,10 @@ Four mechanical checks, under a minute, no cluster — exactly what the CI runs
 uv lock --check                                          # lock still matches every pyproject.toml
 uv run --with ruff ruff check .                          # name used without being imported (F82)
 uv run --with pyyaml python scripts/check_pipeline.py .  # Argo params / templates / dependencies
-argo lint --offline argo/codif-pipeline.yaml             # Argo schema itself
+for f in argo/*pipeline.yaml; do                         # Argo schema itself (CI lints all three)
+  [ "$(basename "$f")" = "ttc-pipeline.yaml" ] && continue
+  argo lint --offline "$f"
+done
 ```
 
 Deliberately **not** a full CI: no formatting, no doc rendering, and no test run — none of the three
@@ -190,9 +219,13 @@ Documentation site: `quarto render docs` — published to GitHub Pages from `mai
 
 ## Module Architecture Notes
 
+Each module carries its own `README.md` (exact CLI, inputs/outputs, design notes) and has a page
+under `docs/` (`01-build-datasets.qmd` … `11-evaluate.qmd`). `classify-ttc/` has its own
+`CLAUDE.md`. The notes below only cover what is not obvious from a single module's directory.
+
 **`prune-codes/`** — Étape unique de pruning (troncature niveau 4 + élagage des hiérarchies linéaires). Produit tous les artefacts prunés sous `…/{run}/prune-codes/` (nomenclature, mapping, KB annotée, jeu à coder, suggester), lus par les modules RAG. `scripts/main.py`.
 
-**`rag-notices/`** — Two scripts, now in **two different workflows** : `0_create_vector_db.py` (workflow ①) encode la nomenclature **prunée** dans Qdrant ; `2_run_rag.py` (workflow ③) fait le RAG sur notices contre une collection existante, dont le nom lui est passé par `--collection_name` (obligatoire). Embeddings et génération via VLLM (OpenAI-compatible), métriques MLflow, prompts tracés dans Langfuse.
+**`rag-notices/`** — Two scripts, now in **two different workflows** : `0_create_vector_db.py` (workflow ①) encode la nomenclature **prunée** dans Qdrant ; `2_run_rag.py` (workflow ③) fait le RAG sur notices contre une collection existante, dont le nom lui est passé par `--collection_name` (obligatoire). Embeddings et génération via llm.lab (`LLMLAB_URL`, OpenAI-compatible, les deux sur le même serveur), métriques MLflow, prompts tracés dans Langfuse.
 
 **`rag-annotations/`** — RAG sur exemples annotés, également scindé : `0_build_annotation_vector_db.py` (workflow ②) indexe la KB — `annotations_full` + suggester au sens de `build-datasets`, **sans filtrage regex** ; `1_run_rag.py` (workflow ③) codifie l'input pruné, avec `--collection-name` obligatoire. Il ne calcule plus aucune métrique : c'est l'étape `evaluate` qui mesure.
 
@@ -233,7 +266,7 @@ Elle **échoue** si `code_lvl4` est absent au lieu de se rabattre sur `code`. Ce
 
 ## Argo gotchas (hard-won — do not "clean up")
 
-**`git -c http.version=HTTP/1.1 clone` on all 17 clone sites.** The image's git (2.54.0, linked
+**`git -c http.version=HTTP/1.1 clone` at every clone site** (18 today, across the four workflow YAMLs). The image's git (2.54.0, linked
 against libcurl3-gnutls) cannot parse GitHub's HTTP/2 ref advertisement: it fails on `expected
 flush after ref listing`, then asks for a Username, which looks exactly like an authentication
 problem and is not one — GitHub answers `200` with the correct content-type (verified under
@@ -243,8 +276,8 @@ misleading.
 
 **Never write `git clone … && cd …` under `set -e`.** POSIX exempts every command of an `&&`
 list except the last, so a failed clone does **not** abort the script: execution continues in
-the wrong directory and the real error is masked by a confusing `No pyproject.toml found`. The
-17 sites use two separate statements for this reason.
+the wrong directory and the real error is masked by a confusing `No pyproject.toml found`. Every
+site uses two separate statements for this reason.
 
 **Argo has no required-parameter mechanism**, and `argo submit --parameter-file` silently
 accepts unknown keys — that is how `rereconciliation:` sat dead in `params.yaml` from its own
@@ -253,4 +286,4 @@ argparse.
 
 ## Required Kubernetes Secret
 
-`secret-codif-coicop-bdf` must contain AWS credentials, VLLM endpoints (embedding + generation), Qdrant, Langfuse, MLflow, Ollama, `DDC_ENCRYPTION_KEY`, and `LLMLAB_API_KEY` (+ optional `LLMLAB_URL`). See `README.md` for the full key list.
+`secret-codif-coicop-bdf` must contain AWS credentials, Qdrant, Langfuse, MLflow, Ollama, `DDC_ENCRYPTION_KEY`, and `LLMLAB_URL` / `LLMLAB_API_KEY` (llm.lab serves both embedding and generation). No `VLLM_*` key is read anywhere — see `README.md` for the full list and for the two keys a `grep` wrongly makes look dead.

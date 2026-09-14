@@ -14,7 +14,7 @@ techniques (carte bancaire, prélèvement, remise…) et quelques catégories g�
 - Une ligne sans match → transmise telle quelle à [LCS](03-classify-lcs.qmd),
   [RAG](04-rag-notices.qmd) et [TTC](05-classify-ttc.qmd).
 
-- Code : [`classify-regex/`](https://github.com/InseeFrLab/codif-coicop-bdf/tree/main/regex-codif) — entrée `classify-regex/src/main.py`
+- Code : [`classify-regex/`](https://github.com/InseeFrLab/codif-coicop-bdf/tree/main/classify-regex) — entrée `classify-regex/src/main.py`
 - Règles : [`classify-regex/config/rules.yaml`](https://github.com/InseeFrLab/codif-coicop-bdf/blob/main/classify-regex/config/rules.yaml)
 
 ## Entrées

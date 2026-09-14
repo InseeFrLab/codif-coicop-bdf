@@ -50,7 +50,7 @@ build-datasets  (input_file : OBLIGATOIRE — un seul mode)
                                      ┌───────────────────────────────────────────┘
                                      │  les 4 classifieurs convergent
                                      └─→ reconcile-llm  OU  reconcile-sirus   (exclusifs : paramètre `reconciliation`)
-                                             └─→ export-results ─→ report  (opt-in)
+                                             └─→ export-results ─→ report  (actif par défaut ; skip-report)
                                                        └─→ evaluate  (facultative : label-column)
 ```
 
@@ -69,6 +69,52 @@ Points à retenir sur cette topologie :
 
 Chaque étape lit et écrit sur S3 dans un dossier propre au run :
 `s3://projet-budget-famille/data/workflow_runs/{run_date}/{run_id}/<étape>/`.
+
+## Le run « smoke », avant le vrai run
+
+Tout `argo submit argo/codif-pipeline.yaml` fait tourner le DAG **deux fois** : d'abord une
+passe « smoke » sur `smoke-observations` lignes (100 par défaut, environ 8 minutes), puis le
+run réel. **Un smoke en échec empêche le vrai run de démarrer.**
+
+L'intérêt n'est pas de tester le code — le CI s'en charge — mais d'éprouver *ce run-ci* : le
+fichier d'entrée existe-t-il, son mappage de colonnes est-il correct, les collections Qdrant
+désignées sont-elles lisibles, le modèle SIRUS ou TTC se charge-t-il ? Autant d'erreurs de
+paramétrage qui, sans cette passe, se découvriraient après plusieurs heures de codification.
+
+Les deux passes écrivent sous des `run_id` distincts (`<workflow>-smoke` et `<workflow>`) et
+le smoke logue dans son propre espace MLflow : il ne pollue ni les sorties S3, ni les
+métriques du run réel.
+
+`-p skip-smoke=true` saute la passe — pour une urgence, ou quand un smoke en faux positif
+immobilise la production.
+
+## Où sont déclarés les chemins S3 : `contracts.yaml`
+
+Une étape ne construit plus le chemin d'une autre : elle le demande au registre
+[`contracts.yaml`](https://github.com/InseeFrLab/codif-coicop-bdf/blob/main/contracts.yaml),
+à la racine du dépôt, qui déclare pour chaque étape ses `inputs` et ses `outputs`.
+
+```python
+from codif_common.contracts import artifact
+path = artifact("prune-codes", "mapping_lvl4", run_date=..., run_id=...)
+```
+
+Ce fichier existe parce que chaque étape réécrivait auparavant où trouver les fichiers des
+autres. **Sept mécanismes différents coexistaient** — clé de config, shell dans le YAML Argo,
+f-string Python, `glue` R, variable d'environnement, défaut d'`argparse` — et le même fichier
+pouvait être désigné sept fois de quatre façons. Deux conséquences concrètes : renommer une
+étape a demandé **162 modifications dans 29 fichiers**, et un décalage de chemin entre
+`build-datasets` et `classify-lcs` est passé inaperçu pendant des mois.
+
+Le registre est en **YAML et non en Python** parce que `classify-lcs` est écrit en R et doit
+pouvoir le lire : la syntaxe `{run_date}` / `{run_id}` est comprise telle quelle par
+`str.format()` côté Python et par `glue::glue()` côté R, sans préprocesseur.
+
+Deux garde-fous en découlent. `consumers("classify-regex", "test_without_regex")` répond à
+« qui casse si je change ce fichier ? », question qui demandait auparavant de fouiller les
+sept mécanismes. Et `common/tests/test_contracts.py` vérifie que **toute entrée déclarée
+désigne bien une sortie déclarée** — c'est le contrôle qui aurait rendu visible le décalage
+resté caché des mois.
 
 ## Désigner les collections Qdrant
 
@@ -105,7 +151,9 @@ simplement de moins bons résultats.
 
 ## Les classifieurs
 
-Cinq briques de codification tournent en parallèle, puis sont conciliées par `reconcile-llm` :
+Cinq briques de codification tournent en parallèle, puis sont conciliées par `reconcile-llm`
+**ou** `reconcile-sirus` — les deux conciliations sont exclusives, le paramètre `reconciliation`
+décide laquelle tourne :
 
 | Brique | Approche | Page |
 |---|---|---|
@@ -116,8 +164,9 @@ Cinq briques de codification tournent en parallèle, puis sont conciliées par `
 | RAG annotations | RAG sur exemples déjà codifiés (few-shot) | [RAG sur annotation](09-rag-annotations.qmd) |
 
 Le **regex** est à part : il tranche en amont et retire ses lignes du flux. Les **quatre
-autres** produisent chacun une prédiction candidate sur les mêmes observations, que
-[`reconcile-llm`](06-reconcile-llm.qmd) arbitre.
+autres** produisent chacun une prédiction candidate sur les mêmes observations, qu'arbitre
+soit [`reconcile-llm`](06-reconcile-llm.qmd), un juge LLM, soit
+[`reconcile-sirus`](06b-reconcile-sirus.qmd), une vingtaine de règles à seuils lisibles.
 
 ## Un seul mode, et l'évaluation en fin de course
 

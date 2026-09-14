@@ -18,7 +18,7 @@ dans le chemin de production.
 Les deux conciliations sont **exclusives** : le paramètre `reconciliation` (`llm` ou `sirus`)
 décide laquelle tourne, l'autre est skippée.
 
-- Code : [`reconcile-sirus/`](https://github.com/InseeFrLab/codif-coicop-bdf/tree/main/sirus)
+- Code : [`reconcile-sirus/`](https://github.com/InseeFrLab/codif-coicop-bdf/tree/main/reconcile-sirus)
 - Documentation opérationnelle détaillée : [`reconcile-sirus/README.md`](https://github.com/InseeFrLab/codif-coicop-bdf/blob/main/reconcile-sirus/README.md)
 
 ## Deux étapes
@@ -26,7 +26,7 @@ décide laquelle tourne, l'autre est skippée.
 | Moment | Où | Rôle |
 |---|---|---|
 | Entraînement | **Hors pipeline** : `cd reconcile-sirus/ && ./train.sh <date>/<run_id>` | Ajuste le modèle sur un run passé **étiqueté** (soumis avec `label-column`), mesure accuracy et calibration, logue le tout dans MLflow |
-| `reconcile-sirus` | Étape Argo, quand `conciliation: sirus` | Applique un modèle déjà entraîné au run courant |
+| `reconcile-sirus` | Étape Argo, quand `reconciliation: sirus` | Applique un modèle déjà entraîné au run courant |
 
 **L'entraînement n'est pas une étape du pipeline, et c'est délibéré.** Il produit un modèle
 destiné à un run *futur* : placé dans le DAG, il ne servirait jamais le run dans lequel il
@@ -108,8 +108,8 @@ positifs est l'agrégation de la variante *régression*. C'est vérifié et docu
 
 | Paramètre | Défaut | Rôle |
 |---|---|---|
-| `conciliation` | `llm` | `llm` ou `sirus` : qui tranche |
-| `reconcile-sirus-model-uri` | `""` | URI MLflow du modèle. Obligatoire si `conciliation: sirus` |
+| `reconciliation` | `llm` | `llm` ou `sirus` : qui tranche |
+| `reconcile-sirus-model-uri` | `""` | URI MLflow du modèle. Obligatoire si `reconciliation: sirus` |
 
 Ce sont les **deux seuls** paramètres SIRUS du pipeline. Les hyperparamètres d'entraînement
 (`--num-rule`, `--max-depth`, `--seed`, `--experiment`) sont des arguments de `train.sh`, pas

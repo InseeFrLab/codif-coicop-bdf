@@ -152,7 +152,7 @@ canonique produit par un modèle (un LLM peut halluciner un code de niveau 5) :
 | `export-results` | `predicted_code` (garde-fou final, idempotent) | `export-results/main.py` |
 
 Le module `prune-codes` est consommé comme **dépendance Python locale** par `reconcile-llm` et
-`export-results` (`[tool.uv.sources] prune = { workspace = true }`) : la logique n'est jamais
+`export-results` (`[tool.uv.sources] prune-codes = { workspace = true }`) : la logique n'est jamais
 dupliquée.
 
 ## Exemple sur le fil rouge
