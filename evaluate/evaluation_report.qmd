@@ -68,6 +68,9 @@ RAGANN_PATH = os.environ.get("EVAL_RAGANN_PATH") or None
 DELIVERABLE_PATH = os.environ.get("EVAL_DELIVERABLE_PATH") or None
 OBSERVATIONS_PATH = os.environ.get("EVAL_OBSERVATIONS_PATH") or None
 MAPPING_PATH = os.environ.get("EVAL_MAPPING_PATH") or None
+# Décompte du fichier d'entrée, écrit par `build-datasets`. Absent sur un run
+# antérieur à son introduction : le tableau de métadonnées se dégrade alors.
+INPUT_COUNTS_PATH = os.environ.get("EVAL_INPUT_COUNTS_PATH") or None
 
 # Ventilation par provenance du produit. Vide : la section est omise. Ce
 # paramètre ne restreint jamais le périmètre codé — c'est une dimension
@@ -135,20 +138,48 @@ SIRUS_MODEL_URI = (
 
 # Keep a "scorable" view: rows carrying a ground truth
 scorable = df[df[TRUTH].notna() & (df[TRUTH].astype(str).str.len() > 0)].copy()
+
+COUNTS = I.input_counts(con, INPUT_COUNTS_PATH)
+# Calculé ici et non au chapitre « Accuracy du fichier livré » qui l'affiche :
+# les métadonnées, plus haut dans le rapport, en ont besoin pour confronter le
+# nombre de lignes livrées au nombre de lignes retenues. Les deux sont égaux par
+# construction — l'écart, s'il apparaît un jour, est une régression à voir.
+e2e = I.end_to_end(con, DELIVERABLE_PATH, OBSERVATIONS_PATH, MAPPING_PATH)
 ```
 
 ## Métadonnées du run
 
-| Champ | Valeur |
-|---|---|
-| Run ID | `{python} RUN_ID` |
-| Date   | `{python} RUN_DATE` |
-| Fichier source | `{python} INPUT` |
-| Observations totales | `{python} f"{len(df):,}".replace(",", " ")` |
-| Observations avec code de référence | `{python} f"{len(scorable):,}".replace(",", " ")` |
-| Colonne de vérité terrain scorée | `{python} TRUTH` `{python} "(canonique : tronquée niveau 4 + élaguée)" if HAS_CANONICAL_TRUTH else "(code brut — run antérieur à code_lvl4)"` |
-| Conciliation | `{python} FINAL_NAME` (colonne `{python} FINAL_COL`) |
-| Erreurs LLM (`llm_error` non nul) | `{python} int(df["llm_error"].notna().sum()) if "llm_error" in df.columns else "— (pas de conciliation LLM sur ce run)"` |
+```{python}
+# | label: tbl-run-metadata
+# Un chunk plutôt qu'un tableau markdown inline : les lignes de volumétrie
+# s'omettent quand l'artefact de décompte manque, ce qui serait illisible écrit
+# en expressions `{python}` conditionnelles.
+_meta = [
+    ("Run ID", f"`{RUN_ID}`"),
+    ("Date", RUN_DATE),
+]
+_meta += I.run_metadata_rows(COUNTS, None if e2e is None else e2e["n_deliverable"])
+_meta += [
+    # Ce n'est PAS le fichier d'entrée : c'est le parquet que ce rapport lit.
+    ("Parquet de conciliation (lu par ce rapport)", f"`{INPUT}`"),
+    # Ni l'entrée ni la sortie : les lignes captées par la regex n'y figurent
+    # pas, et l'échantillonnage de `classify-regex` s'y applique.
+    ("Observations passées par la chaîne (hors regex)",
+     f"{len(df):,}".replace(",", " ")),
+    ("dont avec code de référence", f"{len(scorable):,}".replace(",", " ")),
+    ("Colonne de vérité terrain scorée",
+     f"`{TRUTH}` " + ("(canonique : tronquée niveau 4 + élaguée)"
+                      if HAS_CANONICAL_TRUTH else "(code brut — run antérieur à code_lvl4)")),
+    ("Conciliation", f"{FINAL_NAME} (colonne `{FINAL_COL}`)"),
+    ("Erreurs LLM (`llm_error` non nul)",
+     str(int(df["llm_error"].notna().sum())) if "llm_error" in df.columns
+     else "— (pas de conciliation LLM sur ce run)"),
+]
+Markdown(
+    "| Champ | Valeur |\n|---|---|\n"
+    + "\n".join(f"| {label} | {value} |" for label, value in _meta)
+)
+```
 
 ```{python}
 # | tags: [utils]
@@ -165,26 +196,34 @@ def style_acc(tbl: pd.DataFrame):
 
 ## Accuracy globale par niveau
 
-On tronque la vérité terrain (`{python} TRUTH`) et la prédiction aux `k` premiers niveaux, puis on compare :
+On tronque la vérité terrain (`{python} TRUTH`) et la prédiction aux `k` premiers niveaux, puis on teste l'**égalité**. C'est toute la règle, et il n'y en a qu'une.
 
-- une vérité de moins de `k` niveaux est **non évaluable** et sort du dénominateur — d'où un `n` qui décroît avec `k` ;
-- une prédiction plus courte que `k` est une **erreur** ;
-- une prédiction plus profonde que la vérité est **correcte** si le préfixe correspond.
+- une vérité de moins de `k` niveaux est tronquée à elle-même et reste **mesurée** : un Poste peu profond correctement codé est juste ;
+- une prédiction plus fine que la vérité est **fausse** dès qu'on descend sous la profondeur de celle-ci — vérité `01.4` contre prédiction `01.4.3.1` : juste au niveau 2, fausse au niveau 4 ;
+- une prédiction plus courte que la vérité est fausse au niveau où elles divergent ;
+- seules les lignes **sans vérité** sortent du calcul : il n'y a rien à y juger.
 
-> **Question :** parmi les observations codables à la profondeur `k`, quelle part est correctement codée ?
+> **Question :** sur l'ensemble des observations étiquetées, quelle part porte le bon code à la profondeur `k` ?
 
-::: {.callout-warning}
-## Les colonnes ne sont pas comparables entre elles
-Chaque niveau porte sur une **population différente** — lire les `n`. L'accuracy peut donc *augmenter* avec `k` : non parce que la codification s'améliore en profondeur, mais parce que les observations qui restent sont celles dont la vérité est fine, souvent les plus faciles. C'est un effet de sélection, pas un progrès. Le tableau de profondeur ci-dessous donne la population que chaque niveau écarte.
+::: {.callout-note}
+## Les colonnes sont comparables entre elles
+Tous les niveaux portent sur la **même population** — les observations étiquetées — et le `n` ne bouge plus. Une accuracy qui **baisse** avec `k` est donc un vrai signal : soit la codification se dégrade en profondeur, soit les prédictions sont plus fines que les annotations. Le tableau de profondeur ci-dessous permet de trancher entre les deux.
 :::
 
 ```{python}
 # | label: tbl-global-accuracy
-# Avec une vérité canonique, le niveau 5 est structurellement vide (les codes
-# prunés ont au plus 4 segments) : on ne l'affiche que pour les runs anciens.
+# Avec une vérité canonique, le niveau 5 duplique le niveau 4 (les codes prunés
+# ont au plus 4 segments, tronquer à 5 ne tronque rien) : on ne l'affiche que
+# pour les runs anciens, scorés contre la vérité brute.
 STRICT_LEVELS = CANONICAL_LEVELS if HAS_CANONICAL_TRUTH else LEVELS
 global_tbl = accuracy_table(scorable, levels=STRICT_LEVELS)
-Markdown(global_tbl.to_markdown(floatfmt=".1%"))
+# Le `n` ne dépendant plus du niveau, il est annoncé une fois ici plutôt que
+# répété dans chaque en-tête de colonne.
+Markdown(
+    f"Sur **{len(scorable):,} observations étiquetées**".replace(",", " ")
+    + ", à tous les niveaux.\n\n"
+    + global_tbl.to_markdown(floatfmt=".1%")
+)
 ```
 
 ```{python}
@@ -199,7 +238,7 @@ fig, ax = plt.subplots()
 sns.lineplot(long, x="niveau", y="accuracy", hue="méthode", marker="o", ax=ax)
 ax.set_ylim(0, 1)
 ax.set_xticks(STRICT_LEVELS)
-ax.set_title("Accuracy par niveau COICOP (convention stricte, population variable)")
+ax.set_title("Accuracy par niveau COICOP (population constante)")
 ax.set_ylabel("Accuracy")
 ax.set_xlabel("Niveau (k)")
 plt.tight_layout()
@@ -208,26 +247,30 @@ plt.show()
 
 ```{python}
 # | label: tbl-truth-depth
-# Ce tableau explique le `n` décroissant ci-dessus : à chaque niveau, la part de
-# la population dont la vérité est trop peu profonde pour être évaluée. Sans
-# lui, un lecteur ne peut pas savoir si une accuracy de niveau 4 porte sur toute
-# la population ou sur un quart.
+# Clé de lecture du tableau ci-dessus : ces lignes restent mesurées, mais ce sont
+# exactement celles où une prédiction plus fine que la vérité est comptée fausse.
+# Sans ce décompte, on ne peut pas distinguer une codification qui se dégrade en
+# profondeur d'une annotation qui s'arrête avant.
 depth = truth_depth_distribution(scorable[TRUTH])
 depth_tbl = pd.DataFrame(
     [
         {
             "niveau k": k,
             "vérité moins profonde que k": depth["shallower_than"][k]["count"],
-            "part écartée": depth["shallower_than"][k]["pct"] / 100,
+            "part de la population": depth["shallower_than"][k]["pct"] / 100,
         }
         for k in CANONICAL_LEVELS
     ]
 ).set_index("niveau k")
 n_scorable = f"{len(scorable):,}".replace(",", " ")
 Markdown(
-    "**Ce que chaque niveau écarte.** Observations non évaluables au niveau `k`, "
-    f"faute d'une vérité assez profonde — sur {n_scorable} observations scorables.\n\n"
+    "**Où une prédiction trop fine sera comptée fausse.** Observations dont la vérité "
+    "s'arrête avant le niveau `k` : elles sont mesurées comme les autres, mais seule "
+    "une prédiction s'arrêtant au même endroit y est juste — sur "
+    f"{n_scorable} observations étiquetées.\n\n"
     + depth_tbl.to_markdown(floatfmt=(".0f", ".0f", ".1%"))
+    + "\n\nC'est la lecture de la chute entre deux niveaux : une baisse d'accuracy "
+    "adossée à une hausse de cette part vient des annotations, pas des classifieurs."
 )
 ```
 
@@ -237,7 +280,8 @@ C'est le chiffre à annoncer : il décrit ce que reçoit l'utilisateur. Tous les
 
 ```{python}
 # | label: tbl-end-to-end
-e2e = I.end_to_end(con, DELIVERABLE_PATH, OBSERVATIONS_PATH, MAPPING_PATH)
+# `e2e` est calculé dans le chunk `setup` : les métadonnées en ont besoin avant
+# ce chapitre.
 if e2e is None:
     out = (
         "*Non calculable : le livrable, les observations ou le mapping manquent. "
@@ -304,12 +348,11 @@ Les tableaux d'accuracy comptent ces abstentions comme des erreurs. C'est légit
 
 $$\text{accuracy globale} = \text{couverture} \times \text{accuracy sur les réponses}$$
 
-Elle n'est exacte que parce que les trois grandeurs partagent **un seul dénominateur** : les lignes évaluables au niveau `{python} REGIME_LEVEL`, colonne `n évaluable`. Une ligne dont la vérité est trop peu profonde en sort — son abstention comprise. La couverture affichée est donc celle du sous-ensemble mesurable, pas celle du fichier.
+Elle n'est exacte que parce que les trois grandeurs partagent **un seul dénominateur** : les lignes portant une vérité, colonne `n`. Seule une ligne sans vérité en sort — son abstention comprise.
 
 ```{python}
 # | label: tbl-coverage
 cov_tbl = coverage_table(scorable, REGIME_LEVEL)
-_n_eval_col = f"n évaluable niv{REGIME_LEVEL}"
 # Refus exprimés autrement que par un NULL (chaîne vide, "N/A", …) : ils passeraient
 # pour des codes si on ne les traitait pas comme des abstentions.
 sentinels = {
@@ -354,10 +397,10 @@ for n_silent, sub in scorable.assign(_silent=_silent).groupby("_silent"):
             "sources muettes": int(n_silent),
             "n": len(sub),
             "part des observations": len(sub) / len(scorable),
-            # Deux dénominateurs distincts, donc deux colonnes : la couverture
-            # porte sur tout le groupe, l'accuracy sur ses seules lignes
-            # évaluables au niveau visé.
-            f"n évaluable niv{REGIME_LEVEL}": n_eval,
+            # `n` compte le groupe entier, `n avec vérité` le dénominateur de
+            # l'accuracy : les deux ne diffèrent que par les lignes non
+            # étiquetées, `scorable` n'en portant en principe aucune.
+            "n avec vérité": n_eval,
             f"accuracy {FINAL_NAME} niv{REGIME_LEVEL}": acc,
             f"couverture {FINAL_NAME}": float(answer_mask(sub[FINAL_COL]).mean()),
         }
@@ -386,9 +429,9 @@ else:
     _view[_acc_col] = _view[_acc_col].map(lambda v: "—" if pd.isna(v) else f"{v:.1%}")
     md = (
         "L'accuracy n'est renseignée que sur les lignes où un code a été émis : sur une "
-        f"abstention elle vaut 0 par construction. `n` compte la cellule, `n évaluable "
-        f"niv{REGIME_LEVEL}` le dénominateur réel de l'accuracy — les deux diffèrent dès "
-        "qu'une vérité est trop peu profonde.\n\n"
+        "abstention elle vaut 0 par construction. `n` compte la cellule, `n avec vérité` "
+        "le dénominateur réel de l'accuracy — les deux ne diffèrent que par les lignes "
+        "non étiquetées.\n\n"
         + _view.to_markdown(index=False, disable_numparse=True)
     )
 Markdown(md)
@@ -640,10 +683,7 @@ Markdown(md)
 
 Les tableaux précédents disent **combien** chaque brique se trompe, pas **où**. Un RAG à 70 % peut être un retriever qui ne ramène jamais la bonne réponse — aucun prompt ne le sauvera — ou un générateur qui la voit et choisit autre chose. Les corrections sont opposées, et le chiffre agrégé ne permet pas de trancher.
 
-::: {.callout-warning}
-## Cette section ne compte pas comme le reste du rapport
-Elle est calculée par les bibliothèques de mesure des modules RAG, dont le dénominateur est **constant** : une observation dont la vérité est trop peu profonde y compte comme une erreur au lieu d'être écartée. Partout ailleurs, ce rapport l'écarte. Les accuracies de cette section ne sont donc pas comparables chiffre à chiffre avec celles des sections précédentes — c'est leur **écart entre briques et entre régimes** qui informe, pas leur niveau absolu.
-:::
+Elle est calculée par les bibliothèques de mesure des modules RAG et non par `codif_common`, mais les deux appliquent désormais la **même** règle — tronquer les deux codes à `k` et comparer. Les chiffres de cette section sont donc comparables à ceux des sections précédentes. L'équivalence est vérifiée par un test (`evaluate/tests/test_accuracy_parity.py`) plutôt que supposée : c'est lui qu'il faut lire si un écart réapparaît.
 
 ```{python}
 # | label: setup-internals
@@ -880,10 +920,14 @@ Markdown(
 
 On liste les couples (code réel, code retenu par `{python} FINAL_COL`) les plus fréquents **parmi les erreurs** au niveau 4 (le niveau typiquement visé par l'enquête).
 
+Les clés sont les codes **tronqués** au niveau 4, exactement comme les compte l'accuracy : elles peuvent donc porter moins de 4 segments quand la vérité s'arrête avant. Une vérité `01.4` face à une prédiction `01.4.3.1` apparaît ici comme la paire `01.4` → `01.4.3.1`, et c'est une erreur de niveau 4.
+
 ```{python}
 # | label: tbl-confusion
 def at_level(s: pd.Series, k: int) -> pd.Series:
-    return s.map(lambda x: ".".join(code_parts(x)[:k]) if len(code_parts(x)) >= k else None)
+    """Tronque au niveau k. None sur un code vide seulement — un code plus court
+    que k est tronqué à lui-même, comme dans `level_result`."""
+    return s.map(lambda x: ".".join(code_parts(x)[:k]) or None)
 
 
 k = 4
@@ -1018,10 +1062,9 @@ if "sirus_proba" in scorable.columns:
     _sc = scorable.dropna(subset=["sirus_proba"]).copy()
     if len(_sc):
         _res = accuracy_series(_sc[TRUTH], _sc[FINAL_COL], REGIME_LEVEL)
-        # Volume : toute la population scorée par SIRUS — c'est une décision
-        # d'exploitation, elle porte sur les lignes qu'on livrerait.
-        # Fiabilité : les seules lignes évaluables. Deux dénominateurs, annoncés
-        # comme tels dans les tableaux.
+        # Un seul dénominateur : toute la population scorée par SIRUS et
+        # étiquetée. `_res` ne vaut None que sur une ligne sans vérité, et
+        # `scorable` n'en porte pas — volume et fiabilité coïncident.
         _SIRUS = {
             "all": _sc,
             "eval": _sc[_res.notna()].assign(_ok=_res[_res.notna()] == True),  # noqa: E712
@@ -1051,7 +1094,7 @@ else:
     _p = _SIRUS["all"]["sirus_proba"]
     md = (
         f"**Accuracy au niveau {REGIME_LEVEL}** par tranche de `sirus_proba`, sur "
-        f"{len(_ev)} observations évaluables. Probabilités observées : "
+        f"{len(_ev)} observations étiquetées. Probabilités observées : "
         f"min {_p.min():.3f}, médiane {_p.median():.3f}, max {_p.max():.3f}.\n\n"
         + calib_tbl[["tranche", "n", "part des observations", "accuracy"]].to_markdown(
             index=False, floatfmt=("", ".0f", ".1%", ".1%")
@@ -1080,7 +1123,7 @@ else:
                 "seuil": seuil,
                 "n auto-codé": n_auto,
                 "volume auto-codé": n_auto / len(_all),
-                "n évaluable": n_ev,
+                "n étiqueté": n_ev,
                 f"fiabilité niv{REGIME_LEVEL}": (
                     float(_ev.loc[auto_ev, "_ok"].mean()) if n_ev else np.nan
                 ),
@@ -1089,7 +1132,7 @@ else:
     md = (
         "**Arbitrage volume / fiabilité selon le score exigé.** Le volume porte sur "
         f"les {len(_all)} lignes scorées par SIRUS — c'est ce qu'on livrerait ; la "
-        f"fiabilité sur les {len(_ev)} évaluables au niveau {REGIME_LEVEL}. Le score "
+        f"fiabilité sur les {len(_ev)} d'entre elles qui sont étiquetées. Le score "
         f"maximum atteignable par ce modèle est **{_all['sirus_proba'].max():.3f}** sur "
         "ce run : au-delà, l'exigence écarterait **100 % du volume**. C'est pourquoi un "
         "seuil se lit sur ce tableau et ne se transpose pas d'un modèle à l'autre.\n\n"
@@ -1197,8 +1240,13 @@ K_EVAL = 4  # niveau cible de l'enquête
 
 
 def keyk(s: pd.Series, k: int = K_EVAL) -> pd.Series:
-    """Tronque des codes COICOP pointés aux k premiers segments (None si trop court)."""
-    return s.map(lambda x: ".".join(code_parts(x)[:k]) if len(code_parts(x)) >= k else None)
+    """Tronque des codes COICOP pointés aux k premiers segments.
+
+    None sur un code vide seulement — même convention que `level_result` : un
+    code plus court que k est tronqué à lui-même. `_src_vals` n'écarte donc plus
+    que les abstentions, et non plus aussi les sources peu profondes.
+    """
+    return s.map(lambda x: ".".join(code_parts(x)[:k]) or None)
 
 
 # `_final` : le code de la conciliation qui a tranché, tronqué au niveau cible.
@@ -1352,12 +1400,13 @@ else:
 
     arb["_in_main"] = arb.apply(lambda r: str(r[FINAL_COL]) in main_set(r), axis=1)
     arb["_in_avail"] = arb.apply(lambda r: str(r[FINAL_COL]) in avail_set(r), axis=1)
-    # `accuracy_series` renvoie None sur une vérité trop peu profonde pour être
-    # évaluée au niveau 4. Un `== True` direct la compte comme fausse : les deux
-    # colonnes d'accuracy de ce tableau étaient sous-estimées d'autant. Le masque
-    # ne dépend que de la vérité, il vaut donc pour toutes les colonnes.
+    # `accuracy_series` ne renvoie None que sur une ligne sans vérité, qu'un
+    # `== True` direct compterait comme fausse. Le masque est donc vide sur
+    # `scorable` — on le garde parce qu'il coûte zéro et que `arb` pourrait un
+    # jour venir d'ailleurs. Il ne dépend que de la vérité, donc il vaut pour
+    # toutes les colonnes.
     _res_final = accuracy_series(arb[TRUTH], arb[FINAL_COL], 4)
-    arb["_evaluable"] = _res_final.notna()
+    arb["_scored"] = _res_final.notna()
     arb["_final_ok"] = _res_final == True  # noqa: E712
     src_ok_cols = []
     for c in PRED_COLS:
@@ -1380,9 +1429,9 @@ else:
     arb["Périmètre"] = arb.apply(perim, axis=1)
     order_p = ["Dans les prédictions", "Hors prédict., vu (TTC top2/3)", "Totalement inédit"]
     # `n` compte les décisions — c'est la question du périmètre. Les accuracies
-    # portent sur les seules lignes évaluables au niveau 4 : deux dénominateurs,
-    # donc deux colonnes.
-    _ev = arb[arb["_evaluable"]]
+    # portent sur les lignes étiquetées, qui sont toutes celles de `scorable` :
+    # un seul dénominateur, donc une seule colonne `n`.
+    _ev = arb[arb["_scored"]]
     ptbl = (
         pd.concat(
             [
@@ -1404,7 +1453,6 @@ else:
     ptbl[acc_perim_col] = (100 * ptbl["acc"]).round(1)
     ptbl["≥1 source juste (%)"] = (100 * ptbl["src"]).round(1)
     ptbl["n"] = ptbl["n"].fillna(0).astype(int)
-    ptbl["n évaluable"] = ptbl["n_eval"].fillna(0).astype(int)
 
     display(Markdown(
         f"Sur **{n_arb:,}** observations tranchées (vérité terrain disponible) : "
@@ -1413,7 +1461,7 @@ else:
         f"totalement inédits (hors même du top-2/3 de TTC).".replace(",", " ")
     ))
     display(Markdown(
-        ptbl[["Périmètre", "n", "% arbitrées", "n évaluable", acc_perim_col,
+        ptbl[["Périmètre", "n", "% arbitrées", acc_perim_col,
               "≥1 source juste (%)"]]
         .to_markdown(index=False)
     ))
@@ -1421,8 +1469,8 @@ else:
     out = arb[~arb["_in_main"]]
     if len(out):
         # Une décision « manquée » suppose qu'on puisse la juger : restreint aux
-        # lignes évaluables, comme le tableau ci-dessus.
-        missed = out[out["_evaluable"] & out["_any_src_ok"] & ~out["_final_ok"]]
+        # lignes étiquetées, comme le tableau ci-dessus.
+        missed = out[out["_scored"] & out["_any_src_ok"] & ~out["_final_ok"]]
         display(Markdown(
             f"**Opportunités manquées :** parmi les {len(out):,} décisions hors périmètre, "
             f"**{len(missed):,}** ({len(missed) / len(out) * 100:.1f} %) sont fausses au niveau 4 "
@@ -1577,7 +1625,7 @@ Markdown(
 
 ## Récapitulatif
 
-Accuracy par niveau, sur les seules observations évaluables à ce niveau — le `n` de chaque colonne. Ces chiffres excluent les lignes captées par la regex : le chiffre livré, regex comprise, est en tête de rapport.
+Accuracy par niveau, sur toutes les observations étiquetées — même population à chaque niveau, les colonnes se comparent. Ces chiffres excluent les lignes captées par la regex : le chiffre livré, regex comprise, est en tête de rapport.
 
 ```{python}
 # | label: tbl-summary
@@ -1586,8 +1634,12 @@ for name, col in available_methods(scorable):
     row = {"méthode": name}
     for k in CANONICAL_LEVELS:
         _, n_app, acc = accuracy(scorable[TRUTH], scorable[col], k)
-        row[f"niv{k} (n={n_app})"] = acc
+        row[f"niv{k}"] = acc
     summary_rows.append(row)
 summ = pd.DataFrame(summary_rows).set_index("méthode")
-Markdown(summ.to_markdown(floatfmt=".1%"))
+Markdown(
+    f"Sur **{len(scorable):,} observations étiquetées**".replace(",", " ")
+    + ", à tous les niveaux.\n\n"
+    + summ.to_markdown(floatfmt=".1%")
+)
 ```

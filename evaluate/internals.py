@@ -171,6 +171,83 @@ def _read(con, path: Optional[str]) -> Optional[pd.DataFrame]:
         return None
 
 
+def input_counts(con, path: Optional[str]) -> Optional[dict]:
+    """Décompte du fichier d'entrée, écrit par `build-datasets`. None si absent.
+
+    Absent veut dire : run antérieur à l'introduction de cet artefact, ou run
+    lancé sans `--input-file`. Même contrat tolérant que `_read` — le rapport se
+    dégrade, il n'échoue pas.
+    """
+    frame = _read(con, path)
+    if frame is None or not len(frame):
+        return None
+    # pandas remonte en NaN ce que l'écrivain avait mis à None (`n_labelled` est
+    # nullable) : on le ramène à None pour que l'appelant teste une seule chose.
+    return {
+        k: (None if pd.isna(v) else v)
+        for k, v in frame.iloc[0].to_dict().items()
+    }
+
+
+def run_metadata_rows(
+    counts: Optional[dict], n_deliverable: Optional[int] = None
+) -> List[tuple]:
+    """Lignes « volumétrie » du tableau de métadonnées, déjà formatées.
+
+    Ici et non dans le `.qmd` : le gabarit ne porte aucun test, ce module si. La
+    logique conditionnelle — artefact absent, écart inexpliqué, livrable qui ne
+    coïncide pas — est exactement ce qu'on veut pouvoir vérifier sans S3 ni
+    Quarto.
+
+    Renvoie une liste de couples `(libellé, valeur)`, les lignes qu'on ne peut
+    pas remplir étant omises plutôt qu'affichées vides.
+    """
+    def n(value) -> str:
+        return f"{int(value):,}".replace(",", " ")
+
+    if counts is None:
+        return [(
+            "Fichier d'entrée",
+            "_(décompte absent : run antérieur à `build-datasets/input_counts.parquet`, "
+            "ou lancé sans `--input-file`)_",
+        )]
+
+    rows = [
+        ("Fichier d'entrée", f"`{counts['input_file']}`"),
+        ("**Lignes du fichier d'entrée**", f"**{n(counts['n_input_rows'])}**"),
+        ("— retirées : libellé vide après nettoyage", n(counts["n_dropped_empty_label"])),
+        ("— retirées : produit non codable", n(counts["n_dropped_uncodable"])),
+    ]
+
+    # L'écart inexpliqué n'est affiché que s'il existe : c'est le signe qu'un
+    # filtre a été ajouté en amont sans mettre à jour le compteur.
+    inexplique = (
+        counts["n_input_rows"]
+        - counts["n_dropped_empty_label"]
+        - counts["n_dropped_uncodable"]
+        - counts["n_observations"]
+    )
+    if inexplique:
+        rows.append(("— retirées : **cause non identifiée**", f"**{n(inexplique)}**"))
+
+    rows.append(
+        ("**Lignes retenues** = lignes du fichier livré", f"**{n(counts['n_observations'])}**")
+    )
+    if counts.get("n_labelled") is not None:
+        rows.append(("dont portant une étiquette", n(counts["n_labelled"])))
+
+    # `export-results` part de TOUTES les observations et fusionne en `left` :
+    # les deux nombres sont égaux par construction. Les afficher tous les deux
+    # n'apprendrait rien — mais le jour où une jointure se met à dupliquer, le
+    # rapport doit le dire plutôt que d'annoncer un chiffre faux.
+    if n_deliverable is not None and n_deliverable != counts["n_observations"]:
+        rows.append((
+            "⚠️ Lignes réellement dans le livrable",
+            f"**{n(n_deliverable)}** — devrait égaler les lignes retenues",
+        ))
+    return rows
+
+
 def load_classifier_records(
     con,
     scorable: pd.DataFrame,
@@ -540,7 +617,7 @@ def end_to_end(
         [
             {
                 "niveau": k,
-                "n évaluable": ensemble[k][1],
+                "n": ensemble[k][1],
                 "justes": ensemble[k][0],
                 "accuracy livrée": ensemble[k][2],
                 **(
@@ -574,7 +651,7 @@ def end_to_end(
                     "source": src,
                     "n livré": len(sub),
                     "part du livré": len(sub) / len(merged),
-                    f"n évaluable niv{TARGET_LEVEL}": n_app,
+                    "n avec vérité": n_app,
                     f"accuracy niv{TARGET_LEVEL}": acc,
                 }
             )
