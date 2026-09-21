@@ -1,0 +1,150 @@
+---
+title: "1. Preprocessing"
+---
+
+## Rôle de l'étape
+
+`build-datasets` construit, à partir des sources brutes, **tous** les jeux de données
+normalisés dont le pipeline a besoin en aval. Elle enchaîne deux pipelines indépendants :
+
+1. **Pipeline annotations** — consolide les données annotées (BdF 2024 + historique 2017 +
+   suggester), standardise les libellés, agrège le budget et produit `annotations_full`, la
+   **base de connaissance** des classifieurs.
+2. **Pipeline observations** — prépare les libellés **à coder**, issus du fichier d'entrée.
+
+::: {.callout-note}
+## Il y avait ici un split train / test
+Le pipeline annotations coupait son résultat en deux (`raw_train` / `raw_test`, 50/50) parce
+qu'il n'existait qu'un seul jeu annoté : mesurer sans qu'un classifieur retrouve ses propres
+réponses exigeait d'en réserver une moitié. Des données fraîches annotées arrivent désormais
+régulièrement, donc **toute la base historique sert de KB** et le split a disparu.
+
+L'évaluation, elle, est devenue une [étape finale facultative](11-evaluate.qmd) : elle mesure
+sur les étiquettes du fichier d'entrée lui-même, quand il en porte.
+:::
+
+- Code : [`build-datasets/`](https://github.com/InseeFrLab/codif-coicop-bdf/tree/main/build-datasets) — entrée `build-datasets/main.py`
+- Commande : `python main.py --run-id=<id> --run-date=YYYY-MM-DD --input-file=<s3> --text-column=NAT_DEP --shop-column=MAG_DEP --budget-column=MONT_DEP`
+- `--input-file` est **obligatoire**. Ajouter `--label-column=<colonne>` si le fichier porte
+  une vérité terrain : elle est alors recopiée dans `code`, et le run devient évaluable.
+
+## Entrées
+
+| Source | Chemin |
+|---|---|
+| Annotations COPAIN | `data/output-annotation/**` (parquet partitionné) |
+| Annotations 2024 (CSV) | `data/codification-manuelle-anterieure/annotations_test_2024.csv` |
+| Annotations historiques 2017 | `data/codification-manuelle-anterieure/annotations_BDF_2017.csv` |
+| Pool « suggester » | `data/input-annotation/liste_produits_fr_copain.csv` |
+| Table enseigne → type | `data/input-annotation/liste_magasins.csv` |
+| Produits non codables | `data/codification-manuelle-anterieure/produit_non_annotable.csv` |
+| Fichier à coder | `s3://…/workflow_inputs/BDF_data_tickets_appli_20260320_a_codif.csv` |
+
+## Traitement
+
+### Briques partagées
+
+Les deux pipelines réutilisent la même standardisation des libellés
+(`build-datasets/main.py`) :
+
+- `merge_shop_types` — normalise `shop` puis le joint à `liste_magasins.csv` pour récupérer
+  `shop_type_code` / `shop_type_name` (ex. supermarché, restauration rapide…).
+- `normalize_products` — calcule les deux variantes de libellé, retire les produits non
+  codables, attribue un identifiant unique `id` (UUID).
+
+#### Deux niveaux de normalisation
+
+À partir de `raw_product`, deux colonnes sont calculées :
+
+- **`l_pr_product`** (normalisation *légère*, `normalize_text`) : espaces multiples réduits,
+  ligatures (`œ`→`oe`), accents supprimés (décomposition NFKD + filtrage ASCII), passage en
+  minuscules. Utilisée par les **modèles** (RAG, TTC).
+- **`s_pr_product`** (normalisation *forte*, `preprocess_text`) : repart de `l_pr_product`
+  puis retire le bruit, tokenise, supprime les *stopwords*, etc. Utilisée par les **regex**.
+
+```python
+df["l_pr_product"] = normalize_text(df["raw_product"])
+df["s_pr_product"] = df["l_pr_product"].copy()
+df = preprocess_text(df, "s_pr_product", stopwords)
+```
+
+### Pipeline annotations
+
+`build_annotations` consolide COPAIN + 2024 + suggester, ajoute l'historique 2017,
+applique les briques partagées, exporte des contrôles qualité (`qa/`), puis :
+
+- agrège le budget séparément pour les données 2024 et l'historique
+  (`aggregate_budget`, dédoublonnage + somme) ;
+- produit `annotations_full` : BdF 2024 + historique 2017 + suggester, en un seul jeu.
+
+### Pipeline observations
+
+Les colonnes d'entrée sont d'abord renommées vers les noms canoniques :
+
+```python
+column_mapping = {
+    args.text_column:   "raw_product",   # NAT_DEP  → raw_product
+    args.shop_column:   "shop",          # MAG_DEP  → shop
+    args.budget_column: "budget",        # MONT_DEP → budget
+    args.annee_column:  "annee",
+    args.source_column: "source",
+}
+```
+
+Puis, si `--label-column` est fourni, la colonne d'étiquettes est **recopiée dans `code`** —
+la même colonne que celle des annotations, donc rien d'autre ne change dans la chaîne :
+
+```python
+if args.label_column:
+    if args.label_column not in df.columns:
+        raise ValueError(...)          # échoue tout de suite, pas dans 2 h
+    df = df.rename(columns={args.label_column: "code"})
+```
+
+Enfin, le schéma est aligné sur celui des annotations pour que les étapes suivantes ne
+plantent pas. `code` n'est mis à `NA` **que s'il n'a pas été fourni ci-dessus** :
+
+```python
+prediction_defaults = {
+    "annee": pd.NA, "code": pd.NA, "coicop": pd.NA,
+    "shop": pd.NA, "shop_type_name": pd.NA, "budget": pd.NA,
+    "n_obs": 1, "source": "prediction",
+}
+for col, default in prediction_defaults.items():
+    if col not in df.columns:
+        df[col] = default
+```
+
+`_source_input_file` conserve le chemin du fichier d'origine (réutilisé par `export-results`
+pour nommer le résultat).
+
+## Exemple sur le fil rouge
+
+| `raw_product` (=`NAT_DEP`) | `l_pr_product` | `s_pr_product` | `shop` |
+|---|---|---|---|
+| `Bagu. Tradition U Blé Bretagne` | `bagu. tradition u ble bretagne` | `bagu tradition u ble bretagne` | u |
+| `Ticket CB` | `ticket cb` | `ticket cb` | station netto |
+| `Max garden flowers balle surprise` | `max garden flowers balle surprise` | `max garden flowers balle surprise` | action |
+| `Illisible` | `illisible` | `illisible` | — |
+
+Si `Illisible` figure dans la liste des produits non codables
+(`produit_non_annotable.csv`), la ligne est **retirée** à cet endroit
+(`df.loc[~df["raw_product"].isin(uncodable_products)]`). Sinon, elle poursuit et sera
+captée plus loin par la règle regex `^illisible$ → 98.4`.
+
+## Sorties
+
+`{run}` = `s3://projet-budget-famille/data/workflow_runs/{run_date}/{run_id}/build-datasets`
+
+| Fichier | Contenu |
+|---|---|
+| `{run}/annotations_full.parquet` | annotations consolidées complètes (BdF 2024 + historique 2017 + suggester), budget agrégé. **C'est la base de connaissance** des classifieurs |
+| `{run}/suggester.parquet` | suggester préprocessé (`source="suggester"`), lu directement par [`classify-lcs`](03-classify-lcs.qmd) |
+| `{run}/observations.parquet` | lignes **à coder** (`id`, `raw_product`, `l_pr_product`, `s_pr_product`, `shop`, `shop_type_name`, `budget`, `code`, `_source_input_file`, `source="prediction"`). `code` est `NA` sauf si `--label-column` a été fourni |
+| `{run}/qa/*.parquet` | contrôles qualité (doublons suggester, produits multi-codes) |
+
+Toutes les étapes aval travaillent sur `observations.parquet` (`classify-regex` via
+`test_set_prod`, `reconcile-llm --extra-columns-file`, `export-results`), et sur
+`annotations_full.parquet` comme KB.
+
+➡️ Étape suivante : [2. Codif regex](02-classify-regex.qmd)

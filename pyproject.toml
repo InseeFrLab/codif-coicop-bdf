@@ -1,0 +1,94 @@
+# Racine du workspace uv — elle ne porte aucun code et aucune dépendance
+# d'exécution. Son seul rôle : déclarer les modules Python du dépôt comme
+# membres d'un même workspace, ce qui force UNE résolution commune et donc UN
+# seul `uv.lock` (à côté de ce fichier).
+#
+# Pourquoi : les 12 modules se passent des Parquet d'étape en étape. Avec un
+# lock par module, ils avaient divergé sur les briques qui écrivent et relisent
+# ces fichiers — pandas 2.3.3 pour classify-ttc contre 3.0.5 pour reconcile-llm,
+# duckdb 1.4.4 contre 1.5.5, pyarrow 22 contre 25. Une seule résolution rend
+# cet écart impossible.
+#
+# Ce que ça ne change pas : chaque module garde son `pyproject.toml` et sa
+# propre liste de dépendances, et `cd <module> && uv sync` n'installe QUE les
+# dépendances de ce module (le lock partagé ne dicte que les versions, pas le
+# périmètre installé).
+#
+# Ajouter une dépendance à un module, depuis n'importe où dans le dépôt :
+#   uv add --package <module> <paquet>
+# Mettre à jour un paquet pour tout le dépôt :
+#   uv lock --upgrade-package <paquet>
+#
+# --- Version commune de pandas : 2.x, et ce n'est pas un choix -----------------
+# `mlflow` déclare `pandas<3` (toutes les versions >= 3.10 sauf 3.11.0). Cinq
+# modules en dépendent (classify-ttc, rag-notices, rag-annotations, report,
+# sirus), donc aucune résolution commune en pandas 3 n'existe aujourd'hui.
+# `build-datasets` et `classify-regex`, qui demandaient `pandas>=3`, ont été relâchés
+# en `>=2.3` — leurs locks isolés les avaient emmenés en 3.0.x, ce qui était
+# précisément l'incohérence que ce workspace supprime.
+#
+# Aucune contrainte artificielle n'est posée ici : le plafond vient de mlflow et
+# disparaîtra avec lui. Le jour où mlflow supportera pandas 3,
+# `uv lock --upgrade-package pandas` fera monter tout le dépôt d'un coup.
+
+[project]
+name = "codif-coicop-bdf"
+version = "0.1.0"
+description = "Pipeline de codification COICOP de l'enquête Budget de Famille (racine de workspace)"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = []
+
+[tool.uv]
+# La racine n'est pas un paquet installable : rien à construire ici.
+package = false
+
+[tool.uv.workspace]
+# `classify-lcs/` (R) et `annexes/` (scripts d'analyse hors pipeline) ne
+# sont pas des projets Python : ils ne peuvent pas être membres.
+members = [
+    "build-datasets",
+    "classify-regex",
+    # Socle partagé : ne dépend d'aucun autre membre, donc aucun cycle possible.
+    "common",
+    "classify-ttc",
+    "evaluate",
+    "export-results",
+    "prune-codes",
+    "rag-annotations",
+    "rag-notices",
+    "reconcile-llm",
+    "reconcile-sirus",
+    "report",
+]
+
+# Outillage transverse, disponible depuis la racine (`uv run ruff check .`).
+# Les groupes `dev` des modules restent en place : ils servent aux commandes
+# documentées dans leurs README (`cd reconcile-sirus && uv run pytest`).
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+    "ruff>=0.15.1",
+]
+
+# --- ruff : chasse aux vrais défauts, pas au style -----------------------------
+# Volontairement PAS un linter complet. La mise en forme du code n'a jamais fait
+# échouer une étape ; ces règles-ci si :
+#   E9  erreurs de syntaxe          F7  constructions invalides
+#   F63 comparaisons toujours vraies F82 nom utilisé sans être défini
+#
+# F82 est celle qui compte. Elle attrape le cas où un fichier utilise quelque
+# chose qu'il n'a jamais importé — invisible à un simple `--help`, puisque le
+# nom n'est évalué qu'à l'exécution de la fonction qui s'en sert. C'est ce qui a
+# fait échouer l'étape `report` après 8 minutes de smoke run.
+[tool.ruff.lint]
+select = ["E9", "F63", "F7", "F82"]
+
+[tool.ruff]
+exclude = [
+    # Script d'analyse en style notebook (cellules `# %%`), 309 lignes, qui lit
+    # des colonnes n'existant plus. Déjà signalé obsolète dans
+    # docs/limites-vigilance.qmd. Exclusion à retirer le jour où il est réparé
+    # ou supprimé — c'est le seul fichier exclu, et il doit le rester.
+    "rag-notices/scripts/eval.py",
+]

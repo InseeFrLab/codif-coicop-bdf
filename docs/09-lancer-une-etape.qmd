@@ -23,15 +23,25 @@ local, il faut exporter soi-même les variables requises par l'étape :
 
 | Étape | Variables d'environnement requises |
 |---|---|
-| `preprocessing`, `codif-regex`, `codif-lcs`, `final-output` | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `AWS_S3_ENDPOINT`, `AWS_ENDPOINT_URL` |
-| `prune` | `AWS_*` + `DDC_ENCRYPTION_KEY` |
-| `create-vector-db`, `create-vector-db-annotations` | `AWS_*` + `DDC_ENCRYPTION_KEY` + `LLMLAB_URL`, `LLMLAB_API_KEY` + `QDRANT_URL`, `QDRANT_API_KEY`, `QDRANT_API_PORT` |
-| `run-rag`, `run-rag-annotations` | `AWS_*` + `DDC_ENCRYPTION_KEY` + `LLMLAB_*` + `QDRANT_*` + `MLFLOW_TRACKING_URI`, `MLFLOW_TRACKING_USERNAME`, `MLFLOW_TRACKING_PASSWORD` + `LANGFUSE_BASE_URL`, `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY` |
-| `run-ttc` | `AWS_*` + `MLFLOW_TRACKING_*` (chargement du modèle depuis MLflow) |
-| `decide-coicop` | `AWS_*` + `LLMLAB_API_KEY` (+ `LLMLAB_URL` pour un endpoint non-OpenAI) |
+| `build-datasets`, `classify-regex`, `classify-lcs`, `export-results` | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `AWS_S3_ENDPOINT`, `AWS_ENDPOINT_URL` |
+| `prune-codes` | `AWS_*` + `DDC_ENCRYPTION_KEY` |
+| `index-notices`, `index-annotations` *(workflows d'indexation)* | `AWS_*` + `DDC_ENCRYPTION_KEY` + `LLMLAB_URL`, `LLMLAB_API_KEY` + `QDRANT_URL`, `QDRANT_API_KEY`, `QDRANT_API_PORT` |
+| `classify-rag-notices`, `classify-rag-annotations` | `AWS_*` + `DDC_ENCRYPTION_KEY` + `LLMLAB_*` + `QDRANT_*` + `MLFLOW_TRACKING_URI`, `MLFLOW_TRACKING_USERNAME`, `MLFLOW_TRACKING_PASSWORD` + `LANGFUSE_BASE_URL`, `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY` |
+| `classify-ttc` | `AWS_*` + `MLFLOW_TRACKING_*` (chargement du modèle depuis MLflow) |
+| `reconcile-llm` | `AWS_*` + `LLMLAB_API_KEY` (+ `LLMLAB_URL` pour un endpoint non-OpenAI) |
 | `report` | `AWS_*` + `MLFLOW_TRACKING_*` (facultatif : sans `MLFLOW_TRACKING_URI`, le log MLflow est sauté) |
-| `sirus-predict` | `AWS_*` + `MLFLOW_TRACKING_*` (résolution de `sirus-model-uri`) |
-| entraînement SIRUS (`sirus/train.sh`, hors pipeline) | `AWS_*` + `MLFLOW_TRACKING_*` — **obligatoires** ici, contrairement au `report` : le modèle et ses métriques n'ont pas d'autre destination, et le script refuse de démarrer sans `MLFLOW_TRACKING_URI` |
+| `evaluate` | idem `report` |
+| `reconcile-sirus` | `AWS_*` + `MLFLOW_TRACKING_*` (résolution de `reconcile-sirus-model-uri`) |
+| entraînement SIRUS (`reconcile-sirus/train.sh`, hors pipeline) | `AWS_*` + `MLFLOW_TRACKING_*` — **obligatoires** ici, contrairement au `report` : le modèle et ses métriques n'ont pas d'autre destination, et le script refuse de démarrer sans `MLFLOW_TRACKING_URI` |
+
+::: {.callout-note}
+## Où vit chaque étape
+Le dépôt contient **trois** workflows. `index-notices` et `index-annotations` ne sont plus
+des templates de `argo/codif-pipeline.yaml` : elles vivent dans
+`argo/index-notices-pipeline.yaml` et `argo/index-annotations-pipeline.yaml`, qui sont
+eux-mêmes des chaînes courtes et se relancent en entier (voir
+[Reconstruire une collection Qdrant](#reconstruire-une-collection-qdrant)).
+:::
 
 ## Mode 1 — via Argo (`--entrypoint`)
 
@@ -41,56 +51,61 @@ depuis les `-p` passés en ligne de commande.
 
 ```bash
 # Étapes simples : seuls run_id / run_date sont requis
-argo submit argo/codif-pipeline.yaml --entrypoint codif-regex \
+argo submit argo/codif-pipeline.yaml --entrypoint classify-regex \
   -p run_id=codif-abc12 -p run_date=2026-03-20
-argo submit argo/codif-pipeline.yaml --entrypoint codif-lcs \
+argo submit argo/codif-pipeline.yaml --entrypoint classify-lcs \
   -p run_id=codif-abc12 -p run_date=2026-03-20
-argo submit argo/codif-pipeline.yaml --entrypoint prune \
+argo submit argo/codif-pipeline.yaml --entrypoint prune-codes \
   -p run_id=codif-abc12 -p run_date=2026-03-20
 
-# preprocessing : il faut aussi le fichier d'entrée et le mappage de colonnes
-argo submit argo/codif-pipeline.yaml --entrypoint preprocessing \
+# build-datasets : il faut aussi le fichier d'entrée et le mappage de colonnes
+argo submit argo/codif-pipeline.yaml --entrypoint build-datasets \
   -p run_id=codif-abc12 -p run_date=2026-03-20 \
   -p input_file=s3://projet-budget-famille/data/workflow_inputs/mon_fichier.csv \
   -p text_column=NAT_DEP -p shop_column=MAG_DEP -p budget_column=MONT_DEP \
   -p annee_column= -p source_column=
 
-# run-rag / run-rag-annotations : model-name est un argument du workflow
-# (pas de sampling ici : il est centralisé à codif-regex)
-argo submit argo/codif-pipeline.yaml --entrypoint run-rag \
-  -p run_id=codif-abc12 -p run_date=2026-03-20 -p model-name=gemma4-26b-moe
-argo submit argo/codif-pipeline.yaml --entrypoint run-rag-annotations \
-  -p run_id=codif-abc12 -p run_date=2026-03-20 \
-  -p model-name=gemma4-26b-moe -p sample-annotations=
+# classify-rag-notices / classify-rag-annotations : le nom de la collection Qdrant est
+# OBLIGATOIRE. Attention, l'input du template s'appelle `collection-name` (et non
+# classify-rag-*-collection, qui est le nom du paramètre global du workflow).
+# Pas de sampling ici : il est centralisé à classify-regex.
+argo submit argo/codif-pipeline.yaml --entrypoint classify-rag-notices \
+  -p run_id=codif-abc12 -p run_date=2026-03-20 -p classify-rag-model=gemma4-26b-moe \
+  -p collection-name=coicop_notices__2026-09-02__index-notices-a7k2p
+argo submit argo/codif-pipeline.yaml --entrypoint classify-rag-annotations \
+  -p run_id=codif-abc12 -p run_date=2026-03-20 -p classify-rag-model=gemma4-26b-moe \
+  -p collection-name=coicop_annotations__2026-09-02__index-annotations-b3x9q
 
-# run-ttc : ttc-model-uri a une valeur par défaut, surchargeable
-argo submit argo/codif-pipeline.yaml --entrypoint run-ttc \
+# classify-ttc : classify-ttc-model-uri a une valeur par défaut, surchargeable
+argo submit argo/codif-pipeline.yaml --entrypoint classify-ttc \
   -p run_id=codif-abc12 -p run_date=2026-03-20
 
-# final-output : reprend le mappage de colonnes pour restaurer les noms d'origine
-argo submit argo/codif-pipeline.yaml --entrypoint final-output \
+# export-results : reprend le mappage de colonnes pour restaurer les noms d'origine
+argo submit argo/codif-pipeline.yaml --entrypoint export-results \
   -p run_id=codif-abc12 -p run_date=2026-03-20 \
   -p text_column=NAT_DEP -p shop_column=MAG_DEP -p budget_column=MONT_DEP -p annee_column=
 ```
 
 ::: {.callout-warning}
-## Noms d'inputs ≠ noms d'arguments du workflow
-Deux templates déclarent des inputs dont le nom **diffère** des paramètres globaux du
-workflow. En `--entrypoint`, c'est le **nom de l'input du template** qu'il faut passer :
+## Inputs sans équivalent parmi les paramètres du workflow
+En `--entrypoint`, Argo résout les inputs d'un template **par nom** depuis les paramètres du
+workflow, puis depuis les `-p` de la ligne de commande. Un input dont le nom n'existe pas
+parmi les paramètres globaux doit donc être fourni explicitement — c'est le cas de
+`collection-name` (les deux étapes RAG) et de `step-timings` (le rapport) :
 
 ```bash
-# decide-coicop : inputs "model" et "concurrency"
-# (et non decide-model / decide-concurrency)
-argo submit argo/codif-pipeline.yaml --entrypoint decide-coicop \
+# reconcile-llm : les inputs portent bien le nom des paramètres globaux
+argo submit argo/codif-pipeline.yaml --entrypoint reconcile-llm \
   -p run_id=codif-abc12 -p run_date=2026-03-20 \
-  -p model=gemma4-26b-moe -p concurrency=5
+  -p reconcile-llm-model=gemma4-26b-moe -p reconcile-llm-concurrency=5
 
-# report : inputs "experiment-name" (et non report-experiment) et "step-timings"
+# report : "step-timings" n'est pas un paramètre du workflow, il faut le passer
 argo submit argo/codif-pipeline.yaml --entrypoint report \
   -p run_id=codif-abc12 -p run_date=2026-03-20 \
-  -p input_file= -p experiment-name=codif-coicop-eval \
-  -p model-name= -p decide-model=gemma4-26b-moe \
-  -p decide-concurrency=5 -p ttc-model-uri= -p skip-vector-db=true \
+  -p input_file=s3://.../workflow_inputs/mon_fichier.csv -p report-experiment=codif-coicop-eval \
+  -p classify-rag-model= -p reconcile-llm-model=gemma4-26b-moe \
+  -p reconcile-llm-concurrency=5 -p classify-ttc-model-uri= \
+  -p classify-rag-notices-collection= -p classify-rag-annotations-collection= \
   -p skip-report=false -p step-timings='{}'
 ```
 
@@ -105,9 +120,21 @@ d'origine **là où il a échoué**, avec les mêmes paramètres (donc le même 
 
 ## Mode 2 — en local
 
-Chaque sous-dossier est autonome (`pyproject.toml` + `uv.lock`). Les commandes ci-dessous
-sont celles exécutées par les conteneurs Argo, à lancer depuis la racine du dépôt après avoir
-exporté les variables d'environnement du tableau ci-dessus.
+Les commandes ci-dessous sont celles exécutées par les conteneurs Argo, à lancer depuis la
+racine du dépôt après avoir exporté les variables d'environnement du tableau ci-dessus.
+
+Le dépôt est un **workspace `uv`** : un `pyproject.toml` par module, mais **un seul `uv.lock`**
+à la racine et **un seul environnement** (`.venv` à la racine). Conséquence pratique :
+
+- `uv sync` depuis un dossier de module n'installe que les dépendances **de ce module**, aux
+  versions fixées par le lock de la racine — donc les mêmes versions que dans le pipeline ;
+- l'environnement est **remplacé** à chaque `uv sync` : enchaîner deux modules réinstalle ce
+  qu'il faut, ce qui est normal et rapide (le cache `uv` est local) ;
+- pour ajouter une dépendance à un module, depuis n'importe où :
+  `uv add --package <module> <paquet>` ;
+- `--locked` fait échouer la commande si le lock ne correspond plus aux `pyproject.toml`
+  (au lieu de re-résoudre en silence). C'est ce que fait le pipeline ; en local, l'omettre est
+  sans danger.
 
 ```bash
 RUN_ID=codif-abc12
@@ -115,26 +142,29 @@ RUN_DATE=2026-03-20
 RUN_ROOT="s3://projet-budget-famille/data/workflow_runs/$RUN_DATE/$RUN_ID"
 ```
 
-### 1. preprocessing
+### 1. build-datasets
 
 ```bash
-cd preprocessing && uv sync
+cd build-datasets && uv sync --locked
 uv run main.py --run-id $RUN_ID --run-date $RUN_DATE \
   --input-file s3://projet-budget-famille/data/workflow_inputs/mon_fichier.csv \
   --text-column NAT_DEP --shop-column MAG_DEP --budget-column MONT_DEP
 ```
 
-### 2. codif-regex
+`--input-file` est **obligatoire**. Ajouter `--label-column code` si le fichier porte une
+vérité terrain : elle est recopiée dans `code` et rend le run évaluable.
+
+### 2. classify-regex
 
 ```bash
-cd regex-codif && uv sync
+cd classify-regex && uv sync --locked
 uv run src/main.py --run-id $RUN_ID --run-date $RUN_DATE
 ```
 
-### 3. codif-lcs (R)
+### 3. classify-lcs (R)
 
 ```bash
-cd stats-annotations
+cd classify-lcs
 Rscript R/main.R --run-id=$RUN_ID --run-date=$RUN_DATE
 ```
 
@@ -143,85 +173,115 @@ Le parsing des options de `R/main.R` impose la syntaxe `--option=valeur` (signe 
 pas d'espace).
 :::
 
-### 4. prune (depuis `prune/`)
+### 4. prune-codes (depuis `prune-codes/`)
 
 ```bash
-cd prune && uv sync
+cd prune-codes && uv sync --locked
 uv run scripts/main.py --config config/config.yaml \
   --run-id $RUN_ID --run-date $RUN_DATE
 ```
 
-Produit les 5 artefacts prunés sous `$RUN_ROOT/prune/` (voir [3. Prune](pruning.qmd)).
-À lancer **avant** les étapes RAG.
+Produit les 5 artefacts prunés sous `$RUN_ROOT/prune-codes/` (voir [3. Prune](prune-codes.qmd)).
+À lancer **avant** les étapes RAG. Le drapeau `--only {all,nomenclature,kb}` restreint le
+périmètre ; `all` (défaut) est ce qu'exécute le pipeline de codification.
 
-### 5. Branche RAG notices (depuis `coicop-rag/`)
+### 5. classify-rag-notices (depuis `rag-notices/`)
 
 ```bash
-cd coicop-rag && uv sync
+cd rag-notices && uv sync --locked
 
-# Partagé entre runs — à ne refaire que si la nomenclature prunée a changé :
-uv run scripts/0_create_vector_db.py --config config/config.yaml \
-  --run-id $RUN_ID --run-date $RUN_DATE
-
-# Propre au run :
 uv run scripts/2_run_rag.py --config config/config.yaml \
   --run-id $RUN_ID --run-date $RUN_DATE \
+  --collection_name coicop_notices__2026-09-02__index-notices-a7k2p \
   --model_name gemma4-26b-moe   # facultatif
 ```
 
+`--collection_name` est **obligatoire** : il n'y a plus de nom de collection par défaut dans
+la config, précisément pour qu'un oubli échoue au lieu de retomber en silence sur l'index d'un
+autre run. Le script valide la collection contre son manifeste avant de commencer.
+
 ::: {.callout-note}
-Attention au mélange de styles : les scripts attendent `--run-id`/`--run-date` (tirets)
-mais `--model_name`/`--sample_size` (tirets bas).
+Attention au mélange de styles : le script attend `--run-id`/`--run-date` (tirets) mais
+`--collection_name`/`--model_name`/`--sample_size` (tirets bas). Le script d'indexation
+`0_create_vector_db.py`, plus récent, utilise `--collection-name` (tirets).
 :::
 
-### 6. Branche RAG annotations (depuis `coicop-rag-annotations/`)
+### 6. classify-rag-annotations (depuis `rag-annotations/`)
 
 ```bash
-cd coicop-rag-annotations && uv sync
+cd rag-annotations && uv sync --locked
 
-# Partagé entre runs — indexe la KB prunée + le suggester dans Qdrant :
-uv run scripts/0_build_annotation_vector_db.py --config config/config.yaml \
-  --run-id $RUN_ID --run-date $RUN_DATE
-
-# Propre au run — --skip-eval false = mode évaluation (métriques),
-# --skip-eval true = mode production (prédictions seules) :
 uv run scripts/1_run_rag.py --config config/config.yaml \
-  --run-id $RUN_ID --run-date $RUN_DATE --skip-eval false
+  --run-id $RUN_ID --run-date $RUN_DATE \
+  --collection-name coicop_annotations__2026-09-02__index-annotations-b3x9q
 ```
 
-Sortie : `$RUN_ROOT/rag-annotation/predictions.parquet` (le dossier s'appelle
-`rag-annotation`, pas `run-rag-annotations`).
+`--collection-name` est **obligatoire**, pour la même raison qu'au-dessus.
 
-### 7. run-ttc (depuis `codif-ttc/`)
+Sortie : `$RUN_ROOT/classify-rag-annotations/predictions.parquet`.
+
+### 6bis. Reconstruire une collection Qdrant {#reconstruire-une-collection-qdrant}
+
+L'indexation ne fait plus partie du pipeline de codification : elle a ses deux workflows, à
+relancer **en entier** (ce sont des chaînes de deux ou trois étapes).
 
 ```bash
-cd codif-ttc && uv sync
+# Notices : autonome, la nomenclature vient d'un CSV statique
+argo submit argo/index-notices-pipeline.yaml
+
+# Annotations : la KB, c'est toute la base annotée ; kb-sample-size pour un index d'essai
+argo submit argo/index-annotations-pipeline.yaml
+argo submit argo/index-annotations-pipeline.yaml -p kb-sample-size=1000
+```
+
+Chacun imprime en fin d'exécution la ligne à recopier dans `argo/params.yaml`
+(`classify-rag-notices-collection:` / `classify-rag-annotations-collection:`).
+
+En local, les deux constructeurs se lancent comme les autres scripts — le `RUN_ID`/`RUN_DATE`
+est alors celui du run d'indexation, pas celui d'un run de codification, et c'est lui qui se
+retrouve dans le nom de la collection :
+
+```bash
+# après `prune-codes --only nomenclature` sur le même RUN_ID/RUN_DATE
+cd rag-notices && uv sync --locked
+uv run scripts/0_create_vector_db.py --config config/config.yaml \
+  --run-id $RUN_ID --run-date $RUN_DATE
+
+# après `prune-codes --only kb` sur le même RUN_ID/RUN_DATE
+cd rag-annotations && uv sync --locked
+uv run scripts/0_build_annotation_vector_db.py --config config/config.yaml \
+  --run-id $RUN_ID --run-date $RUN_DATE   # + --sample-size N si besoin
+```
+
+### 7. classify-ttc (depuis `classify-ttc/`)
+
+```bash
+cd classify-ttc && uv sync --locked
 uv run main.py predict-basic \
   --model "mlflow-artifacts:/10/cacf2603514b4887bbfb77e2654c9bc1/artifacts/model" \
-  --file   "$RUN_ROOT/codif-regex/raw_test_without_regex.parquet" \
-  --output "$RUN_ROOT/run-ttc/predictions.parquet" \
+  --file   "$RUN_ROOT/classify-regex/raw_test_without_regex.parquet" \
+  --output "$RUN_ROOT/classify-ttc/predictions.parquet" \
   --text-column l_pr_product --top-k 10
 ```
 
-L'URI du modèle est le paramètre de workflow `ttc-model-uri` (cf. `argo/codif-pipeline.yaml`).
+L'URI du modèle est le paramètre de workflow `classify-ttc-model-uri` (cf. `argo/codif-pipeline.yaml`).
 
-### 8. decide-coicop {#decide-coicop}
+### 8. reconcile-llm {#reconcile-llm}
 
 ```bash
-cd decide-coicop && uv sync
-uv run main.py decide-coicop \
-  --lcs-file "$RUN_ROOT/codif-lcs/raw_test_LCS.parquet" \
-  --rag-file "$RUN_ROOT/run-rag/predictions.parquet" \
-  --rag-annotations-file "$RUN_ROOT/rag-annotation/predictions.parquet" \
-  --ttc-file "$RUN_ROOT/run-ttc/predictions.parquet" \
-  --mapping-file "$RUN_ROOT/prune/mapping_lvl4.parquet" \
-  --output-file "$RUN_ROOT/decide-coicop/predictions.parquet" \
-  --extra-columns-file "$RUN_ROOT/preprocessing/raw_test.parquet" \
+cd reconcile-llm && uv sync --locked
+uv run main.py reconcile-llm \
+  --lcs-file "$RUN_ROOT/classify-lcs/raw_test_LCS.parquet" \
+  --rag-file "$RUN_ROOT/classify-rag-notices/predictions.parquet" \
+  --rag-annotations-file "$RUN_ROOT/classify-rag-annotations/predictions.parquet" \
+  --ttc-file "$RUN_ROOT/classify-ttc/predictions.parquet" \
+  --mapping-file "$RUN_ROOT/prune-codes/mapping_lvl4.parquet" \
+  --output-file "$RUN_ROOT/reconcile-llm/predictions.parquet" \
+  --extra-columns-file "$RUN_ROOT/build-datasets/observations.parquet" \
   --model gemma4-26b-moe --concurrency 5
 ```
 
-En mode production, remplacer `--extra-columns-file` par
-`"$RUN_ROOT/preprocessing/observations.parquet"`. Sans `--mapping-file`, les codes ne sont
+ Sans `--mapping-file`, les codes ne sont
 **pas** normalisés (troncature + élagage) — le pipeline Argo le passe toujours.
 
 Si `--output-file` existe déjà, l'étape **reprend automatiquement** les observations non
@@ -231,71 +291,82 @@ interruption.
 Pour déboguer **une seule observation** (affiche le prompt et la décision, n'écrit rien) :
 
 ```bash
-uv run main.py decide-coicop --id <uuid-de-la-ligne> --output json \
+uv run main.py reconcile-llm --id <uuid-de-la-ligne> --output json \
   --model gemma4-26b-moe \
-  --lcs-file "$RUN_ROOT/codif-lcs/raw_test_LCS.parquet" \
-  --rag-file "$RUN_ROOT/run-rag/predictions.parquet" \
-  --rag-annotations-file "$RUN_ROOT/rag-annotation/predictions.parquet" \
-  --ttc-file "$RUN_ROOT/run-ttc/predictions.parquet" \
-  --mapping-file "$RUN_ROOT/prune/mapping_lvl4.parquet"
+  --lcs-file "$RUN_ROOT/classify-lcs/raw_test_LCS.parquet" \
+  --rag-file "$RUN_ROOT/classify-rag-notices/predictions.parquet" \
+  --rag-annotations-file "$RUN_ROOT/classify-rag-annotations/predictions.parquet" \
+  --ttc-file "$RUN_ROOT/classify-ttc/predictions.parquet" \
+  --mapping-file "$RUN_ROOT/prune-codes/mapping_lvl4.parquet"
 ```
 
-### 8bis. sirus-predict (depuis `sirus/`)
+### 8bis. reconcile-sirus (depuis `reconcile-sirus/`)
 
-Alternative au juge LLM (cf. [8bis. SIRUS](06b-sirus.qmd)) : ne tourne dans le pipeline que
-si `conciliation: sirus`. Python pur, aucun besoin de R.
+Alternative au juge LLM (cf. [8bis. SIRUS](06b-reconcile-sirus.qmd)) : ne tourne dans le pipeline que
+si `reconciliation: sirus`. Python pur, aucun besoin de R.
 
 ```bash
-cd sirus && uv sync
+cd reconcile-sirus && uv sync --locked
 uv run main.py predict \
-  --lcs-file "$RUN_ROOT/codif-lcs/raw_test_LCS.parquet" \
-  --rag-file "$RUN_ROOT/run-rag/predictions.parquet" \
-  --rag-annotations-file "$RUN_ROOT/rag-annotation/predictions.parquet" \
-  --ttc-file "$RUN_ROOT/run-ttc/predictions.parquet" \
-  --mapping-file "$RUN_ROOT/prune/mapping_lvl4.parquet" \
-  --tocodify-file "$RUN_ROOT/codif-regex/raw_test_without_regex.parquet" \
-  --extra-columns-file "$RUN_ROOT/preprocessing/raw_test.parquet" \
+  --lcs-file "$RUN_ROOT/classify-lcs/raw_test_LCS.parquet" \
+  --rag-file "$RUN_ROOT/classify-rag-notices/predictions.parquet" \
+  --rag-annotations-file "$RUN_ROOT/classify-rag-annotations/predictions.parquet" \
+  --ttc-file "$RUN_ROOT/classify-ttc/predictions.parquet" \
+  --mapping-file "$RUN_ROOT/prune-codes/mapping_lvl4.parquet" \
+  --tocodify-file "$RUN_ROOT/classify-regex/raw_test_without_regex.parquet" \
+  --extra-columns-file "$RUN_ROOT/build-datasets/observations.parquet" \
   --model-uri "mlflow-artifacts:/12/9f3c.../artifacts/model" \
-  --output-file "$RUN_ROOT/sirus-predict/predictions.parquet"
+  --output-file "$RUN_ROOT/reconcile-sirus/predictions.parquet"
 ```
 
-En mode production, remplacer `--extra-columns-file` par
-`"$RUN_ROOT/preprocessing/observations.parquet"`. L'URI du modèle est le paramètre de workflow
-`sirus-model-uri` ; un chemin local vers un dossier contenant `rules.json` est aussi accepté,
+ L'URI du modèle est le paramètre de workflow
+`reconcile-sirus-model-uri` ; un chemin local vers un dossier contenant `rules.json` est aussi accepté,
 ce qui permet de tester sans MLflow.
 
-### 9. final-output
+### 9. export-results
 
 ```bash
-cd final-output && uv sync
+cd export-results && uv sync --locked
 uv run main.py --run-id $RUN_ID --run-date $RUN_DATE \
   --input-file s3://projet-budget-famille/data/workflow_inputs/mon_fichier.csv \
   --text-column NAT_DEP --shop-column MAG_DEP --budget-column MONT_DEP
 ```
 
-(`--input-file` en mode production seulement : il sélectionne `observations.parquet` comme
-base et restaure le nom du fichier livré.)
+(`--input-file` est obligatoire : il restaure le nom du fichier livré.)
 
 ### 10. report
 
 ```bash
-cd report && uv sync
+cd report && uv sync --locked
 uv run main.py --run-id $RUN_ID --run-date $RUN_DATE \
   --experiment-name codif-coicop-eval
 ```
 
-Le mode (évaluation ou prédiction) est détecté automatiquement (voir
-[8. Report](08-report.qmd)). Sans `MLFLOW_TRACKING_URI`, le log MLflow est simplement sauté.
+Sans `MLFLOW_TRACKING_URI`, le log MLflow est simplement sauté.
+
+### 11. evaluate *(facultative)*
+
+```bash
+cd evaluate && uv sync --locked
+uv run main.py --run-id $RUN_ID --run-date $RUN_DATE \
+  --input-file s3://projet-budget-famille/data/workflow_inputs/mon_fichier.csv \
+  --reconciliation llm --experiment-name codif-coicop-eval \
+  --source-column source          # facultatif : ventilation par provenance
+```
+
+Elle n'a de sens que sur un run dont le fichier d'entrée portait une colonne d'étiquettes
+(`--label-column` de `build-datasets`). Sans quoi elle **échoue** en annonçant que la vérité
+canonique `code_lvl4` est absente. Voir [11. Evaluate](11-evaluate.qmd).
 
 ## Entraîner le modèle SIRUS (hors pipeline)
 
 L'entraînement **n'est pas une étape du pipeline** : il produit un modèle destiné à un run
-*futur*, et `sirus-model-uri` doit être connue au `argo submit`. Il se lance donc à la main,
-comme celui de [TTC](05-run-ttc.qmd), sur un run d'**évaluation** passé — un run de production
-ne porte pas la vérité terrain dont l'ajustement a besoin.
+*futur*, et `reconcile-sirus-model-uri` doit être connue au `argo submit`. Il se lance donc à la main,
+comme celui de [TTC](05-classify-ttc.qmd), sur un run passé **étiqueté** (soumis avec
+`label-column`) — l'ajustement a besoin d'une vérité terrain.
 
 ```bash
-cd sirus/
+cd reconcile-sirus/
 ./train.sh 2026-06-29/codif-vvkv9
 ```
 
@@ -312,7 +383,7 @@ Il termine en affichant l'URI à recopier dans `argo/params.yaml` :
 
 ```
 Modèle SIRUS loggué. Pour l'utiliser, mettre dans argo/params.yaml :
-    sirus-model-uri: mlflow-artifacts:/12/9f3c.../artifacts/model
+    reconcile-sirus-model-uri: mlflow-artifacts:/12/9f3c.../artifacts/model
 ```
 
 ::: {.callout-tip}
@@ -349,17 +420,18 @@ con.execute(f"""
         ENDPOINT '{os.environ["AWS_S3_ENDPOINT"]}',
         URL_STYLE 'path');
 """)
-con.sql(f"SELECT * FROM read_parquet('{RUN_ROOT}/decide-coicop/predictions.parquet') LIMIT 10")
+con.sql(f"SELECT * FROM read_parquet('{RUN_ROOT}/reconcile-llm/predictions.parquet') LIMIT 10")
 ```
 
 **Comprendre un code manquant.** Dans le fichier livré, `predicted_code` vide signifie
 « ni regex, ni LLM ». La raison de l'échec LLM est dans la colonne **`llm_error`** de
-`$RUN_ROOT/decide-coicop/predictions.parquet`
-(cf. [8. Decide](06-decide-coicop.qmd#que-peut-renvoyer-la-décision)).
+`$RUN_ROOT/reconcile-llm/predictions.parquet`
+(cf. [8. Decide](06-reconcile-llm.qmd#que-peut-renvoyer-la-décision)).
 
-**Tracer les appels LLM.** Les appels de `run-rag` et `run-rag-annotations` sont tracés dans
+**Tracer les appels LLM.** Les appels de `classify-rag-notices` et `classify-rag-annotations` sont tracés dans
 **Langfuse** (prompt, réponse, latence par produit). Les métriques de chaque branche RAG vont
-dans **MLflow** (expériences `test` et `rag-annotation`), et les paramètres/métriques du run
+dans **MLflow** (expériences `test` et `rag-annotation`, avec les tags de provenance de
+l'index : `index.git_sha`, `index.run_id`), et les paramètres/métriques du run
 complet dans l'expérience `codif-coicop-eval` via l'étape `report`, avec le `report.html` en
 artefact.
 

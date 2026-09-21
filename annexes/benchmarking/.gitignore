@@ -1,0 +1,4 @@
+/.quarto/
+**/*.quarto_ipynb
+# Rendu du bilan : artefact reconstructible (~2 Mo, ressources embarquées).
+bilan-codification.html

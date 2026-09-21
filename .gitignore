@@ -31,14 +31,14 @@ reports.txt
 # rules.json, threshold_sweep.json, rules_printed.txt… — vivent dans MLflow,
 # jamais dans le dépôt : ils sont produits par une exécution, versionnés par
 # leur run_id, et référencés par une URI (cf. `sirus-model-uri`).
-# À ne pas confondre avec sirus/tests/golden/, qui contient des FIXTURES de
+# À ne pas confondre avec reconcile-sirus/tests/golden/, qui contient des FIXTURES de
 # test, volontairement versionnées : sans elles le test d'équivalence
 # Python ↔ sirus.predict ne peut pas tourner (le dépôt n'a pas de CI R).
 mlruns/
 mlflow.db
 
-# Artefacts d'un entraînement SIRUS lancé à la main (`sirus/train.sh`) : table
+# Artefacts d'un entraînement SIRUS lancé à la main (`reconcile-sirus/train.sh`) : table
 # de features, rules.json, mesures. Ils sont conservés en local uniquement pour
 # permettre de relancer la 3ᵉ étape (`finalize`) sans réajuster le modèle ; la
 # version qui compte part dans MLflow.
-sirus/artifacts/
+reconcile-sirus/artifacts/

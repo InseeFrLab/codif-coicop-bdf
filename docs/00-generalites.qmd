@@ -10,77 +10,210 @@ nomenclature COICOP en combinant plusieurs classifieurs complémentaires, puis e
 arbitrant via un LLM (*LLM-as-judge*). Il est orchestré par **Argo Workflows**
 (`argo/codif-pipeline.yaml`).
 
-## Le DAG du pipeline
+## Trois workflows
+
+Le dépôt contient trois manifestes Argo, et cette séparation est une décision de conception,
+pas un accident d'organisation :
+
+| Workflow | Chaîne | Produit |
+|---|---|---|
+| `argo/index-notices-pipeline.yaml` | `prune-codes (--only nomenclature)` → `index-notices` | une collection Qdrant des notices COICOP prunées |
+| `argo/index-annotations-pipeline.yaml` | `build-datasets` → `prune-codes (--only kb)` → `index-annotations` | une collection Qdrant des produits déjà annotés (+ suggester) |
+| `argo/codif-pipeline.yaml` | le DAG de codification ci-dessous | les codes COICOP prédits, le livrable et le rapport |
+
+Deux raisons à la scission. D'une part, l'embedding de toute la nomenclature et de toute la
+base d'exemples est coûteux et n'a aucune raison d'être repayé à chaque codification. D'autre
+part — et c'est le motif décisif — tant que les collections portaient un **nom fixe partagé**
+(`coicop_lineage`, `coicop_annotations_without_copain_2017`), une réindexation détruisait la
+base que lisait un run concurrent. Chaque indexation crée maintenant une collection au nom
+unique, et le pipeline de codification **désigne par paramètre** celle qu'il interroge.
+
+C'est exactement le schéma déjà en place pour `classify-ttc-model-uri` et
+`reconcile-sirus-model-uri` : l'artefact coûteux est produit hors du pipeline qui le consomme,
+son identifiant est recopié dans le fichier de paramètres.
+
+## Le DAG du pipeline de codification
 
 Schéma Excalidraw du [pipeline](https://link.excalidraw.com/l/9vLymO4fSxN/3JjfZov3UgX).
 
 ```text
-                                             ┌──→ create-vector-db ─────────→ run-rag ──────────┐
-   preprocessing ──→ codif-regex ──→ prune ──┤                                                  │
-                          │                  └──→ create-vector-db-annotations ─→ run-rag-ann ──┤
-                          │                                                                    ├──→ decide-coicop ──→ final-output ──→ report
-                          ├──→ codif-lcs ────────────────────────────────────────────────────── ┤
-                          └──→ run-ttc ─────────────────────────────────────────────────────────┘
+build-datasets  (input_file : OBLIGATOIRE — un seul mode)
+  └─→ classify-regex ─┬─→ classify-lcs ──────────────────────────────────────────┐
+                      ├─→ classify-ttc ──────────────────────────────────────────┤
+                      └─→ prune-codes ─┬─→ classify-rag-notices ─────────────────┤
+                                       └─→ classify-rag-annotations ─────────────┤
+                                                                                 │
+        collection Qdrant notices ······› classify-rag-notices                   │
+        collection Qdrant annotations ··› classify-rag-annotations               │
+        (bâties hors pipeline, désignées par paramètre)                          │
+                                                                                 │
+                                     ┌───────────────────────────────────────────┘
+                                     │  les 4 classifieurs convergent
+                                     └─→ reconcile-llm  OU  reconcile-sirus   (exclusifs : paramètre `reconciliation`)
+                                             └─→ export-results ─→ report  (actif par défaut ; skip-report)
+                                                       └─→ evaluate  (facultative : label-column)
 ```
 
 Points à retenir sur cette topologie :
 
-- **`prune` dépend de `codif-regex`** (et non de `preprocessing`) : il a besoin du jeu à coder
-  déjà débarrassé des lignes captées par les regex. Cette étape n'est **jamais** sautée.
-- Seules les deux étapes `create-vector-db*` sont **skippables** (`-p skip-vector-db=true`) :
-  les collections Qdrant survivent d'un run à l'autre.
-- `decide-coicop` attend les quatre classifieurs ; `report` dépend de toutes les étapes
+- **`prune-codes` dépend de `classify-regex`** (et non de `build-datasets`) : il a besoin du jeu à coder
+  déjà débarrassé des lignes captées par les regex. Cette étape tourne à chaque run.
+- **Les étapes `index-*` ne sont plus dans ce DAG.** Les deux collections Qdrant sont bâties à
+  l'avance et passées par nom (`classify-rag-notices-collection`,
+  `classify-rag-annotations-collection`). Il n'y a donc plus de paramètre `skip-index` : il n'y
+  a plus rien à sauter.
+- `reconcile-llm` attend les quatre classifieurs ; `report` dépend de toutes les étapes
   précédentes (il en loggue les durées).
+- **`evaluate` est la dernière**, et facultative : elle ne tourne que si le fichier d'entrée
+  portait une colonne d'étiquettes. Voir [Évaluer un run](11-evaluate.qmd).
 
 Chaque étape lit et écrit sur S3 dans un dossier propre au run :
 `s3://projet-budget-famille/data/workflow_runs/{run_date}/{run_id}/<étape>/`.
 
+## Le run « smoke », avant le vrai run
+
+Tout `argo submit argo/codif-pipeline.yaml` fait tourner le DAG **deux fois** : d'abord une
+passe « smoke » sur `smoke-observations` lignes (100 par défaut, environ 8 minutes), puis le
+run réel. **Un smoke en échec empêche le vrai run de démarrer.**
+
+L'intérêt n'est pas de tester le code — le CI s'en charge — mais d'éprouver *ce run-ci* : le
+fichier d'entrée existe-t-il, son mappage de colonnes est-il correct, les collections Qdrant
+désignées sont-elles lisibles, le modèle SIRUS ou TTC se charge-t-il ? Autant d'erreurs de
+paramétrage qui, sans cette passe, se découvriraient après plusieurs heures de codification.
+
+Les deux passes écrivent sous des `run_id` distincts (`<workflow>-smoke` et `<workflow>`) et
+le smoke logue dans son propre espace MLflow : il ne pollue ni les sorties S3, ni les
+métriques du run réel.
+
+`-p skip-smoke=true` saute la passe — pour une urgence, ou quand un smoke en faux positif
+immobilise la production.
+
+## Où sont déclarés les chemins S3 : `contracts.yaml`
+
+Une étape ne construit plus le chemin d'une autre : elle le demande au registre
+[`contracts.yaml`](https://github.com/InseeFrLab/codif-coicop-bdf/blob/main/contracts.yaml),
+à la racine du dépôt, qui déclare pour chaque étape ses `inputs` et ses `outputs`.
+
+```python
+from codif_common.contracts import artifact
+path = artifact("prune-codes", "mapping_lvl4", run_date=..., run_id=...)
+```
+
+Ce fichier existe parce que chaque étape réécrivait auparavant où trouver les fichiers des
+autres. **Sept mécanismes différents coexistaient** — clé de config, shell dans le YAML Argo,
+f-string Python, `glue` R, variable d'environnement, défaut d'`argparse` — et le même fichier
+pouvait être désigné sept fois de quatre façons. Deux conséquences concrètes : renommer une
+étape a demandé **162 modifications dans 29 fichiers**, et un décalage de chemin entre
+`build-datasets` et `classify-lcs` est passé inaperçu pendant des mois.
+
+Le registre est en **YAML et non en Python** parce que `classify-lcs` est écrit en R et doit
+pouvoir le lire : la syntaxe `{run_date}` / `{run_id}` est comprise telle quelle par
+`str.format()` côté Python et par `glue::glue()` côté R, sans préprocesseur.
+
+Deux garde-fous en découlent. `consumers("classify-regex", "test_without_regex")` répond à
+« qui casse si je change ce fichier ? », question qui demandait auparavant de fouiller les
+sept mécanismes. Et `common/tests/test_contracts.py` vérifie que **toute entrée déclarée
+désigne bien une sortie déclarée** — c'est le contrôle qui aurait rendu visible le décalage
+resté caché des mois.
+
+## Désigner les collections Qdrant
+
+Les deux paramètres de collection sont **obligatoires** et leur défaut est vide,
+délibérément. Argo n'a pas de mécanisme de « paramètre requis » : la garde est donc doublée,
+dans le script du conteneur (`echo` + `exit 1`, avant même le `git clone`) et dans l'argparse
+Python (`required=True`). Un nom absent fait échouer l'étape en quelques secondes plutôt que
+de retomber en silence sur l'index d'un autre run — ou de planter après deux heures.
+
+```yaml
+# argo/params.yaml
+classify-rag-notices-collection: coicop_notices__2026-09-02__index-notices-a7k2p
+classify-rag-annotations-collection: coicop_annotations__2026-09-02__index-annotations-b3x9q
+```
+
+Ces deux lignes sont **imprimées telles quelles** en fin d'exécution du pipeline d'indexation
+correspondant : il n'y a rien à reconstituer depuis les logs, seulement à copier.
+
+Le nom d'une collection suit la forme `{base}__{run_date}__{run_id}[__sampleN]`.
+Il porte ce qu'un humain doit voir d'un coup d'œil (la date, le run, un éventuel
+échantillonnage) ; tout le reste — modèle d'embedding, dimension, stratégie de
+découpage, nombre de points, SHA git — vit dans un **manifeste JSON** écrit à côté :
+
+```
+s3://projet-budget-famille/data/vector_db_manifests/{collection_name}.json
+```
+
+Les étapes `classify-rag-*` relisent ce manifeste **au démarrage**, avant tout travail
+coûteux et avant même d'ouvrir un run MLflow, et refusent de continuer si la collection
+n'existe pas, est vide, ou a été bâtie avec une autre dimension ou un autre modèle
+d'embedding. Le motif : deux collections de même dimension bâties avec des réglages
+différents sont indistinguables, et interroger la mauvaise ne lève aucune erreur — le RAG rend
+simplement de moins bons résultats.
+
 ## Les classifieurs
 
-Cinq briques de codification tournent en parallèle, puis sont conciliées par `decide-coicop` :
+Cinq briques de codification tournent en parallèle, puis sont conciliées par `reconcile-llm`
+**ou** `reconcile-sirus` — les deux conciliations sont exclusives, le paramètre `reconciliation`
+décide laquelle tourne :
 
 | Brique | Approche | Page |
 |---|---|---|
-| Regex | Règles déterministes ancrées | [La codification par regex](02-codif-regex.qmd) |
-| LCS | Similarité de chaînes (plus longue sous-chaîne commune) | [LCS](03-codif-lcs.qmd) |
-| TTC | Classifieur neuronal (n-grammes de caractères) | [TTC](05-run-ttc.qmd) |
-| RAG COICOP | RAG sur les notices de la nomenclature | [RAG sur COICOP](04-coicop-rag.qmd) |
-| RAG annotations | RAG sur exemples déjà codifiés (few-shot) | [RAG sur annotation](09-rag-annotation.qmd) |
+| Regex | Règles déterministes ancrées | [La codification par regex](02-classify-regex.qmd) |
+| LCS | Similarité de chaînes (plus longue sous-chaîne commune) | [LCS](03-classify-lcs.qmd) |
+| TTC | Classifieur neuronal (n-grammes de caractères) | [TTC](05-classify-ttc.qmd) |
+| RAG COICOP | RAG sur les notices de la nomenclature | [RAG sur COICOP](04-rag-notices.qmd) |
+| RAG annotations | RAG sur exemples déjà codifiés (few-shot) | [RAG sur annotation](09-rag-annotations.qmd) |
 
 Le **regex** est à part : il tranche en amont et retire ses lignes du flux. Les **quatre
-autres** produisent chacun une prédiction candidate sur les mêmes observations, que
-[`decide-coicop`](06-decide-coicop.qmd) arbitre.
+autres** produisent chacun une prédiction candidate sur les mêmes observations, qu'arbitre
+soit [`reconcile-llm`](06-reconcile-llm.qmd), un juge LLM, soit
+[`reconcile-sirus`](06b-reconcile-sirus.qmd), une vingtaine de règles à seuils lisibles.
 
-## Modes prod / éval
+## Un seul mode, et l'évaluation en fin de course
 
-Un **seul** workflow (`argo/codif-pipeline.yaml`) couvre les deux usages. Le commutateur est le
-paramètre **`input_file`** :
+Le pipeline de codification (`argo/codif-pipeline.yaml`) n'a **qu'un seul mode** : il code le
+fichier désigné par `input_file`, qui est **obligatoire**. Il n'y a plus de « mode évaluation »
+déclenché par un `input_file` vide.
 
-| | Mode **production** | Mode **évaluation** |
+### Pourquoi il y en avait deux
+
+Le pipeline a été construit **pour être évalué**. Il n'existait alors qu'un seul jeu annoté :
+pour mesurer sa qualité sans qu'un classifieur retrouve ses propres réponses, il fallait le
+couper en deux — une moitié en base de connaissance, l'autre en jeu de test. Cette précaution a
+essaimé : un mode dérivé du seul fait qu'`input_file` soit vide ou non, testé à **treize
+endroits**, plus un `--skip-eval`, un `train_test_split`, une option `kb-scope`, et des calculs
+de métriques dans trois étapes de classification.
+
+Le contexte a changé : des données fraîches annotées arrivent régulièrement. Toute la base
+historique peut donc servir de KB **sans découpage**, et l'évaluation devient une opération
+*d'après-coup* sur un run ordinaire dont l'entrée se trouve porter des étiquettes.
+
+### Ce qui déclenche l'évaluation
+
+C'est la **donnée** qui décide, pas un mode :
+
+| Paramètre | Défaut | Rôle |
 |---|---|---|
-| `input_file` | non vide (CSV/parquet à codifier) | vide (`""`) |
-| Ce qui est codifié | les observations du fichier fourni | le split **test** des annotations manuelles |
-| Vérité terrain | absente (`code` à `NA`) | présente (code annoté) |
-| Livrable | fichier d'entrée enrichi (`final-output`) | rapport d'exactitude |
+| `label-column` | *(vide)* | Nom de la colonne d'étiquettes dans le fichier d'entrée. **Vide ⇒ l'étape `evaluate` est sautée**, ce qui est le cas nominal. Non vide, `build-datasets` la recopie dans `code`, qui la porte jusqu'au bout de la chaîne |
+| `eval-source-column` | *(vide)* | Nom de la colonne de provenance du produit. Ajoute une ventilation de l'accuracy par source au rapport. Ne restreint **jamais** le périmètre codé |
+| `skip-eval` | `false` | Échappatoire : saute `evaluate` même si `label-column` est renseignée |
+| `eval-experiment` | `codif-coicop-eval` | Expérience MLflow de l'étape |
 
-Le mode se propage étape par étape :
-
-| Étape | En production | En évaluation |
-|---|---|---|
-| `preprocessing` | reçoit `--input-file` + le mappage de colonnes, produit **`observations.parquet`** en plus des annotations | produit seulement les annotations (`annotations_full`, `raw_train`, `raw_test`) |
-| `codif-regex` | lit `test_set_prod` = `observations.parquet` et `train_set_prod` = `annotations_full.parquet` | lit `test_set` = `raw_test.parquet` et `train_set` = `raw_train.parquet` |
-| `run-rag-annotations` | `--skip-eval true` (prédictions seules) | `--skip-eval false` (calcule les métriques) |
-| `decide-coicop` | `--extra-columns-file` = `observations.parquet` | `--extra-columns-file` = `raw_test.parquet` |
-| `final-output` | repart de `observations.parquet` et restaure le nom du fichier d'entrée | repart de `raw_test.parquet` |
-| `report` | détecte l'absence de vérité terrain → `prediction_report.qmd` | → `report.qmd` (accuracy par niveau) |
+Rien d'autre ne change dans le run : les mêmes étapes tournent, sur les mêmes fichiers, avec les
+mêmes paramètres. Seule une étape s'ajoute à la fin. Voir [Évaluer un run](11-evaluate.qmd).
 
 ::: {.callout-note}
-La détection du mode par `report` est **automatique** : il teste `bool_and(code IS NULL)` sur
-la sortie de `decide-coicop`. Un seul code non nul dans un fichier de production suffit donc à
-faire basculer le rapport en mode évaluation.
+## Ce que ce changement a corrigé au passage
+`rag-notices` calculait ses métriques **sans condition** — ce module n'a jamais connu la
+dualité — et la garde qui devait ignorer les lignes sans vérité terrain était commentée. Chaque
+run de production loguait donc dans MLflow une accuracy ≈ 0, silencieusement. Ce bloc a
+disparu avec les autres.
+
+De même, `report` détectait son mode en testant `bool_and(code IS NULL)` : un seul code non nul
+dans un fichier de production faisait basculer tout le rapport en mode évaluation. La détection
+n'existe plus, `report` étant désormais le rapport de production, sans variante.
 :::
 
-Le mappage de colonnes (mode production) se fait par paramètres Argo, le pipeline n'imposant
+Le mappage de colonnes se fait par paramètres Argo, le pipeline n'imposant
 aucun nom de colonne en entrée :
 
 | Paramètre Argo | Valeur par défaut | Colonne pipeline produite |
@@ -90,33 +223,54 @@ aucun nom de colonne en entrée :
 | `budget_column` | `MONT_DEP` | `budget` (montant €) |
 | `annee_column` | *(vide)* | `annee` |
 | `source_column` | *(vide)* | `source` |
+| `label-column` | *(vide)* | `code` (la vérité terrain — voir ci-dessus) |
 
 ## Échantillonnage
 
 Pour tester le pipeline sans le payer en entier, l'échantillonnage est **centralisé en un
-point unique : `codif-regex`**. Le jeu à coder y est échantillonné une seule fois
+point unique : `classify-regex`**. Le jeu à coder y est échantillonné une seule fois
 (`random_state=42`), et tous les classifieurs aval héritent des mêmes lignes via
 `raw_test_without_regex.parquet` — les prédictions restent donc comparables entre elles.
 
-| Paramètre | Mode | Effet |
+| Paramètre | Workflow | Effet |
 |---|---|---|
-| `sample-observations` | production | limite le nombre d'observations à codifier |
-| `sample-annotations` | évaluation | limite le jeu à codifier **et** la taille de la KB d'annotations indexée par `create-vector-db-annotations` |
+| `sample-observations` | `codif-pipeline.yaml` | limite le nombre de libellés **à coder** |
+| `kb-sample-size` | `index-annotations-pipeline.yaml` | limite le nombre de points **indexés** dans la collection d'annotations (donc le temps d'embedding) |
 
-::: {.callout-important}
-En évaluation, `sample-annotations` fait aussi basculer `run-rag-annotations` sur une
-collection Qdrant **suffixée `_test`**, pour ne pas écraser la collection de production avec
-une base vectorielle partielle.
+::: {.callout-note}
+## Un seul curseur pour le jeu à coder
+Il y avait auparavant deux paramètres, `sample-observations` et `sample-annotations`, un par
+mode. Le second plafonnait à la fois le jeu à coder et la KB indexée — deux choses sans
+rapport. L'indexation étant sortie du pipeline, le curseur de KB l'a suivie
+(`kb-sample-size`) ; le jeu à coder n'en a plus qu'un, `sample-observations`.
+
+La collection échantillonnée porte un suffixe `__sampleN` visible dans son nom, précisément
+pour qu'on ne recopie pas par mégarde un index-jouet dans les paramètres de production.
+L'ancien suffixe `_test` a disparu avec les noms de collection fixes.
+:::
+
+::: {.callout-warning}
+Argo **n'échoue pas** sur un `-p` dont le nom n'existe pas : il l'ajoute aux arguments du
+workflow, où personne ne le lit. Un `-p sample-annotations=100` ou un `-p skip-index=true`
+hérité d'un ancien script part donc sans un mot, et le run tourne sur le jeu complet. Les
+paramètres disparus sont à traquer dans les scripts d'appel, pas à attendre du `submit`.
 :::
 
 ```bash
-# évaluation sur 100 libellés
-argo submit argo/codif-pipeline.yaml -p sample-annotations=100
+# 100 libellés à coder
+argo submit argo/codif-pipeline.yaml --parameter-file argo/params.yaml -p sample-observations=100
 
-# production sur 100 libellés d'un fichier réel
-argo submit argo/codif-pipeline.yaml \
+# 100 libellés d'un autre fichier
+argo submit argo/codif-pipeline.yaml --parameter-file argo/params.yaml \
   -p input_file=s3://projet-budget-famille/data/workflow_inputs/mon_fichier.csv \
   -p sample-observations=100
+
+# … et en mesurer la qualité, le fichier portant une colonne `code`
+argo submit argo/codif-pipeline.yaml --parameter-file argo/params.yaml \
+  -p sample-observations=100 -p label-column=code
+
+# petite base vectorielle d'annotations, pour tester la chaîne d'indexation
+argo submit argo/index-annotations-pipeline.yaml -p kb-sample-size=1000
 ```
 
 ## Le fichier d'entrée et son mappage
@@ -136,8 +290,8 @@ Les colonnes non mappées sont conservées telles quelles et restituées dans le
 
 ## Où aller ensuite
 
-- le détail étape par étape : [Preprocessing](01-preprocessing.qmd) puis la suite de la barre
+- le détail étape par étape : [Preprocessing](01-build-datasets.qmd) puis la suite de la barre
   latérale ;
-- l'espace de codes commun à tout le pipeline : [Prune — troncature & élagage](pruning.qmd) ;
+- l'espace de codes commun à tout le pipeline : [Prune — troncature & élagage](prune-codes.qmd) ;
 - les fragilités connues : [Limites et points de vigilance](limites-vigilance.qmd) ;
 - pour relancer une brique isolée : [Lancer une étape](09-lancer-une-etape.qmd).

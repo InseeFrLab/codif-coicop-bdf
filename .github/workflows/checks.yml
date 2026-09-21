@@ -1,0 +1,79 @@
+name: Contrôles de cohérence
+
+# Quatre vérifications mécaniques, moins d'une minute, aucun accès au cluster.
+# Elles répondent à une seule question : « quelqu'un a-t-il renommé quelque
+# chose en oubliant un endroit ? » — la famille de pannes qui a coûté trois
+# lancements ratés en une semaine :
+#   · `tqdm` importé sans être déclaré  → l'étape ne démarrait pas
+#   · `rereconciliation` au lieu de `reconciliation` dans params.yaml, accepté
+#     en silence par argo → les runs partaient en LLM alors qu'on demandait SIRUS
+#   · quatre noms utilisés sans import dans report/main.py → échec après 8 min
+#
+# Ce n'est délibérément PAS une CI complète : ni mise en forme du code, ni rendu
+# de documentation. Aucune des trois pannes n'aurait été vue par ces contrôles-là.
+# Les tests métier ne sont pas lancés ici non plus (à reprendre plus tard) : sans
+# eux, aucune dépendance lourde à installer.
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+# Une modification qui en remplace une autre annule la vérification en cours.
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  coherence:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Installer uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      # Les 11 étapes Argo lancent `uv sync --locked` : un pyproject.toml
+      # modifié sans relancer `uv lock` fait échouer TOUT le pipeline au
+      # démarrage, pas seulement l'étape concernée.
+      - name: Verrou des dépendances à jour
+        run: uv lock --check
+
+      # Jeu de règles défini dans le pyproject.toml racine, pour que la commande
+      # locale et celle-ci soient forcément la même.
+      - name: Noms utilisés sans être déclarés
+        run: uv run --with ruff ruff check .
+
+      - name: Cohérence des workflows Argo
+        run: uv run --with pyyaml python scripts/check_pipeline.py .
+
+      - name: Installer la CLI argo
+        run: |
+          ARGO_VERSION=v3.6.5
+          curl -sSL "https://github.com/argoproj/argo-workflows/releases/download/${ARGO_VERSION}/argo-linux-amd64.gz" \
+            | gunzip > /usr/local/bin/argo
+          chmod +x /usr/local/bin/argo
+
+      # Complémentaire du contrôle précédent : celui-ci valide le schéma Argo
+      # lui-même, et attrape au moins un cas que le script maison ne voit pas
+      # (un paramètre requis jamais fourni).
+      #
+      # ttc-pipeline.yaml est écarté : il est refusé par argo lint, donc non
+      # soumissible en l'état, et la documentation le présentait à tort comme le
+      # workflow d'entraînement TTC. Exclusion à retirer le jour où il est
+      # réparé ou supprimé.
+      - name: Validité des workflows Argo
+        run: |
+          set -e
+          for f in argo/*pipeline.yaml; do
+            [ "$(basename "$f")" = "ttc-pipeline.yaml" ] && continue
+            echo "--- $f"
+            argo lint --offline "$f"
+          done

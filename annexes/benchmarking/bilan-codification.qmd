@@ -23,12 +23,12 @@ jupyter: python3
 # la colonne `code_previous` sert de référence, ce qui permet de mesurer une
 # accuracy là où un run de production n'en fournit normalement pas.
 #
-# Rendu (l'environnement du module `report/` porte déjà toutes les dépendances,
-# `coicop_metrics` et `prune` compris) :
+# Rendu (l'environnement du module `evaluate/` porte déjà toutes les
+# dépendances, `codif_common.metrics` et `prune-codes` compris) :
 #
-#     cd report/ && uv sync
+#     cd evaluate/ && uv sync
 #     BILAN_RUN_ID=codif-sj4jz BILAN_RUN_DATE=2026-08-31 \
-#     BILAN_INPUT=<chemin s3 du final-output> \
+#     BILAN_INPUT=<chemin s3 du export-results> \
 #       uv run quarto render ../annexes/benchmarking/bilan-codification.qmd
 #
 # Les trois variables ont des valeurs par défaut pointant sur le run du
@@ -47,35 +47,34 @@ import pandas as pd
 import seaborn as sns
 from IPython.display import Markdown
 
-# `coicop_metrics` (module libre de report/) et `prune` (paquet installé, mais
-# ajouté ici pour un rendu hors environnement report/) : on réutilise les
-# helpers testés plutôt que de réimplémenter la comparaison de codes.
+# `codif_common.metrics` et `prune_codes` sont des paquets du workspace ; ils
+# sont ajoutés au path pour un rendu lancé hors de leur environnement. On
+# réutilise ces helpers testés plutôt que de réimplémenter la comparaison de
+# codes.
 # Racine du dépôt trouvée en remontant jusqu'à un marqueur, et non par un nombre
 # de niveaux : quarto exécute depuis le dossier du .qmd, mais un rendu lancé
 # autrement (kernel enregistré globalement, notebook ouvert à la main) n'aurait
 # pas la même profondeur.
 _HERE = Path.cwd().resolve()
-_ROOT = next(
-    (p for p in (_HERE, *_HERE.parents) if (p / "report" / "coicop_metrics.py").is_file()),
-    None,
-)
+_MARKER = Path("common") / "src" / "codif_common" / "metrics.py"
+_ROOT = next((p for p in (_HERE, *_HERE.parents) if (p / _MARKER).is_file()), None)
 if _ROOT is None:
     raise RuntimeError(
         "Racine du dépôt codif-coicop-bdf introuvable depuis "
-        f"{_HERE} : `report/coicop_metrics.py` est requis."
+        f"{_HERE} : `{_MARKER}` est requis."
     )
-for _p in (_ROOT / "report", _ROOT / "prune" / "src"):
+for _p in (_ROOT / "common" / "src", _ROOT / "prune-codes" / "src"):
     if str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
 
-from coicop_metrics import accuracy, accuracy_series  # noqa: E402
-from prune.utils import truncate_code  # noqa: E402
+from codif_common.metrics import accuracy, code_parts  # noqa: E402
+from prune_codes.utils import truncate_code  # noqa: E402
 
 RUN_ID = os.environ.get("BILAN_RUN_ID", "codif-sj4jz")
 RUN_DATE = os.environ.get("BILAN_RUN_DATE", "2026-08-31")
 RUN_ROOT = f"s3://projet-budget-famille/data/workflow_runs/{RUN_DATE}/{RUN_ID}"
 INPUT = os.environ.get(
-    "BILAN_INPUT", f"{RUN_ROOT}/final-output/annotations_vague1_2026_a_codif.parquet"
+    "BILAN_INPUT", f"{RUN_ROOT}/export-results/annotations_vague1_2026_a_codif.parquet"
 )
 
 # ── Palette ───────────────────────────────────────────────────────────────────
@@ -138,9 +137,9 @@ df = con.sql(f"SELECT * FROM read_parquet('{INPUT}')").df()
 # annotation brute pouvant aller au niveau 5. Comparer les deux tels quels fait
 # perdre ~9 points d'accuracy en pur artefact — une prédiction canonique `01.2.1`
 # serait comptée fausse face à une vérité `01.2.1.0`. On applique donc à la
-# vérité la troncature puis le mapping d'élagage produits par l'étape `prune` du
+# vérité la troncature puis le mapping d'élagage produits par l'étape `prune-codes` du
 # run lui-même.
-mapping = con.sql(f"SELECT * FROM read_parquet('{RUN_ROOT}/prune/mapping_lvl4.parquet')").df()
+mapping = con.sql(f"SELECT * FROM read_parquet('{RUN_ROOT}/prune-codes/mapping_lvl4.parquet')").df()
 _to_parent = dict(
     zip(mapping["code"].astype(str), mapping["code_parent_equivalent"].astype(str))
 )
@@ -150,20 +149,39 @@ df["truth"] = (
     .map(lambda c: _to_parent.get(str(c), c))
 )
 
-# Convention `inclusive=True` : toutes les lignes portant une vérité comptent, à
-# quelle que profondeur que ce soit. C'est la seule convention qui ait un sens
-# sur des codes canoniques — une vérité `01.3` **est** la réponse de niveau 4, et
-# non une troncature de celle-ci (cf. docstring de report/coicop_metrics.py).
 LEVEL = 4
-df["ok"] = accuracy_series(df["truth"], df["predicted_code"], LEVEL, inclusive=True)
+
+
+# Scoreur local, et c'est délibéré : `codif_common.metrics` ne connaît plus que
+# la convention stricte, qui écarte du dénominateur les lignes dont la vérité
+# n'atteint pas le niveau `k`.
+#
+# Cette annexe ne mesure pas une accuracy contre une vérité terrain, mais un
+# **taux d'accord** avec une codification antérieure. La distinction change tout :
+# un `code_previous` valant `11.2` est une réponse complète de l'annotateur
+# précédent, pas une troncature faute de mieux — l'écarter reviendrait à ne pas
+# compter un désaccord réel. Toutes les lignes portant un code antérieur doivent
+# donc compter, à quelque profondeur que ce soit.
+#
+# Ces huit lignes sont le prix à payer pour que le rapport d'évaluation, lui,
+# n'ait plus qu'une convention.
+def _accord(truth, pred, k):
+    tp, pp = code_parts(truth), code_parts(pred)
+    if not tp:
+        return None
+    return bool(pp) and tp[:k] == pp[:k]
+
+
+df["ok"] = [_accord(t, p, LEVEL) for t, p in zip(df["truth"], df["predicted_code"])]
 
 n_tot = len(df)
-n_ok, n_app, acc_glob = accuracy(df["truth"], df["predicted_code"], LEVEL, inclusive=True)
+_scored = [v for v in df["ok"] if v is not None]
+n_app = len(_scored)
+n_ok = sum(_scored)
+acc_glob = n_ok / n_app if n_app else float("nan")
 # Convention stricte, à titre de comparaison : exclut du dénominateur les
 # observations dont la vérité canonique est moins profonde que 4.
-_, n_strict, acc_strict = accuracy(
-    df["truth"], df["predicted_code"], LEVEL, inclusive=False
-)
+_, n_strict, acc_strict = accuracy(df["truth"], df["predicted_code"], LEVEL)
 ```
 
 ## Ce que mesure ce bilan
@@ -264,7 +282,7 @@ DIV_SHORT = {
     "99": "Hors champ",
 }
 nom = con.sql(
-    f"SELECT code, label_fr FROM read_parquet('{RUN_ROOT}/prune/nomenclature_pruned.parquet') "
+    f"SELECT code, label_fr FROM read_parquet('{RUN_ROOT}/prune-codes/nomenclature_pruned.parquet') "
     f"WHERE length(code) = 2"
 ).df()
 div_labels = dict(zip(nom["code"].astype(str), nom["label_fr"].astype(str)))
@@ -322,7 +340,7 @@ plt.show()
 
 ## Calibration du score SIRUS
 
-`sirus-predict` livre, avec chaque code, un score (`prediction_confidence`).
+`reconcile-sirus` livre, avec chaque code, un score (`prediction_confidence`).
 Cette section répond à une seule question : **ce score sépare-t-il les codes
 fiables des codes douteux ?** Les lignes codées par regex n'ont pas de score et
 sont exclues.
@@ -407,7 +425,7 @@ Deux propriétés du score à garder en tête avant d'en tirer un seuil :
   bas). Les tranches basses, peu peuplées, portent un taux d'autant plus bruité ;
   c'est là que les irrégularités de la courbe se situent.
 
-`sirus-predict` n'applique volontairement aucun seuil : le choix du niveau
+`reconcile-sirus` n'applique volontairement aucun seuil : le choix du niveau
 d'exigence est une décision métier, que ce graphique documente sans la trancher.
 La section suivante en chiffre le prix — combien de produits restent codés
 automatiquement, et avec quel accord, à chaque niveau d'exigence.

@@ -1,0 +1,18 @@
+[project]
+name = "export-results"
+version = "0.1.0"
+description = "Final output step for the COICOP BDF pipeline"
+requires-python = ">=3.13"
+dependencies = [
+    "boto3>=1.35",
+    "duckdb>=1.4.4",
+    "pandas>=2.2",
+    "pyarrow>=16",
+    "s3fs>=2024",
+    "prune-codes",
+    "codif-common",
+]
+
+[tool.uv.sources]
+codif-common = { workspace = true }
+prune-codes = { workspace = true }

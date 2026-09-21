@@ -1,0 +1,260 @@
+---
+title: "11. Evaluate"
+---
+
+## Rôle de l'étape
+
+`evaluate` mesure la qualité d'un run. C'est la **dernière étape du DAG**, et elle est
+**facultative** : elle ne tourne que si le fichier d'entrée du run portait une colonne
+d'étiquettes.
+
+- Code : [`evaluate/`](https://github.com/InseeFrLab/codif-coicop-bdf/tree/main/evaluate) —
+  entrée `evaluate/main.py`, gabarit `evaluate/evaluation_report.qmd`
+- Sortie : `…/{run}/evaluate/evaluation_report.html`, **et** les métriques dans MLflow
+- Condition Argo :
+
+  ```yaml
+  when: '"{{workflow.parameters.skip-eval}}" != "true" && "{{workflow.parameters.label-column}}" != ""'
+  ```
+
+Sans `label-column`, la tâche apparaît `Skipped` dans Argo et le reste du run est inchangé.
+C'est le cas nominal de production.
+
+## Pourquoi une étape séparée
+
+Le pipeline a été construit **pour être évalué**, et la mesure s'était installée un peu
+partout : un mode production/évaluation testé à treize endroits, et trois étapes de
+classification calculant leurs propres métriques. L'une d'elles, `rag-notices`, les calculait
+**même en production** — la garde qui devait ignorer les lignes sans vérité terrain était
+commentée — et loguait donc une accuracy ≈ 0 dans MLflow, sans que rien n'échoue.
+
+Rassembler la mesure en une étape finale rend le reste du pipeline monomode, et rend
+l'évaluation explicite : on la demande, elle ne se déclenche pas toute seule.
+
+## Déclenchement
+
+| Paramètre | Défaut | Rôle |
+|---|---|---|
+| `label-column` | *(vide)* | Nom de la colonne d'étiquettes dans le fichier d'entrée. **C'est le déclencheur.** `build-datasets` la recopie dans `code`, qui la porte jusqu'au bout de la chaîne |
+| `eval-source-column` | *(vide)* | Nom de la colonne de provenance du produit. Ajoute la ventilation par source. Ne restreint **jamais** le périmètre codé |
+| `skip-eval` | `false` | Échappatoire : saute l'étape même si `label-column` est renseignée |
+| `eval-experiment` | `codif-coicop-eval` | Expérience MLflow |
+
+```bash
+argo submit argo/codif-pipeline.yaml --parameter-file argo/params.yaml \
+  -p label-column=code -p eval-source-column=source
+```
+
+## Les entrées : le parquet de conciliation ne suffit pas
+
+Il porte les quatre classifieurs et la décision finale, mais **trois choses lui manquent** :
+les drapeaux `parsed` / `codable` et les codes récupérés par les RAG, tous retirés à la fusion,
+et les lignes captées par la regex, qui n'entrent jamais dans la chaîne d'arbitrage.
+
+| Entrée | Ce qu'elle apporte |
+|---|---|
+| `…/{run}/reconcile-{llm,sirus}/predictions.parquet` | les 4 classifieurs, leurs confiances, et la conciliation |
+| `…/{run}/classify-rag-notices/predictions.parquet` | `parsed`, `codable` — sans eux, pas de régimes de réponse |
+| `…/{run}/classify-rag-notices/retrieved_codes.parquet` et `…/{run}/classify-rag-annotations/predictions.parquet` | les codes récupérés : **recall du retriever** et accuracy de génération conditionnelle |
+| le livrable d'[`export-results`](07-export-results.qmd), plus `build-datasets/observations.parquet` et `prune-codes/mapping_lvl4.parquet` | l'**accuracy de bout en bout, regex comprise** — le chiffre métier |
+
+Les artefacts de retrieval étaient écrits à chaque run et **jamais relus**.
+
+::: {.callout-note}
+## Pourquoi trois fichiers pour l'accuracy de bout en bout
+`export-results` **retire la vérité terrain du livrable** : `code` et `code_lvl4` sont dans son
+`PIPELINE_COLS`. Elle est donc rejointe depuis `observations.parquet` sur `id`, puis rendue
+canonique par `mapping_lvl4` — sans cette dernière étape, une prédiction canonique juste serait
+comptée fausse.
+:::
+
+## Contenu du rapport
+
+- **Métadonnées du run** (dont la colonne de vérité terrain effectivement scorée) ;
+- **Accuracy globale par niveau** COICOP pour LCS, RAG notices, RAG annotations, TTC
+  et la conciliation (tableau + graphique), et la profondeur de la vérité terrain qui
+  explique le `n` décroissant ;
+- **Accuracy du fichier livré, regex comprise** — le chiffre métier, ventilé par
+  source de décision et assorti d'une ligne « hors regex » ;
+- **Accuracy par groupe** : niveau COICOP 1 et 2, `shop`, `shop_type_name`, **décile de `budget`** ;
+- **Accuracy par provenance du produit**, si `eval-source-column` est renseigné ;
+- **Analyse d'erreurs** : matrice de confusion (top 20 paires au niveau 4), **calibration**
+  (accuracy par tranche de confiance, AUROC) ;
+- **Coût et latence de l'arbitrage LLM** (tokens de prompt, latence moyenne) ;
+- **Les règles du modèle SIRUS**, en clair, quand c'est la conciliation du run ;
+- **Traçabilité** : URL du run MLflow de chaque brique et template de prompt Langfuse
+  de chaque RAG ;
+- **Décomposition interne de chaque brique** — voir la section suivante ;
+- **Accord entre les classifieurs et valeur ajoutée de l'arbitrage** ;
+- **Décisions du juge hors des prédictions des classifieurs** ;
+- **Récapitulatif**.
+
+### Sur quelle vérité terrain le rapport score-t-il ?
+
+Sur **`code_lvl4`**, la version canonique de l'annotation produite par
+[`reconcile-llm`](06-reconcile-llm.qmd) — pas sur `code` brut. Les prédictions vivant dans
+l'espace de codes [pruné](prune-codes.qmd), la vérité doit y vivre aussi : sinon une prédiction
+canonique exacte (`01.3` face à une annotation `01.3.0.0.x`) est comptée fausse, un biais qui
+touche ~24 % des Postes de la nomenclature. Les runs antérieurs à l'introduction de
+`code_lvl4` retombent automatiquement sur `code` ; la colonne réellement utilisée est affichée
+dans les métadonnées du rapport.
+
+::: {.callout-important}
+## L'étape échoue si `code_lvl4` est absent
+Elle ne se rabat **pas** sur `code` avec un avertissement, comme le faisait l'ancien rapport.
+`code_lvl4` naît en un seul endroit du pipeline — [`reconcile-llm`](06-reconcile-llm.qmd), et
+seulement si `--mapping-file` lui est passé. L'oublier ne cassait rien : tout le rapport
+sortait avec une accuracy sous-estimée sur près d'un quart des Postes. Un repli acceptable
+dans un rapport qui ne mesure rien ; pas quand quelqu'un a explicitement demandé une mesure.
+
+Le message d'échec liste les colonnes présentes et nomme la cause probable.
+:::
+
+### Une seule convention d'accuracy : la stricte
+
+| | Convention **stricte** |
+|---|---|
+| Dénominateur | les seules observations dont la vérité atteint le niveau `k` |
+| Vérité moins profonde que `k` | **exclue** — non évaluable |
+| Prédiction plus courte que `k` | erreur |
+| Prédiction plus profonde que la vérité | correcte si le préfixe correspond |
+| Question | parmi les observations codables à la profondeur `k`, quelle part est juste ? |
+| Comparaison entre niveaux | **impossible** : la population change d'un niveau à l'autre |
+
+Le rapport publiait auparavant une seconde convention, dite *inclusive*, à dénominateur
+constant. Elle a été retirée : deux chiffres pour la même question obligeaient chaque
+lecteur à trancher lequel regarder, et le tableau qui les comparait ne servait qu'à
+expliquer pourquoi il y en avait deux.
+
+::: {.callout-warning}
+## Pourquoi l'accuracy peut *monter* avec le niveau
+Chaque niveau porte sur une population différente : les observations qui restent au
+niveau 4 sont celles dont la vérité est fine, souvent les plus faciles. Une accuracy qui
+croît avec `k` est un effet de sélection, pas un progrès. Le tableau **« Ce que chaque
+niveau écarte »** donne, pour chaque `k`, la part de la population non évaluable — c'est
+lui qui rend le `n` lisible.
+:::
+
+Le **niveau 5 n'est jamais affiché** avec une vérité canonique : les codes prunés ont au
+plus 4 segments, la colonne serait structurellement vide.
+
+::: {.callout-note}
+## Une exception assumée, hors pipeline
+`annexes/benchmarking/bilan-codification.qmd` garde un scoreur local à dénominateur
+constant. Il ne mesure pas une accuracy contre une vérité terrain mais un **taux d'accord**
+avec une codification antérieure : un `code_previous` valant `11.2` est une réponse
+complète de l'annotateur précédent, pas une troncature, et l'écarter reviendrait à ne pas
+compter un désaccord réel.
+:::
+
+## La décomposition interne des classifieurs
+
+L'accuracy globale dit **combien** une brique se trompe, pas **où**. Un RAG à 70 % peut être un
+retriever qui ne ramène jamais la bonne réponse, ou un générateur qui la voit et choisit autre
+chose : les corrections sont opposées — réindexer d'un côté, retoucher le prompt de l'autre — et
+le chiffre agrégé ne permet pas de choisir.
+
+Ces indicateurs existaient déjà : chaque étape de classification loguait les siens, dans sa
+propre expérience MLflow, sur son propre périmètre et avec sa propre convention. Ils étaient
+donc **incomparables entre briques**, et absents du rapport. `evaluate/internals.py` les
+rapatrie, calculés sur les mêmes lignes et la même vérité canonique que tout le reste.
+
+| Indicateur | Ce qu'il répond |
+|---|---|
+| **Recall du retriever**, par niveau | quelle part des bonnes réponses figure dans la liste récupérée — la matière dont dispose le générateur |
+| **Accuracy si récupéré** | sur ces lignes-là, à quelle fréquence le modèle choisit effectivement la bonne : la qualité de la génération, isolée des échecs du retriever |
+| **Régimes de réponse** | accuracy et effectif sur `all_raw` / `all_parsed` / `codable_only` / `parsed_and_codable` / seuil de confiance — les quatre façons distinctes d'échouer que l'accuracy globale additionne |
+| **AUROC de chaque confiance** | la confiance sépare-t-elle le juste du faux ? ≈ 0,5 : elle n'apprend rien et ne doit fonder aucun seuil |
+| **Balayage de seuils** | pour chaque seuil, ce qu'il reste de volume et ce qu'on gagne en exactitude. C'est cette table qui instruit une décision de relecture, pas l'AUROC |
+| **Fiabilité du drapeau `codable`** | le refus déclaré retient-il des lignes plus souvent justes que l'ensemble (`lift`) ? |
+| **Distorsion de distribution** (TV, KL) | la brique déforme-t-elle la répartition des postes, à accuracy égale ? Invisible dans l'accuracy, sensible pour l'usage statistique aval |
+
+`internals.py` est importé par le rapport **et** par `main.py` : un seul calcul, deux sorties,
+donc les tableaux rendus et les scalaires MLflow ne peuvent pas diverger.
+
+::: {.callout-warning}
+## Le recall n'est pas un plafond
+La consigne faite au modèle de reprendre un candidat de la liste à l'identique est
+**incitative, pas structurelle**. Une accuracy supérieure au recall est donc possible, et
+l'écart mesure alors la part de codes justes produits hors de la liste récupérée. Ne pas lire
+le recall comme une borne.
+:::
+
+## Rendre le rapport à la main
+
+Le gabarit lit ses entrées via des **variables d'environnement** plutôt que des paramètres
+Quarto : `EVAL_DECIDE_PATH`, `EVAL_RAGNOTICES_PATH`, `EVAL_RETRIEVED_PATH`,
+`EVAL_RAGANN_PATH`, `EVAL_DELIVERABLE_PATH`, `EVAL_OBSERVATIONS_PATH`,
+`EVAL_MAPPING_PATH`, `EVAL_RUN_ID`, `EVAL_RUN_DATE`, `EVAL_SOURCE_COLUMN`. C'est
+`evaluate/main.py` qui les positionne avant d'appeler `quarto render` ; pour itérer sur le
+gabarit en local, il suffit de les exporter soi-même puis de rendre le `.qmd` directement.
+
+## Traçabilité MLflow
+
+L'étape loggue dans son **expérience propre** (`eval-experiment`, `codif-coicop-eval` par
+défaut), distincte de celle du [rapport de production](08-report.qmd) : les deux ne mesurent
+pas la même chose et n'ont pas le même schéma de métriques.
+
+Sont enregistrés :
+
+- **Paramètres** : `run_id`, `run_date`, la conciliation retenue, la colonne de vérité terrain
+  scorée, la colonne de provenance ;
+- **Métriques** : pour chaque méthode (LCS / RAG notices / RAG annotations / TTC /
+  conciliation) et chaque niveau, `accuracy_<méthode>_niv<k>` et son dénominateur
+  `n_evaluable_<méthode>_niv<k>` — sans lui, deux runs dont les annotations n'ont pas la
+  même profondeur semblent comparables alors qu'ils ne le sont pas ; plus
+  `truth_shallower_than_niv<k>_count`, `llm_prompt_tokens_total`, `llm_latency_s_mean` ;
+- **La décomposition interne**, préfixée par famille pour que l'UI MLflow les regroupe et
+  qu'une comparaison entre deux runs porte sur des séries alignées :
+  `retrieval/<brique>/recall_niv<k>` et `…/generation_when_retrieved_niv<k>`,
+  `regime/<brique>/<régime>/accuracy_niv4` et `…/n`,
+  `confidence/<brique>/auroc`, `…/accuracy_at_<seuil>`, `…/coverage_at_<seuil>`,
+  `codable/<brique>/lift`, `distortion/<brique>/level_<k>/{tv_distance,kl_divergence}` ;
+- **Artefacts** : `evaluation_report.html` et `truth_depth_distribution.json`.
+
+::: {.callout-warning}
+## Rupture de série sur les runs antérieurs
+Les métriques `accuracy_all_<méthode>_niv<k>` (convention inclusive) ne sont plus émises, et
+`coverage_<méthode>` / `abstention_<méthode>_count` sont devenues
+`coverage_niv4_<méthode>` / `abstention_niv4_<méthode>_count` : leur dénominateur a changé
+— elles portent désormais sur les seules lignes évaluables au niveau 4 — et les tracer sous
+l'ancien nom mettrait deux définitions incompatibles sur une même courbe. Comparer un run
+d'avant et un run d'après montrera donc un trou dans l'UI MLflow.
+:::
+
+## Comment le rapport retrouve les runs des autres étapes
+
+Aucune étape ne persistait son identifiant de run MLflow : ni en colonne, ni en artefact S3,
+ni en paramètre de sortie Argo, et les `run_name` des deux étapes RAG ne portent qu'un
+horodatage. Le raccordement se fait par deux tags posés au moment du run :
+
+| Tag | Rôle |
+|---|---|
+| `pipeline.run_id` | le run Argo. À ne pas confondre avec `index.run_id`, déjà présent, qui désigne le run d'**indexation** de la vector DB |
+| `pipeline.step` | le nom de l'étape. Indispensable : toutes les étapes d'un run portent le même `pipeline.run_id`, une recherche sur ce seul tag renverrait celle qui a fini en dernier |
+
+`codif_common.tracking` fait la recherche et construit l'URL. Trois cas se distinguent dans
+le rapport, et il ne laisse jamais une case vide :
+
+- **un lien** — l'étape logue et son run a été retrouvé ;
+- **« ne logue pas dans MLflow »** — `build-datasets`, `classify-regex`, `classify-lcs`,
+  `prune-codes`, `reconcile-llm`, `export-results` n'y touchent jamais ;
+- **« run non retrouvé »** — run antérieur aux tags, ou serveur injoignable.
+
+`classify-ttc` et `reconcile-sirus` n'ouvrent aucun run pendant le pipeline : ils ne font
+qu'inférer. Leur run d'**entraînement** est retrouvé autrement, à partir de l'URI de leur
+modèle (`mlflow-artifacts:/{experiment}/{run}/artifacts/model`), qui porte les deux
+identifiants — celle de SIRUS est déjà une colonne du parquet de conciliation.
+
+Toute cette section est sous `try/except` : un tableau de liens ne doit jamais faire échouer
+une évaluation.
+
+## Sortie
+
+| Fichier | Contenu |
+|---|---|
+| `…/{run}/evaluate/evaluation_report.html` | rapport d'évaluation HTML auto-contenu |
+
+---
+
+Retour à l'[accueil](index.qmd)

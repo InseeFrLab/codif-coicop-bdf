@@ -4,94 +4,286 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Monorepo for the automatic COICOP codification pipeline of the INSEE Budget de Famille (BDF) survey. Orchestrated via Argo Workflows (`argo/codif-pipeline.yaml`). Each subdirectory is an independent Python (or R) module with its own `pyproject.toml` / `uv.lock`.
+Monorepo for the automatic COICOP codification pipeline of the INSEE Budget de Famille (BDF) survey. Orchestrated via Argo Workflows (`argo/codif-pipeline.yaml`). Each subdirectory is a Python (or R) module with its own `pyproject.toml`. The Python modules are members of a single **uv workspace**: one `uv.lock` at the repo root, one resolved version per package across the whole pipeline.
 
 ## Pipeline DAG
 
+**Three separate Argo workflows.** The expensive vector-DB indexing is built **outside** the
+classification pipeline and passed in by name — the same arrangement as `classify-ttc` and
+`reconcile-sirus` training.
+
 ```
-                                      ┌──→ create-vector-db ──────────────┐  (skippable)
-   preprocessing ──┐   ┌──→ prune ────┤                                   ├──→ run-rag(-annotations) ─┐
-                   └──→┤              └──→ create-vector-db-annotations ───┘                           │
-                       └──→ codif-regex ─┬──→ codif-lcs ──────────────────────────────────────────────┼──→ CONCILIATION ──→ final-output ──→ report
-                         (→ prune)       └──→ run-ttc  ───────────────────────────────────────────────┘        │
-                                                                                                       ┌───────┴────────┐
-                                                                              (paramètre conciliation) │                │
-                                                                                  decide-coicop (llm)  │   sirus-predict (sirus)
-                                                                                   — les deux sont exclusifs —
+① argo/index-notices-pipeline.yaml
+   prune-codes (--only nomenclature) ─→ index-notices        → collection Qdrant, nom unique
+
+② argo/index-annotations-pipeline.yaml
+   build-datasets ─→ prune-codes (--only kb) ─→ index-annotations   → collection Qdrant, nom unique
+
+        └── les deux noms sont recopiés dans argo/params.yaml ──┐
+                                                                ▼
+③ argo/codif-pipeline.yaml   (input_file : OBLIGATOIRE — un seul mode)
+   Le DAG ci-dessous tourne DEUX FOIS : `smoke` sur 100 lignes (~8 min), puis `full`.
+   Un smoke en échec bloque le vrai run. Échappatoire : `-p skip-smoke=true`.
+build-datasets
+  └─→ classify-regex ─┬─→ classify-lcs ────────────────────────────────────┐
+                      ├─→ classify-ttc ────────────────────────────────────┤
+                      └─→ prune-codes ─┬─→ classify-rag-notices ───────────┤
+                                       └─→ classify-rag-annotations ───────┘
+                                                                           │
+                                       ┌───────────────────────────────────┘
+                                       │  les 4 classifieurs convergent
+                                       └─→ reconcile-llm  OU  reconcile-sirus   (exclusifs : paramètre `reconciliation`)
+                                               └─→ export-results ─→ report  (skip-report)
+                                                          └─→ evaluate  (facultative : label-column)
 ```
 
-Le pruning (troncature niv.4 + élagage des hiérarchies linéaires) est centralisé dans le module `prune/` : une étape unique, après `codif-regex`, qui produit tous les artefacts prunés (nomenclature, mapping, annotations train/test, suggester) sous `…/{run}/prune/`. L'aval ne fait que lire.
+Le pruning (troncature niv.4 + élagage des hiérarchies linéaires) est centralisé dans le module `prune-codes/` : une étape unique, après `classify-regex`, qui produit tous les artefacts prunés (nomenclature, mapping, KB annotée, jeu à coder, suggester) sous `…/{run}/prune-codes/`. L'aval ne fait que lire. Le drapeau `--only {all,nomenclature,kb}` restreint son périmètre pour les pipelines d'indexation.
 
-| Module | Argo step | Language |
-|---|---|---|
-| `preprocessing/` | `preprocessing` | Python |
-| `prune/` | `prune` | Python |
-| `coicop-rag/` | `create-vector-db`, `run-rag` | Python |
-| `coicop-rag-annotations/` | `create-vector-db-annotations`, `run-rag-annotations` | Python |
-| `regex-codif/` | `codif-regex` | Python |
-| `stats-annotations/` | `codif-lcs` | R |
-| `codif-ttc/` | `run-ttc` | Python |
-| `decide-coicop/` | `decide-coicop` | Python |
-| `sirus/` | `sirus-predict` (entraînement hors pipeline) | Python + R |
-| `report/` | `report` | Python + Quarto |
-| `final-output/` | `final-output` | Python |
+| Module | Argo step | Workflow | Language |
+|---|---|---|---|
+| `build-datasets/` | `build-datasets` | ② et ③ | Python |
+| `prune-codes/` | `prune-codes` | ①, ② et ③ | Python |
+| `common/` | — (socle partagé, aucune étape) | — | Python |
+| `rag-notices/` | `index-notices` | ① | Python |
+| `rag-notices/` | `classify-rag-notices` | ③ | Python |
+| `rag-annotations/` | `index-annotations` | ② | Python |
+| `rag-annotations/` | `classify-rag-annotations` | ③ | Python |
+| `classify-regex/` | `classify-regex` | ③ | Python |
+| `classify-lcs/` | `classify-lcs` | ③ | R |
+| `classify-ttc/` | `classify-ttc` (entraînement hors pipeline) | ③ | Python |
+| `reconcile-llm/` | `reconcile-llm` | ③ | Python |
+| `reconcile-sirus/` | `reconcile-sirus` (entraînement hors pipeline) | ③ | Python + R |
+| `report/` | `report` | ③ | Python + Quarto |
+| `export-results/` | `export-results` | ③ | Python |
+| `evaluate/` | `evaluate` (facultative) | ③ | Python + Quarto |
 
 ## Running the Pipeline
 
+**Build the vector DBs first** (once; they are reused across classification runs):
+
 ```bash
-# Full pipeline
-argo submit argo/codif-pipeline.yaml
+argo submit argo/index-notices-pipeline.yaml --watch
+argo submit argo/index-annotations-pipeline.yaml --watch
+```
 
-# Test run on a sample (sampling is centralized at codif-regex and inherited by
-# every classifier; in eval, sample-annotations also caps the to-codify split)
-argo submit argo/codif-pipeline.yaml -p sample-annotations=100
+Each prints, at the end, the exact line to paste into `argo/params.yaml`:
 
-# Skip vector DB rebuild (already built)
-argo submit argo/codif-pipeline.yaml -p skip-vector-db=true
+```
+classify-rag-notices-collection: coicop_notices__2026-09-02__index-notices-a7k2p
+classify-rag-annotations-collection: coicop_annotations__2026-09-02__index-annotations-b3x9q
+```
 
-# Enable accuracy report (off by default)
-argo submit argo/codif-pipeline.yaml -p skip-report=false
+Then the classification pipeline:
+
+```bash
+# Full pipeline (collection names come from params.yaml)
+argo submit argo/codif-pipeline.yaml --parameter-file argo/params.yaml
+
+# Test run on a sample: sampling is centralized at classify-regex and inherited
+# by every classifier, so all four codify exactly the same rows
+argo submit argo/codif-pipeline.yaml --parameter-file argo/params.yaml -p sample-observations=100
+
+# Disable the production report (on by default in the YAML)
+argo submit argo/codif-pipeline.yaml --parameter-file argo/params.yaml -p skip-report=true
+
+# Measure the run: only if the input file carries a ground-truth column.
+argo submit argo/codif-pipeline.yaml --parameter-file argo/params.yaml \
+  -p label-column=code -p eval-source-column=source
 ```
 
 Key pipeline parameters:
-- `input_file` — non-empty = **production** (codifies these observations), empty = **evaluation** (codifies the annotation test split). Drives the prod/eval mode everywhere.
-- `sample-annotations` — cap the annotation KB indexed in the vector DB.
-- `sample-observations` — cap the to-codify set (production only); sampled once at `codif-regex` so all classifiers share the same rows. In eval, `sample-annotations` is used instead.
-- `model-name` (LLM for run-rag), `decide-model` (default `gemma4-26b-moe`), `decide-concurrency` (default `5`), `skip-vector-db`, `skip-report`.
-- `conciliation` — `llm` (default, `decide-coicop`) or `sirus` (`sirus-predict`). **Mutually exclusive**: the other step is skipped via `when:`, and `final-output`/`report` depend on both (legacy `dependencies:` tolerates a Skipped node).
-- `sirus-model-uri` — MLflow artifact URI, required when `conciliation: sirus`. Training happens **outside the pipeline** (`cd sirus/ && ./train.sh <date>/<run_id>`), so the model can never come from the run it scores — train-on-test is impossible by construction (same pattern as `ttc-model-uri`).
-- `sirus-predict` applies **no threshold**: it emits `sirus_code` + `sirus_proba` per product and nothing else. Deciding what score is good enough to skip review is a business call, informed by the "Calibration de SIRUS" section of the evaluation report.
+- `input_file` — **required**. The file to codify. The pipeline has a single mode; the prod/eval duality is gone.
+- `label-column` — name of the ground-truth column in `input_file`. **Empty = no evaluation**: the `evaluate` step is skipped, which is the nominal production case. Non-empty, and `build-datasets` copies it into `code`, which carries it through the whole chain.
+- `eval-source-column` — name of the product-provenance column. Adds a per-source accuracy breakdown to the evaluation report. Never restricts what gets codified.
+- `skip-eval` (default `false`), `eval-experiment` — the escape hatch and the MLflow experiment of the `evaluate` step.
+- `classify-rag-notices-collection` / `classify-rag-annotations-collection` — **required**, no default. Qdrant collections produced by workflows ① and ②. Argo has no required-parameter mechanism, so the guard is written twice: a `[ -z ] && exit 1` in the container script *and* `required=True` in argparse. An unset name must fail in seconds, not silently fall back to some other run's index.
+- `git-branch` (default `main`) — **every Argo step clones the repo from GitHub at this branch**; nothing in the working copy reaches the cluster. Code changes must be pushed, and a feature branch is tested with `-p git-branch=<branch>`, never by editing files locally.
+- `sample-observations` — cap the to-codify set; sampled once at `classify-regex`. To cap the indexed KB instead, that is `kb-sample-size` of workflow ②.
+- Smoke pass: `skip-smoke` (skip it), `smoke-only` (run *only* the smoke — checks a branch in ~8 min), `smoke-observations` (default `100`), `smoke-experiment` (default `codif-coicop-smoke`; without a dedicated experiment the 100-row metrics would be indistinguishable from real ones in MLflow).
+- MLflow experiments: `report-experiment`, `eval-experiment`, `rag-experiment` (base name, suffixed `-notices` / `-annotations`; empty = each module's default).
+- `classify-rag-model` (LLM for classify-rag-notices), `reconcile-llm-model` (default `gemma4-26b-moe`), `reconcile-llm-concurrency` (default `5`), `skip-report`.
+- `reconciliation` — `llm` (default, `reconcile-llm`) or `sirus` (`reconcile-sirus`). **Mutually exclusive**: the other step is skipped via `when:`, and `export-results`/`report` depend on both (legacy `dependencies:` tolerates a Skipped node).
+- `reconcile-sirus-model-uri` — MLflow artifact URI, required when `reconciliation: sirus`. Training happens **outside the pipeline** (`cd reconcile-sirus/ && ./train.sh <date>/<run_id>`), so the model can never come from the run it scores — train-on-test is impossible by construction (same pattern as `classify-ttc-model-uri`).
+- `reconcile-sirus` applies **no threshold**: it emits `sirus_code` + `sirus_proba` per product and nothing else. Deciding what score is good enough to skip review is a business call, informed by the "Calibration de SIRUS" section of the evaluation report.
+
+## Running a Single Step
+
+The usual debugging loop is one step, not the whole DAG. Two modes, both documented command by
+command in `docs/09-lancer-une-etape.qmd` (including the environment variables each step needs):
+
+```bash
+# Via Argo: each step is a named template of the workflow
+argo submit argo/codif-pipeline.yaml --entrypoint classify-regex \
+  -p run_id=codif-abc12 -p run_date=2026-03-20
+
+# Locally: the same command the container runs, from the module directory
+cd classify-regex/ && uv sync --locked
+uv run src/main.py --run-id codif-abc12 --run-date 2026-03-20
+```
+
+**Always pass `run_id` *and* `run_date`.** They default to the Argo workflow's own name and
+creation date, so a step relaunched on its own writes into a brand-new empty S3 folder and finds
+none of its inputs. Recover them from `argo list` or from the S3 path
+`…/workflow_runs/{run_date}/{run_id}/`.
+
+`index-notices` and `index-annotations` are **not** templates of `codif-pipeline.yaml`; they live
+in their own short workflows and are relaunched whole.
 
 ## Developing a Module
 
-Each Python module is self-contained:
+The repo is a **uv workspace**: one `pyproject.toml` per module for its own dependencies, but
+a single `uv.lock` at the root — so every step runs the same pandas/duckdb/pyarrow. Syncing from
+a module directory installs only that module's dependencies, into the shared `.venv` at the
+workspace root:
 
 ```bash
 cd <module>/
-uv sync          # install deps
+uv sync --locked   # only this module's deps, versions from the root lock
 uv run python main.py ...
+
+uv add --package <module> <pkg>      # add a dependency, from anywhere in the repo
+uv lock --upgrade-package <pkg>      # bump a package for the whole repo
 ```
 
-PyPI packages are fetched through the INSEE Nexus proxy (configured per-module in `pyproject.toml [tool.uv]`). Python ≥ 3.13 required everywhere.
+`--locked` fails if the lock no longer matches the `pyproject.toml` files instead of silently
+re-resolving; the Argo steps use `uv sync --locked --no-dev`.
 
-Inter-module data exchange goes through S3 (parquet files). The path convention is `s3://<bucket>/<run_id>/<run_date>/<step_name>/`.
+**pandas stays on 2.x** and it is not a preference: `mlflow` declares `pandas<3`, and five
+modules depend on mlflow. The reason is documented in the root `pyproject.toml`; the day mlflow
+supports pandas 3, `uv lock --upgrade-package pandas` moves the whole repo at once.
+
+No package index is configured in the repo — uv resolves against PyPI directly. Python ≥ 3.13
+required everywhere (`.python-version` at the root).
+
+### Chemins S3 : `contracts.yaml`, jamais une f-string
+
+Les échanges entre étapes sont des Parquet sur S3, et **aucune étape ne construit le chemin d'une
+autre** : elle le demande au registre `contracts.yaml` (racine), qui déclare pour chaque étape ses
+`inputs` (par référence `étape.clé`) et ses `outputs`.
+
+```python
+from codif_common.contracts import artifact
+artifact("prune-codes", "mapping_lvl4", run_date=..., run_id=...)
+# → s3://projet-budget-famille/data/workflow_runs/2026-09-03/codif-abc/prune-codes/mapping_lvl4.parquet
+```
+
+`run_root` vaut `data/workflow_runs/{run_date}/{run_id}` — **date puis run_id**. Une étape ou une clé
+inconnue lève un `KeyError` explicite au lieu de produire une URI plausible que personne n'a jamais
+écrite. Le registre est en YAML et non en Python parce que `classify-lcs` est en R et lit le même
+fichier : `{run_date}` est compris tel quel par `str.format()` comme par `glue::glue()`. Surcharges
+d'environnement : `$COICOP_BUCKET`, `$COICOP_CONTRACTS`.
+
+Conséquence pratique : ajouter ou renommer un artefact se fait dans `contracts.yaml`, pas chez les
+appelants. `common/tests/test_contracts.py` vérifie que toute entrée déclarée désigne bien une sortie
+déclarée. Avant ce registre, renommer une étape avait demandé 162 modifications dans 29 fichiers.
+
+## Checks and Tests
+
+Four mechanical checks, under a minute, no cluster — exactly what the CI runs
+(`.github/workflows/checks.yml`). Run them before pushing:
+
+```bash
+uv lock --check                                          # lock still matches every pyproject.toml
+uv run --with ruff ruff check .                          # name used without being imported (F82)
+uv run --with pyyaml python scripts/check_pipeline.py .  # Argo params / templates / dependencies
+for f in argo/*pipeline.yaml; do                         # Argo schema itself (CI lints all three)
+  [ "$(basename "$f")" = "ttc-pipeline.yaml" ] && continue
+  argo lint --offline "$f"
+done
+```
+
+Deliberately **not** a full CI: no formatting, no doc rendering, and no test run — none of the three
+outages that motivated it would have been caught by those. Ruff is scoped to `E9,F63,F7,F82` in the
+root `pyproject.toml`, and `rag-notices/scripts/eval.py` is its only excluded file. `argo lint` skips
+`argo/ttc-pipeline.yaml`, which the schema rejects — it is not submittable as it stands. Both
+exclusions are to be removed one day, never extended.
+
+Tests live per module and **must be run from the module directory** (they import `src.…`):
+
+```bash
+cd <module>/ && uv run --group dev pytest tests -q
+cd <module>/ && uv run --group dev pytest tests/test_scorer_golden.py::test_name -q   # a single test
+```
+
+Modules carrying tests: `common`, `prune-codes`, `evaluate`, `reconcile-sirus` (including the
+bit-exact golden proving the Python scorer ≡ `sirus.predict`), `classify-ttc`, `rag-notices`.
+
+**One shared `.venv` for the whole workspace**: `uv sync` from a module directory installs that
+module's dependencies *and prunes the other modules'*. Switching modules therefore means re-syncing —
+`classify-ttc`'s tests need `torchTextClassifiers`, which is absent unless `classify-ttc` is the
+module currently synced. Known broken: `rag-notices/tests/test_llms.py` (fixture `client` never
+defined anywhere).
+
+Documentation site: `quarto render docs` — published to GitHub Pages from `main` by
+`publish-website.yml`. The `.qmd` pages hold no executable chunk, so no Python/R setup is involved.
 
 ## Module Architecture Notes
 
-**`prune/`** — Étape unique de pruning (troncature niveau 4 + élagage des hiérarchies linéaires). Produit tous les artefacts prunés sous `…/{run}/prune/` (nomenclature, mapping, annotations train/test, suggester), lus par les modules RAG. `scripts/main.py`.
+Each module carries its own `README.md` (exact CLI, inputs/outputs, design notes) and has a page
+under `docs/` (`01-build-datasets.qmd` … `11-evaluate.qmd`). `classify-ttc/` has its own
+`CLAUDE.md`. The notes below only cover what is not obvious from a single module's directory.
 
-**`coicop-rag/`** — Two scripts (`0_create_vector_db.py`, `2_run_rag.py`) : encode la nomenclature **prunée** dans Qdrant puis fait le RAG sur notices. Vector DB uses Qdrant + VLLM embeddings. LLM generation via VLLM (OpenAI-compatible). Metrics logged to MLflow, prompts traced in Langfuse.
+**`prune-codes/`** — Étape unique de pruning (troncature niveau 4 + élagage des hiérarchies linéaires). Produit tous les artefacts prunés sous `…/{run}/prune-codes/` (nomenclature, mapping, KB annotée, jeu à coder, suggester), lus par les modules RAG. `scripts/main.py`.
 
-**`coicop-rag-annotations/`** — RAG sur exemples annotés : `0_build_annotation_vector_db.py` indexe la KB prunée (+ suggester), `1_run_rag.py` codifie l'input pruné (éval/prod via `--skip-eval`).
+**`rag-notices/`** — Two scripts, now in **two different workflows** : `0_create_vector_db.py` (workflow ①) encode la nomenclature **prunée** dans Qdrant ; `2_run_rag.py` (workflow ③) fait le RAG sur notices contre une collection existante, dont le nom lui est passé par `--collection_name` (obligatoire). Embeddings et génération via llm.lab (`LLMLAB_URL`, OpenAI-compatible, les deux sur le même serveur), métriques MLflow, prompts tracés dans Langfuse.
 
-**`decide-coicop/`** — Module autonome : LLM-as-judge fusionnant les sorties de `codif-lcs`, `run-rag`, `run-rag-annotations`, `run-ttc`. Normalise d'abord les codes LCS/TTC (troncature niv.4 + élagage, via `prune`, dépendance path). Consensus short-circuit : si les quatre s'accordent et que la confiance TTC ≥ 0.90, aucun appel LLM. Reprise supportée : relancer avec le même `run_id`/`run_date` reprend depuis la sortie existante. Entrée `main.py decide-coicop`.
+**`rag-annotations/`** — RAG sur exemples annotés, également scindé : `0_build_annotation_vector_db.py` (workflow ②) indexe la KB — `annotations_full` + suggester au sens de `build-datasets`, **sans filtrage regex** ; `1_run_rag.py` (workflow ③) codifie l'input pruné, avec `--collection-name` obligatoire. Il ne calcule plus aucune métrique : c'est l'étape `evaluate` qui mesure.
 
-**`sirus/`** — Conciliation alternative au juge LLM, par règles interprétables (SIRUS). Une seule étape Argo, `sirus-predict` (**Python pur** : le modèle est une liste de règles en JSON et le scoring une moyenne, donc pas de R ni de compilation en production). L'**entraînement est hors pipeline**, comme celui de `codif-ttc/` : `cd sirus/ && ./train.sh <date>/<run_id>` enchaîne la construction de la table candidat-level (Python, réutilisant `decide_coicop.load_all_observations`), l'ajustement (R) et les mesures + log MLflow (Python). L'équivalence Python ↔ `sirus.predict` est prouvée par un test golden bit-exact et re-vérifiée à chaque entraînement. Voir `sirus/README.md` — en particulier sur l'exploitation du score, dont la plage atteignable est une propriété du modèle et non du problème.
+### Vector DBs (workflows ① et ②)
 
-**`stats-annotations/`** — R scripts only; entry point is `R/main.R`.
+Les collections **ne portent plus de nom fixe partagé**. Chaque indexation en crée une nouvelle :
 
-**`codif-ttc/`** — Classifieur neuronal COICOP (torchtextclassifiers : hierarchical/multihead/basic, train/predict/serve ; étape `run-ttc` via `predict-basic`). A son propre `CLAUDE.md`.
+```
+{base}__{run_date}__{run_id}[__sampleN]
+coicop_notices__2026-09-02__index-notices-a7k2p
+coicop_annotations__2026-09-02__index-annotations-b3x9q
+```
+
+Auparavant, `coicop_lineage` et `coicop_annotations_without_copain_2017` étaient partagées par tous les runs et **détruites puis recréées** à chaque indexation : une réindexation cassait la base que lisait un run concurrent, et le défaut `skip-index=true` faisait coder contre une vector DB de provenance inconnue.
+
+Deux conséquences pour qui touche à ce code :
+
+- La clé de config s'appelle `qdrant.collection_base`, **pas** `collection_name`. Le renommage est délibéré : le même `config.yaml` est lu par le constructeur et par le consommateur. Une clé `collection_name` y ferait retomber le consommateur en silence sur une collection périmée ; et côté constructeur, `0_create_vector_db.py` lisait le nom à deux endroits — en oublier un aurait déversé les points dans l'ancienne collection tout en créant la nouvelle, vide.
+- Chaque collection est accompagnée d'un **manifeste** JSON sous `s3://…/data/vector_db_manifests/{collection_name}.json` (modèle d'embedding, dimension, stratégie, taille d'échantillon, nombre de points, sha git). Les étapes `classify-rag-*` le relisent **avant `mlflow.set_experiment`** pour valider la collection : échouer à l'intérieur d'un `start_run` laisserait un run FAILED qui pollue l'expérience. Le nom seul ne peut pas porter ces informations — deux collections de même dimension bâties avec des stratégies différentes sont indistinguables, et interroger la mauvaise ne lève aucune erreur.
+
+Il y avait ici un segment de périmètre (`__full__` / `__train__`) et une option `kb-scope`, du temps où la KB était un demi-jeu : le split train/test n'existait que faute de jeu de test indépendant. Les nouveaux produits annotés en fournissent un, donc toute la base historique sert de KB, et le segment n'a plus rien à distinguer. Supprimé.
+
+**`reconcile-llm/`** — Module autonome : LLM-as-judge fusionnant les sorties de `classify-lcs`, `classify-rag-notices`, `classify-rag-annotations`, `classify-ttc`. Normalise d'abord les codes LCS/TTC (troncature niv.4 + élagage, via `prune-codes`, dépendance path). Consensus short-circuit : si les quatre s'accordent et que la confiance TTC ≥ 0.90, aucun appel LLM. Reprise supportée : relancer avec le même `run_id`/`run_date` reprend depuis la sortie existante. Entrée `main.py reconcile-llm`.
+
+**`reconcile-sirus/`** — Conciliation alternative au juge LLM, par règles interprétables (SIRUS). Une seule étape Argo, `reconcile-sirus` (**Python pur** : le modèle est une liste de règles en JSON et le scoring une moyenne, donc pas de R ni de compilation en production). L'**entraînement est hors pipeline**, comme celui de `classify-ttc/` : `cd reconcile-sirus/ && ./train.sh <date>/<run_id>` enchaîne la construction de la table candidat-level (Python, réutilisant `reconcile_llm.load_all_observations`), l'ajustement (R) et les mesures + log MLflow (Python). L'équivalence Python ↔ `sirus.predict` est prouvée par un test golden bit-exact et re-vérifiée à chaque entraînement. Voir `reconcile-sirus/README.md` — en particulier sur l'exploitation du score, dont la plage atteignable est une propriété du modèle et non du problème.
+
+**`evaluate/`** — Étape finale **facultative** : mesure la qualité d'un run dont le fichier d'entrée portait des étiquettes. Elle existe pour que le reste du pipeline n'ait qu'un seul mode ; la dualité production/évaluation était testée à treize endroits, et trois étapes de classification calculaient leurs propres métriques — dont `rag-notices`, qui les calculait **même en production** et loguait alors une accuracy ≈ 0 sans rien casser.
+
+Elle lit **trois** artefacts, et pas seulement le parquet de conciliation : celui-ci ignore les lignes captées par la regex (elles n'entrent jamais dans la chaîne) et a perdu les codes récupérés par les RAG (retirés à la fusion). Donc : conciliation + `classify-rag-notices/retrieved_codes.parquet` et `classify-rag-annotations/predictions.parquet` (recall de retrieval) + le livrable d'`export-results` (**l'accuracy de bout en bout, regex comprise — le chiffre métier**). Rend `evaluation_report.qmd` (ex-`report/report.qmd`) sur S3 et logue dans MLflow. `main.py`.
+
+Elle **échoue** si `code_lvl4` est absent au lieu de se rabattre sur `code`. Cette colonne canonique naît en un seul endroit, `reconcile-llm`, et seulement si `--mapping-file` lui est passé ; comparer des prédictions canoniques à une vérité brute compte comme fausses des prédictions justes sur près d'un quart des postes. Repli acceptable dans un rapport qui ne mesure rien, pas quand on a demandé une évaluation.
+
+**`common/`** — Socle partagé, paquet importable **`codif_common`** (pas `common` : trop générique dans le site-packages du consommateur). **Ne dépend d'aucun autre membre du workspace et ne doit jamais en dépendre** — c'est ce qui rend tout cycle impossible, donc tous les autres peuvent en dépendre librement. Regroupe ce qui existait en 2 à 5 copies recopiées, donc vouées à diverger sans que personne ne le voie : `paths.expand_paths`, `codes.truncate_code`/`get_parents`, `s3` (connexions DuckDB), `vector_index` (nommage, manifeste et validation des collections Qdrant), `contracts` (le registre ci-dessus), `schema.require_columns`/`declare_output` (contrôles de frontière), `metrics` (accuracy par niveau, couverture, régimes — lu par `report/` **et** `evaluate/`). Deux des quatre dialectes de connexion S3 en sont délibérément absents : les unifier changerait l'authentification effective, ce qui ne se vérifie pas hors du cluster. Voir `common/README.md`.
+
+**`classify-lcs/`** — R scripts only; entry point is `R/main.R`.
+
+**`classify-ttc/`** — Classifieur neuronal COICOP (torchtextclassifiers : hierarchical/multihead/basic, train/predict/serve ; étape `classify-ttc` via `predict-basic`). A son propre `CLAUDE.md`.
+
+## Argo gotchas (hard-won — do not "clean up")
+
+**`git -c http.version=HTTP/1.1 clone` at every clone site** (18 today, across the four workflow YAMLs). The image's git (2.54.0, linked
+against libcurl3-gnutls) cannot parse GitHub's HTTP/2 ref advertisement: it fails on `expected
+flush after ref listing`, then asks for a Username, which looks exactly like an authentication
+problem and is not one — GitHub answers `200` with the correct content-type (verified under
+`GIT_CURL_VERBOSE`). Forcing HTTP/1.1 fixes the transport while keeping git protocol v2. The
+`curl` binary in the same image is OpenSSL-based and works, which makes the diagnosis
+misleading.
+
+**Never write `git clone … && cd …` under `set -e`.** POSIX exempts every command of an `&&`
+list except the last, so a failed clone does **not** abort the script: execution continues in
+the wrong directory and the real error is masked by a confusing `No pyproject.toml found`. Every
+site uses two separate statements for this reason.
+
+**Argo has no required-parameter mechanism**, and `argo submit --parameter-file` silently
+accepts unknown keys — that is how `rereconciliation:` sat dead in `params.yaml` from its own
+commit. Any parameter that must not be empty needs a guard in the container script *and* in
+argparse.
 
 ## Required Kubernetes Secret
 
-`secret-codif-coicop-bdf` must contain AWS credentials, VLLM endpoints (embedding + generation), Qdrant, Langfuse, MLflow, Ollama, `DDC_ENCRYPTION_KEY`, and `LLMLAB_API_KEY` (+ optional `LLMLAB_URL`). See `README.md` for the full key list.
+`secret-codif-coicop-bdf` must contain AWS credentials, Qdrant, Langfuse, MLflow, Ollama, `DDC_ENCRYPTION_KEY`, and `LLMLAB_URL` / `LLMLAB_API_KEY` (llm.lab serves both embedding and generation). No `VLLM_*` key is read anywhere — see `README.md` for the full list and for the two keys a `grep` wrongly makes look dead.

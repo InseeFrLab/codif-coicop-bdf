@@ -7,26 +7,20 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from textwrap import dedent
 from urllib.parse import urlparse
 
 import boto3
 import duckdb
 import pandas as pd
 
-from coicop_metrics import (
-    CANONICAL_LEVELS,
+from codif_common.contracts import artifact, run_root as contracts_run_root
+from codif_common.s3 import connect_secret, resolve_endpoint as s3_endpoint
+
+from codif_common.metrics import (
     LEVELS,
-    METHODS,
-    REGIME_LEVEL,
-    TRUTH_COL_CANONICAL,
-    accuracy,
-    coverage_table,
+    final_decision,
     parse_step_timings,
     prediction_depth_distribution,
-    regime_masks,
-    truth_column,
-    truth_depth_distribution,
 )
 
 
@@ -36,13 +30,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--run-date", required=True)
     p.add_argument(
         "--bucket",
-        default="projet-budget-famille",
-        help="S3 bucket that holds workflow_runs (default: projet-budget-famille)",
+        default=None,
+        help="Surcharge le bucket du registre (contracts.yaml). Équivalent à $COICOP_BUCKET.",
     )
     p.add_argument(
         "--input-file",
         default=None,
-        help="Original input file path; used to locate the final-output file in prediction mode.",
+        help="Original input file path; used to locate the export-results file in prediction mode.",
     )
     # --- MLflow logging ---
     p.add_argument(
@@ -57,54 +51,44 @@ def parse_args() -> argparse.Namespace:
     )
     # Pipeline parameters, logged as MLflow params for traceability.
     p.add_argument("--sample-size", default=None)
-    p.add_argument("--model-name", default=None)
-    p.add_argument("--decide-model", default=None)
-    p.add_argument("--decide-concurrency", default=None)
+    p.add_argument("--classify-rag-model", default=None)
+    p.add_argument("--reconcile-llm-model", default=None)
+    p.add_argument("--reconcile-llm-concurrency", default=None)
     p.add_argument(
-        "--ttc-model-uri",
+        "--classify-ttc-model-uri",
         default=None,
-        help="MLflow URI of the TTC model used by run-ttc, logged for traceability.",
+        help="MLflow URI of the TTC model used by classify-ttc, logged for traceability.",
     )
-    p.add_argument("--skip-vector-db", default=None)
+    # Quelles vector DB ont servi. Loggué pour la même raison que les URI de
+    # modèles : sans ça, deux runs bâtis sur des index différents mais aux
+    # métriques différentes seraient indistinguables dans MLflow.
+    p.add_argument(
+        "--classify-rag-notices-collection",
+        default=None,
+        help="Collection Qdrant interrogée par classify-rag-notices, pour traçabilité.",
+    )
+    p.add_argument(
+        "--classify-rag-annotations-collection",
+        default=None,
+        help="Collection Qdrant interrogée par classify-rag-annotations, pour traçabilité.",
+    )
     p.add_argument("--skip-report", default=None)
     p.add_argument(
-        "--conciliation", choices=["llm", "sirus"], default="llm",
-        help="Quelle étape de conciliation a tranché : `llm` (decide-coicop, "
-             "défaut) ou `sirus` (sirus-predict). Détermine le parquet lu.",
+        "--reconciliation", choices=["llm", "sirus"], default="llm",
+        help="Quelle étape de conciliation a tranché : `llm` (reconcile-llm, "
+             "défaut) ou `sirus` (reconcile-sirus). Détermine le parquet lu.",
     )
     p.add_argument(
-        "--sirus-model-uri", default=None,
+        "--reconcile-sirus-model-uri", default=None,
         help="Tracé dans MLflow pour savoir quel modèle a produit les codes.",
     )
     return p.parse_args()
 
 
-def s3_endpoint() -> str:
-    return (
-        os.environ.get("AWS_S3_ENDPOINT")
-        or os.environ.get("AWS_ENDPOINT_URL", "").replace("https://", "").replace("http://", "")
-        or "minio.lab.sspcloud.fr"
-    )
-
 
 def connect_s3() -> duckdb.DuckDBPyConnection:
-    """DuckDB connection configured to read parquet from the S3 bucket."""
-    con = duckdb.connect()
-    con.sql("INSTALL httpfs; LOAD httpfs;")
-    con.sql(
-        dedent(f"""
-            CREATE OR REPLACE SECRET s3_secret (
-                TYPE s3,
-                KEY_ID '{os.environ.get("AWS_ACCESS_KEY_ID", "")}',
-                SECRET '{os.environ.get("AWS_SECRET_ACCESS_KEY", "")}',
-                SESSION_TOKEN '{os.environ.get("AWS_SESSION_TOKEN", "")}',
-                ENDPOINT '{s3_endpoint()}',
-                URL_STYLE 'path',
-                USE_SSL true
-            );
-        """)
-    )
-    return con
+    """Connexion DuckDB configurée pour lire les parquet du bucket S3."""
+    return connect_secret()
 
 
 def s3_client():
@@ -137,7 +121,7 @@ def _git(args: list[str]):
         return None
 
 
-def log_to_mlflow(args, run_root, output_s3, decide_path, prediction) -> None:
+def log_to_mlflow(args, run_root, output_s3, decide_path) -> None:
     """Best-effort MLflow logging. Never raises into the pipeline step."""
     tracking_uri = os.environ.get("MLFLOW_TRACKING_URI")
     if not tracking_uri:
@@ -155,21 +139,22 @@ def log_to_mlflow(args, run_root, output_s3, decide_path, prediction) -> None:
             "run_date": args.run_date,
             "bucket": args.bucket,
             "sample_size": args.sample_size,
-            "model_name": args.model_name,
-            "decide_model": args.decide_model,
-            "decide_concurrency": args.decide_concurrency,
-            "ttc_model_uri": args.ttc_model_uri,
-            "skip_vector_db": args.skip_vector_db,
+            "classify_rag_model": args.classify_rag_model,
+            "reconcile_llm_model": args.reconcile_llm_model,
+            "reconcile_llm_concurrency": args.reconcile_llm_concurrency,
+            "classify_ttc_model_uri": args.classify_ttc_model_uri,
+            "classify_rag_notices_collection": args.classify_rag_notices_collection,
+            "classify_rag_annotations_collection": args.classify_rag_annotations_collection,
             "skip_report": args.skip_report,
             "output_prefix": run_root,
             "report_html": output_s3,
             # Quelle conciliation a tranché, et avec quel modèle : sans ça, deux
             # runs aux métriques différentes seraient indistinguables.
-            "conciliation": args.conciliation,
-            "sirus_model_uri": args.sirus_model_uri,
+            "reconciliation": args.reconciliation,
+            "reconcile_sirus_model_uri": args.reconcile_sirus_model_uri,
         }
         mlflow.log_params({k: v for k, v in params.items() if v is not None})
-        mlflow.set_tag("mode", "prediction" if prediction else "evaluation")
+        mlflow.set_tag("mode", "production")
         for tag, val in (("git.commit", _git(["rev-parse", "HEAD"])),
                          ("git.branch", _git(["rev-parse", "--abbrev-ref", "HEAD"]))):
             if val:
@@ -182,113 +167,26 @@ def log_to_mlflow(args, run_root, output_s3, decide_path, prediction) -> None:
         else:
             print("[report] no parsable step timings provided", flush=True)
 
-        # ---- read the decide-coicop predictions (dot-separated codes) ----
-        print(f"[report] loading decide-coicop predictions (mlflow): {decide_path}", flush=True)
+        # ---- read the reconcile-llm predictions (dot-separated codes) ----
+        print(f"[report] loading reconcile-llm predictions (mlflow): {decide_path}", flush=True)
         con = connect_s3()
         df = con.sql(f"SELECT * FROM read_parquet('{decide_path}')").df()
         mlflow.log_metric("n_obs_total", len(df))
 
         # Final-prediction distribution by COICOP level (logged in both modes).
-        if "llm_code" in df.columns:
-            dist = prediction_depth_distribution(df["llm_code"])
+        # Porte sur la colonne de décision effective : codé en dur sur
+        # `llm_code`, ce bloc restait muet en conciliation SIRUS.
+        decision = final_decision(df, strict=False)[1]
+        if decision and decision in df.columns:
+            dist = prediction_depth_distribution(df[decision])
             for k in LEVELS:
                 mlflow.log_metric(f"pred_depth_niv{k}_count", dist["depth"][k]["count"])
                 mlflow.log_metric(f"pred_depth_niv{k}_pct", dist["depth"][k]["pct"])
             mlflow.log_dict(dist, "prediction_distribution.json")
 
-        # ---- accuracy metrics (evaluation mode only) ----
-        # Scored against the canonical truth (`code_lvl4`) so predictions and
-        # ground truth live in the same pruned code space.
-        truth_col = truth_column(df)
-        scorable = df
-        if truth_col in df.columns:
-            scorable = df[
-                df[truth_col].notna() & (df[truth_col].astype(str).str.len() > 0)
-            ].copy()
-        if not prediction and len(scorable) > 0:
-            mlflow.log_metric("n_scorable", len(scorable))
-            mlflow.log_param("truth_column", truth_col)
-            truth = scorable[truth_col]
-            depth = truth_depth_distribution(truth)
-            for k in CANONICAL_LEVELS:
-                mlflow.log_metric(
-                    f"truth_shallower_than_niv{k}_count", depth["shallower_than"][k]["count"]
-                )
-            mlflow.log_dict(depth, "truth_depth_distribution.json")
-            # Avec une vérité canonique, le niveau 5 est structurellement vide.
-            strict_levels = (
-                CANONICAL_LEVELS if truth_col == TRUTH_COL_CANONICAL else LEVELS
-            )
-            for name, col in METHODS:
-                if col not in scorable.columns:
-                    continue
-                for k in strict_levels:
-                    n_ok, n_app, acc = accuracy(truth, scorable[col], k)
-                    if name == "LLM":
-                        # headline: final accuracy after decide-coicop
-                        mlflow.log_metric(f"n_applicable_niv{k}", n_app)
-                    if n_app:
-                        mlflow.log_metric(f"accuracy_{name.lower()}_niv{k}", acc)
-                # Inclusive convention: every row counts at every level (a truth
-                # shallower than k must be predicted exactly).
-                for k in CANONICAL_LEVELS:
-                    _, n_all, acc_all = accuracy(
-                        truth, scorable[col], k, inclusive=True
-                    )
-                    if n_all:
-                        mlflow.log_metric(
-                            f"accuracy_all_{name.lower()}_niv{k}", acc_all
-                        )
-            # Coverage vs accuracy-when-answering: the global accuracy above
-            # counts a refusal to code (NULL, "", "N/A") as an error, which hides
-            # whether a method is wrong or simply silent.
-            cov = coverage_table(scorable, REGIME_LEVEL)
-            for name in cov.index:
-                slug = name.lower()
-                mlflow.log_metric(f"coverage_{slug}", float(cov.loc[name, "couverture"]))
-                mlflow.log_metric(
-                    f"abstention_{slug}_count", int(cov.loc[name, "abstentions"])
-                )
-                acc_ans = cov.loc[name, f"accuracy niv{REGIME_LEVEL} sur réponses"]
-                if pd.notna(acc_ans):
-                    mlflow.log_metric(
-                        f"accuracy_answered_{slug}_niv{REGIME_LEVEL}", float(acc_ans)
-                    )
-
-            # Per-regime accuracy at the survey target level: the pooled figures
-            # above mix the consensus short-circuit (where `llm_code` is TTC
-            # top-1, so LLM and TTC are identical by construction) with the rows
-            # the judge really arbitrated. Only the latter measure the judge.
-            masks = regime_masks(scorable)
-            if masks is not None:
-                for _label, suffix, mask in masks:
-                    sub = scorable[mask]
-                    mlflow.log_metric(f"n_{suffix}", len(sub))
-                    if not len(sub):
-                        continue
-                    for name, col in METHODS:
-                        if col not in sub.columns:
-                            continue
-                        _, n_sub, acc_sub = accuracy(
-                            sub[truth_col], sub[col], REGIME_LEVEL, inclusive=True
-                        )
-                        if n_sub:
-                            mlflow.log_metric(
-                                f"accuracy_all_{name.lower()}_niv{REGIME_LEVEL}_{suffix}",
-                                acc_sub,
-                            )
-                consensus_mask = masks[0][2]
-                mlflow.log_metric("consensus_share", float(consensus_mask.mean()))
-            if "llm_error" in scorable.columns:
-                mlflow.log_metric("llm_error_count", int(scorable["llm_error"].notna().sum()))
-            if "llm_code" in scorable.columns:
-                mlflow.log_metric(
-                    "llm_coverage", float(scorable["llm_code"].notna().mean())
-                )
-            if "llm_confiance" in scorable.columns:
-                conf = scorable["llm_confiance"].dropna()
-                if len(conf) > 0:
-                    mlflow.log_metric("mean_llm_confiance", float(conf.astype(float).mean()))
+        # Les métriques d'accuracy ont quitté ce rapport pour l'étape finale
+        # `evaluate` : elles exigent une vérité terrain, que la production n'a
+        # pas. Ne restent ici que les indicateurs calculables sans elle.
 
         # ---- artifacts ----
         out_html = Path(__file__).resolve().parent / "report.html"
@@ -302,15 +200,18 @@ def log_to_mlflow(args, run_root, output_s3, decide_path, prediction) -> None:
 
 def main() -> int:
     args = parse_args()
-    run_root = f"s3://{args.bucket}/data/workflow_runs/{args.run_date}/{args.run_id}"
-    # Les deux conciliations sont exclusives (paramètre Argo `conciliation`) :
+    if args.bucket:
+        os.environ["COICOP_BUCKET"] = args.bucket
+    RUN = {"run_date": args.run_date, "run_id": args.run_id}
+    run_root = contracts_run_root(**RUN)
+    # Les deux conciliations sont exclusives (paramètre Argo `reconciliation`) :
     # on lit celle qui a effectivement tourné. Le fichier porte, dans les deux
     # cas, la table fusionnée complète — donc le rapport peut scorer les 4
     # classifieurs de base à l'identique.
-    conciliation_step = "sirus-predict" if args.conciliation == "sirus" else "decide-coicop"
-    decide_path = f"{run_root}/{conciliation_step}/predictions.parquet"
-    final_output_path = f"{run_root}/final-output/predictions.parquet"
-    output_s3 = f"{run_root}/report/report.html"
+    conciliation_step = "reconcile-sirus" if args.reconciliation == "sirus" else "reconcile-llm"
+    decide_path = artifact(conciliation_step, "predictions", **RUN)
+    final_output_path = artifact("export-results", "predictions", **RUN)
+    output_s3 = artifact("report", "html", **RUN)
 
     here = Path(__file__).resolve().parent
     out_html = here / "report.html"
@@ -319,27 +220,20 @@ def main() -> int:
     env["REPORT_RUN_ID"] = args.run_id
     env["REPORT_RUN_DATE"] = args.run_date
 
-    # prediction mode: ground-truth `code` is entirely NULL
-    print(f"[report] loading decide-coicop predictions: {decide_path}", flush=True)
-    con = connect_s3()
-    row = con.sql(
-        f"SELECT bool_and(code IS NULL) FROM read_parquet('{decide_path}')"
-    ).fetchone()
-    prediction = bool(row[0]) if row and row[0] is not None else False
-
-    qmd = "prediction_report.qmd" if prediction else "report.qmd"
-    if prediction:
-        if args.input_file:
-            final_output_path = f"{run_root}/final-output/{os.path.basename(args.input_file)}"
-        env["REPORT_INPUT_PATH"] = final_output_path
-        env["REPORT_DECIDE_PATH"] = decide_path
-        print(f"[report] decide-coicop input (qmd): {decide_path}", flush=True)
-    else:
-        env["REPORT_INPUT_PATH"] = decide_path
-    print(f"[report] mode={'prediction' if prediction else 'evaluation'}", flush=True)
-    print(f"[report] rendering {here / qmd} (input={env['REPORT_INPUT_PATH']})", flush=True)
+    # Un seul mode. L'évaluation, quand le fichier d'entrée porte des étiquettes,
+    # est l'affaire de l'étape finale `evaluate` — ce rapport-ci ne suppose
+    # aucune vérité terrain et se rend toujours.
+    if args.input_file:
+        final_output_path = artifact(
+            "export-results", "deliverable", **RUN,
+            filename=os.path.basename(args.input_file),
+        )
+    env["REPORT_INPUT_PATH"] = final_output_path
+    env["REPORT_DECIDE_PATH"] = decide_path
+    print(f"[report] livrable : {final_output_path}", flush=True)
+    print(f"[report] conciliation : {decide_path}", flush=True)
     subprocess.run(
-        ["quarto", "render", qmd, "--to", "html", "--output", "report.html"],
+        ["quarto", "render", "prediction_report.qmd", "--to", "html", "--output", "report.html"],
         cwd=here,
         env=env,
         check=True,
@@ -348,7 +242,7 @@ def main() -> int:
     upload(out_html, output_s3)
 
     try:
-        log_to_mlflow(args, run_root, output_s3, decide_path, prediction)
+        log_to_mlflow(args, run_root, output_s3, decide_path)
     except Exception as exc:  # never fail the step on a tracking error
         print(f"[report] MLflow logging failed (non-fatal): {exc}", flush=True)
 

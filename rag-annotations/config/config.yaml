@@ -1,0 +1,91 @@
+# config.yaml — RAG sur exemples annotés
+# Les chemins {run_date}/{run_id} sont substitués au runtime via expand_paths().
+
+annotations:
+  # KB déjà tronquée + prunée par l'étape `prune-codes` unifiée (flux 'train').
+  s3_path: "s3://projet-budget-famille/data/workflow_runs/{run_date}/{run_id}/prune-codes/annotations_train_pruned.parquet"
+  features:
+    - id
+    - l_pr_product
+    - annee
+    - code
+    - coicop
+    - shop
+    - shop_type_name
+    - budget
+    - n_obs
+    - source
+  product_col: l_pr_product   # colonne texte à embedder
+  nature: null                # filtre optionnel sur la colonne `source`
+  # Sources EXCLUES de la vector DB (liste vide = toutes gardées).
+  # S'applique aussi au suggester : si "suggester" y figure, le bloc suggester
+  # n'est pas indexé (même si suggester.enabled vaut true).
+  # Valeurs possibles : copain, receipts_from_app, manual_from_app,
+  #                     manual_from_book, bdf_2017, suggester
+  #
+  # Profil unique : la KB, ce sont tous les produits déjà annotés, plus le
+  # suggester. Il y avait deux profils quand le pipeline avait deux modes.
+  # NB : copain est déjà exclu en amont (build-datasets, depuis 2026-06) ; il est
+  # conservé ici par défense (no-op si la source n'arrive jamais jusqu'à la KB).
+  exclude_sources: [bdf_2017, copain]
+
+# Données du suggester ajoutées à l'index, aux côtés des annotations de train.
+# Codes au niveau 5 et non prunés en amont → on leur applique exactement le même
+# prune_annotation_lvl4 (troncature niveau 4 + mapping) que les annotations.
+suggester:
+  enabled: true
+  # Suggester déjà pruné par l'étape `prune-codes` unifiée (le pruning du suggester
+  # — source CSV, dedup, mapping — est désormais centralisé dans rag-notices/prune.py).
+  s3_path_pruned: "s3://projet-budget-famille/data/workflow_runs/{run_date}/{run_id}/prune-codes/suggester_pruned.parquet"
+
+qdrant:
+  # Racine du nom : le constructeur (0_build_annotation_vector_db.py) y ajoute
+  # le mode, la date et l'id de SON run pour obtenir un nom unique. Surtout pas
+  # `collection_name` — ce fichier est aussi lu par le consommateur
+  # (1_run_rag.py), à qui le nom complet est passé en argument ; une clé
+  # `collection_name` ici l'inciterait à retomber en silence sur l'ancienne
+  # collection partagée.
+  collection_base: "coicop_annotations"
+  # Manifeste écrit à côté de chaque collection : il porte le mode (prod/eval),
+  # le modèle d'embedding et le run source, que le nom ne peut pas tout contenir.
+  manifests_root: "s3://projet-budget-famille/data/vector_db_manifests"
+  upload_batch_size: 56
+
+embedding:
+  model_name: qwen3-embedding-8b
+  model_len: 4096
+  batch_size: 64
+
+retrieval:
+  size: 10
+
+llm:
+  # Source du prompt : local (défaut) ou Langfuse.
+  use_langfuse: true
+  prompt_file: prompts/annotation_rag.md
+  prompt_name: prompt-annotation-rag
+  prompt_version: "2"   # version Langfuse épinglée (évite de charger le mauvais prompt)
+  model_name: gemma4-26b-moe
+  temperature: 0.1
+  max_tokens: 2048
+  concurrency: 32
+
+# Seuils et niveaux relus par l'étape `evaluate`, qui mesure désormais seule.
+eval:
+  threshold_confidence: 0.7
+  levels: 4   # évalue les niveaux COICOP 1..levels
+  seed: 42    # graine pour l'échantillonnage optionnel (--sample_size)
+  # Sources à INCLURE dans le test set (liste vide = toutes).
+  # Valeurs possibles : copain, receipts_from_app, manual_from_app, manual_from_book
+  include_sources: [receipts_from_app, manual_from_app, manual_from_book]
+
+# Produits à codifier (input du RAG), pruné par l'étape `prune-codes` :
+#   - mode évaluation : split test labellisé (déjà tronqué/pruné) ;
+#   - mode production  : observations à codifier (sans labels).
+# + artefact produit par ce module (prédictions).
+data:
+  s3_path_input: "s3://projet-budget-famille/data/workflow_runs/{run_date}/{run_id}/prune-codes/annotations_test_pruned.parquet"
+  s3_path_predictions: "s3://projet-budget-famille/data/workflow_runs/{run_date}/{run_id}/classify-rag-annotations/predictions.parquet"
+
+mlflow:
+  experiment_name: rag-annotation

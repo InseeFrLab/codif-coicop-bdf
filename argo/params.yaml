@@ -10,11 +10,12 @@
 # --- Code source ----------------------------------------------------------
 # Branche du dépôt clonée par tous les steps (défaut YAML: main).
 # La mettre sur une feature branch permet de tester sans merger dans main.
-git-branch: main
+git-branch: refactor
 
 # --- Input ----------------------------------------------------------------
+# OBLIGATOIRE. Le pipeline n'a plus qu'un mode : il code ce fichier.
 # input_file: s3://projet-budget-famille/data/workflow_inputs/BDF_data_saisie_vague1_a_codif.csv
-input_file: "" # mode evaluation
+input_file: s3://projet-budget-famille/data/annotations_vague1_2026/as_new_input/annotations_vague1_2026_a_codif.parquet
 
 text_column: NAT_DEP        # label column to classify
 shop_column: MAG_DEP        # shop column
@@ -23,42 +24,57 @@ budget_column: MONT_DEP     # amount column
 # source_column: ""         # optional
 
 # --- Volume / debugging ---------------------------------------------------
-# Deux curseurs d'échantillonnage (vide = tout) :
-#   sample-annotations  : taille de la KB d'annotations indexée (vector DB),
-#                         appliqué à l'étape create-vector-db-annotations ;
-#   sample-observations : nb d'observations à coder, mode prod uniquement.
-# Le sampling des observations est CENTRALISÉ à l'étape codif-regex : un seul jeu
-# est tiré et hérité par tous les classifieurs (lcs, rag, rag-annotations, ttc),
-# garantissant qu'ils codent exactement les mêmes lignes.
-# En évaluation, les observations = split test des annotations → on utilise
-# sample-annotations (sample-observations est ignoré).
-sample-annotations: ""        # ex. "500"
-sample-observations: ""       # ex. "50" (prod)
+sample-observations: "150"       # ex. "100"
+
+# --- Smoke run ------------------------------------------------------------
+# Le DAG complet tourne d'abord sur `smoke-observations` lignes. Si cette passe
+# échoue, le vrai run ne démarre pas.
+#
+# `skip-smoke: "true"` lance le vrai run sans passer par le smoke — pour une
+# urgence, ou quand un smoke en faux positif immobilise la production.
+#
+# Les deux passes écrivent sous des run_id distincts (`<workflow>-smoke` et
+# `<workflow>`), et le smoke logue dans son propre espace MLflow.
+# skip-smoke: "false"
+# smoke-observations: "100"
+# smoke-experiment: codif-coicop-smoke
 
 # --- LLM models -----------------------------------------------------------
-model-name: gemma4-26b-moe          # run-rag model
-decide-model: gemma4-26b-moe        # decide-coicop arbitration model
-decide-concurrency: "5"
-ttc-model-uri: "mlflow-artifacts:/10/cacf2603514b4887bbfb77e2654c9bc1/artifacts/model"
+classify-rag-model: gemma4-26b-moe          # classify-rag-notices model
+reconcile-llm-model: gemma4-26b-moe        # reconcile-llm arbitration model
+reconcile-llm-concurrency: "5"
+classify-ttc-model-uri: "mlflow-artifacts:/10/cacf2603514b4887bbfb77e2654c9bc1/artifacts/model"
+
+# --- Vector DB : OBLIGATOIRES ---------------------------------------------
+# Collections Qdrant à interroger. Produites HORS de ce pipeline :
+#   argo submit argo/index-notices-pipeline.yaml
+#   argo submit argo/index-annotations-pipeline.yaml
+
+classify-rag-notices-collection: "coicop_notices__2026-09-02__index-notices-h82mt"
+classify-rag-annotations-collection: "coicop_annotations__full__2026-09-02__index-annotations-jp6dt"
+
+# --- Évaluation (facultative) ---------------------------------------------
+# Le pipeline mesure sa propre qualité UNIQUEMENT si le fichier d'entrée porte
+# une colonne d'étiquettes. La renseigner ici suffit à déclencher l'étape
+# `evaluate` : rapport HTML sur S3 + métriques dans MLflow. Vide = étape sautée,
+# ce qui est le cas nominal de production.
+label-column: "code_previous"
+
+# Dimension d'analyse : accuracy ventilée par provenance du produit. Ne
+# restreint jamais le périmètre codé. Vide = section omise du rapport.
+# eval-source-column: "source"
+eval-source-column: ""
+
+# skip-eval: "false"        # "true" pour sauter l'évaluation malgré label-column
+eval-experiment: codif-coicop-eval
 
 # --- Optional steps -------------------------------------------------------
-skip-vector-db: "false"      # "false" to rebuild the Qdrant vector store
 skip-report: "false"        # "true" to skip the Quarto report
 report-experiment: codif-coicop-eval
 
 # --- Conciliation ---------------------------------------------------------
-# EXCLUSIF : `llm` → decide-coicop (juge LLM) ; `sirus` → sirus-predict
-# (re-ranking par règles interprétables). L'étape non retenue est skippée ;
-# final-output et report dépendent des deux et tolèrent qu'une soit Skipped.
-conciliation: llm
+# EXCLUSIF : `llm` → reconcile-llm (juge LLM) ; `sirus` → reconcile-sirus
+reconciliation: sirus
 
-# Modèle SIRUS chargé par sirus-predict, OBLIGATOIRE si conciliation: sirus.
-#
-# L'entraînement se fait HORS pipeline : `cd sirus/ && ./train.sh <date>/<run_id>`
-# (cf. sirus/README.md). Il logue le modèle dans MLflow et affiche l'URI à
-# recopier ici — même pratique que ttc-model-uri.
-#
-# Le détour par ce paramètre est ce qui rend la fuite impossible : le modèle
-# utilisé en prédiction n'est jamais celui qu'on vient d'entraîner sur ces
-# mêmes lignes.
-sirus-model-uri: "" # ex. "mlflow-artifacts:/12/9f3c.../artifacts/model"
+# Modèle SIRUS chargé par reconcile-sirus, OBLIGATOIRE si reconciliation: sirus.
+reconcile-sirus-model-uri: "mlflow-artifacts:/15/312f69aff83943de97b3a91b1f4185fa/artifacts/model/"

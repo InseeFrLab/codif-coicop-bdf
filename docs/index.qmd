@@ -50,8 +50,8 @@ Les travaux de mise en place d'un pipeline de codification automatique ont débu
 
 ## Le pipeline étape par étape
 
-Le pipeline est un **DAG Argo** (`argo/codif-pipeline.yaml`). Chaque étape lit/écrit sur S3
-dans un dossier propre au run :
+Le pipeline de codification est un **DAG Argo** (`argo/codif-pipeline.yaml`). Chaque étape
+lit/écrit sur S3 dans un dossier propre au run :
 
 ```
 s3://projet-budget-famille/data/workflow_runs/{run_date}/{run_id}/<étape>/
@@ -62,59 +62,84 @@ Le diagramme ci-dessous montre les étapes **et les fichiers qui circulent entre
 
 ```{mermaid}
 flowchart LR
-  input[/"CSV d'entrée<br/>(input_file, mode prod)"/] --> PRE[preprocessing]
-  PRE -- "raw_test.parquet (éval)<br/>observations.parquet (prod)" --> REG[codif-regex]
-  REG -- raw_test_without_regex.parquet --> PRU[prune]
-  REG -- raw_test_without_regex.parquet --> LCS[codif-lcs]
-  REG -- raw_test_without_regex.parquet --> TTC[run-ttc]
-  PRU -- nomenclature_pruned.parquet --> VDB[create-vector-db]
-  PRU -- "annotations_train_pruned<br/>+ suggester_pruned" --> VDBA[create-vector-db-annotations]
-  VDB -.->|"collection Qdrant"| RAG[run-rag]
-  VDBA -.->|"collection Qdrant"| RAGA[run-rag-annotations]
+  input[/"CSV d'entrée<br/>(input_file, obligatoire)"/] --> PRE[build-datasets]
+  PRE -- observations.parquet --> REG[classify-regex]
+  REG -- raw_test_without_regex.parquet --> PRU[prune-codes]
+  REG -- raw_test_without_regex.parquet --> LCS[classify-lcs]
+  REG -- raw_test_without_regex.parquet --> TTC[classify-ttc]
+  VDB[/"collection Qdrant notices<br/>(classify-rag-notices-collection)"/] -.-> RAG[classify-rag-notices]
+  VDBA[/"collection Qdrant annotations<br/>(classify-rag-annotations-collection)"/] -.-> RAGA[classify-rag-annotations]
   PRU -- annotations_test_pruned.parquet --> RAG
   PRU -- annotations_test_pruned.parquet --> RAGA
-  LCS -- raw_test_LCS.parquet --> DEC[decide-coicop]
+  PRU -- mapping_lvl4.parquet --> RAG
+  LCS -- raw_test_LCS.parquet --> DEC{{"conciliation<br/>reconcile-llm OU reconcile-sirus"}}
   RAG -- predictions.parquet --> DEC
   RAGA -- predictions.parquet --> DEC
   TTC -- predictions.parquet --> DEC
   PRU -- mapping_lvl4.parquet --> DEC
-  DEC -- predictions.parquet --> FIN[final-output]
+  DEC -- predictions.parquet --> FIN[export-results]
   REG -- REGEX_pred.parquet --> FIN
   DEC -- predictions.parquet --> REP[report]
   FIN --> out[/"CSV livré<br/>(+ predicted_code)"/]
   REP --> html[/report.html/]
+  FIN -.-> EVA["evaluate<br/>(si label-column)"]
+  DEC -.-> EVA
+  EVA -.-> evahtml[/evaluation_report.html/]
   style VDB stroke-dasharray: 5 5
   style VDBA stroke-dasharray: 5 5
+  style EVA stroke-dasharray: 5 5
 ```
 
-Seuls les deux nœuds en pointillé (`create-vector-db`, `create-vector-db-annotations`) sont
-**skippables** (`-p skip-vector-db=true`) : les collections Qdrant sont réutilisées d'un run à
-l'autre. L'étape `prune`, elle, n'est **jamais** sautée : elle produit à chaque run le jeu à
-coder pruné et la table de mapping dont l'aval a besoin.
+Le nœud de conciliation est **exclusif** : le paramètre `reconciliation` (`llm` ou `sirus`)
+décide lequel des deux tourne, l'autre est skippé. `evaluate` est en pointillé parce qu'elle
+est facultative : elle ne tourne que si le fichier d'entrée porte une colonne d'étiquettes
+(`label-column`).
+
+Les deux nœuds en pointillé ne sont **pas** des étapes de ce workflow : ce sont des
+**collections Qdrant construites à l'avance**, par deux workflows d'indexation autonomes, et
+désignées ici par leur nom via les paramètres `classify-rag-notices-collection` et
+`classify-rag-annotations-collection`. L'étape `prune-codes`, elle, tourne à chaque run : elle
+produit le jeu à coder pruné et la table de mapping dont l'aval a besoin.
 
 ::: {.callout-note}
-## Un seul workflow, deux modes
-Le dépôt contient un unique workflow de codification, **`argo/codif-pipeline.yaml`**, qui
-fonctionne en deux modes selon le paramètre `input_file` : **production** (`input_file` non
-vide — le fichier externe est codifié et livré par `final-output`) ou **évaluation**
-(`input_file` vide — c'est le split test des annotations qui est codifié, et le rapport mesure
-l'exactitude). Chaque étape clone le dépôt sur la branche donnée par le paramètre
-**`git-branch`** (défaut : `main`). `argo/ttc-pipeline.yaml` est un workflow séparé, dédié à
-l'entraînement du classifieur TTC.
+## Trois workflows Argo, et pourquoi
+Le dépôt contient **trois** workflows :
+
+| Workflow | Ce qu'il produit |
+|---|---|
+| `argo/index-notices-pipeline.yaml` | une collection Qdrant des **notices** COICOP prunées (`prune-codes --only nomenclature` → `index-notices`) |
+| `argo/index-annotations-pipeline.yaml` | une collection Qdrant des **produits déjà annotés** (`build-datasets` → `prune-codes --only kb` → `index-annotations`) |
+| `argo/codif-pipeline.yaml` | la **codification** proprement dite, qui interroge ces deux collections |
+
+L'indexation a été sortie du pipeline de codification pour deux raisons. D'abord, embarquer
+toute la nomenclature (et toute la base d'exemples) n'a aucune raison d'être repayé à chaque
+codification. Ensuite et surtout, tant que les collections portaient un nom fixe partagé par
+tous les runs, une réindexation détruisait la base que lisait un run concurrent. Chaque
+indexation crée désormais une collection au **nom unique** ; on recopie ce nom dans le fichier
+de paramètres du pipeline de codification — même pratique que `classify-ttc-model-uri` et
+`reconcile-sirus-model-uri`.
+
+Le pipeline de codification n'a **qu'un seul mode** : il codifie le fichier désigné par
+`input_file` (obligatoire) et le livre par `export-results`. Si ce fichier porte une colonne
+d'étiquettes, la désigner par `label-column` déclenche l'[étape `evaluate`](11-evaluate.qmd),
+qui mesure la qualité du run. Chaque étape des trois workflows clone le dépôt sur la branche
+donnée par le paramètre **`git-branch`** (défaut : `main`).
 :::
 
 | # | Étape | Rôle | Page |
 |---|---|---|---|
-| 1 | `preprocessing` | Construit toujours les annotations (complet + train/test) ; en prédiction, prépare aussi les observations à coder | [→](01-preprocessing.qmd) |
-| 2 | `codif-regex` | Code les libellés évidents par règles regex ; point unique d'échantillonnage | [→](02-codif-regex.qmd) |
-| 3 | `prune` | Troncature niveau 4 + élagage des hiérarchies linéaires : produit tous les artefacts prunés | [→](pruning.qmd) |
-| 4 | `codif-lcs` | Code par similarité de chaîne (LCS) sur un pool de référence | [→](03-codif-lcs.qmd) |
-| 5 | `run-ttc` | Classifieur neuronal basique (caisses + fine-tuning BDF 2024) | [→](05-run-ttc.qmd) |
-| 6 | `create-vector-db` / `run-rag` | Codification sémantique par RAG sur les notices COICOP prunées | [→](04-coicop-rag.qmd) |
-| 7 | `create-vector-db-annotations` / `run-rag-annotations` | Codification par RAG sur exemples déjà codifiés (few-shot) | [→](09-rag-annotation.qmd) |
-| 8 | `decide-coicop` | Arbitrage final LLM-as-judge entre LCS / RAG notices / RAG annotations / TTC | [→](06-decide-coicop.qmd) |
-| 9 | `final-output` | Assemble le résultat utilisateur (regex + décision LLM) | [→](07-final-output.qmd) |
-| 10 | `report` | Rapport Quarto (qualité ou suivi de prédiction) | [→](08-report.qmd) |
+| 1 | `build-datasets` | Consolide toute la base annotée (la KB) et prépare les observations à coder | [→](01-build-datasets.qmd) |
+| 2 | `classify-regex` | Code les libellés évidents par règles regex ; point unique d'échantillonnage | [→](02-classify-regex.qmd) |
+| 3 | `prune-codes` | Troncature niveau 4 + élagage des hiérarchies linéaires : produit tous les artefacts prunés | [→](prune-codes.qmd) |
+| 4 | `classify-lcs` | Code par similarité de chaîne (LCS) sur un pool de référence | [→](03-classify-lcs.qmd) |
+| 5 | `classify-ttc` | Classifieur neuronal basique (caisses + fine-tuning BDF 2024) | [→](05-classify-ttc.qmd) |
+| 6 | `classify-rag-notices` | Codification sémantique par RAG sur les notices COICOP prunées (collection bâtie par `index-notices`) | [→](04-rag-notices.qmd) |
+| 7 | `classify-rag-annotations` | Codification par RAG sur exemples déjà codifiés, few-shot (collection bâtie par `index-annotations`) | [→](09-rag-annotations.qmd) |
+| 8 | `reconcile-llm` | Arbitrage final LLM-as-judge entre LCS / RAG notices / RAG annotations / TTC | [→](06-reconcile-llm.qmd) |
+| 8bis | `reconcile-sirus` | Conciliation alternative par règles interprétables. **Exclusive** de `reconcile-llm` : le paramètre `reconciliation` choisit | [→](06b-reconcile-sirus.qmd) |
+| 9 | `export-results` | Assemble le résultat utilisateur (regex + code concilié) | [→](07-export-results.qmd) |
+| 10 | `report` | Rapport Quarto de production | [→](08-report.qmd) |
+| 11 | `evaluate` | Rapport d'évaluation, **facultatif** (`label-column`) | [→](11-evaluate.qmd) |
 
 
 
@@ -122,7 +147,26 @@ l'entraînement du classifieur TTC.
 
 Un script d'aide est présent dans le repo : **codif-coicop-bdf/argo/argo_helper.md**.
 
-Il donne les commandes d'installation et de lancement. Par ailleurs, le script de paramétrages du workflow se trouve ici **codif-coicop-bdf/argo/params.yaml** (il permet notamment de choisir sur quel fichier s'applique la codification, choisir entre une approche de production courante ou d'évaluation, coder sur un échantillon de produits, etc.).
+Il donne les commandes d'installation et de lancement. Par ailleurs, le fichier de paramétrage
+du workflow se trouve ici **codif-coicop-bdf/argo/params.yaml** : il permet notamment de choisir
+sur quel fichier s'applique la codification, quelle conciliation tranche (`reconciliation`),
+s'il faut mesurer la qualité du run (`label-column`), ou coder sur un échantillon de produits.
+
+::: {.callout-important}
+## Tout `argo submit` passe d'abord par un run « smoke »
+
+Le DAG complet tourne **deux fois** : une première passe sur `smoke-observations` lignes
+(100 par défaut, ~8 min), puis le vrai run. **Si le smoke échoue, le vrai run ne démarre
+pas** — c'est ce qui évite de découvrir une erreur de paramétrage après plusieurs heures de
+codification.
+
+Les deux passes écrivent sous des `run_id` distincts (`<workflow>-smoke` et `<workflow>`), et
+le smoke logue dans son propre espace MLflow : il ne pollue donc ni les sorties S3 ni les
+métriques du run réel.
+
+Échappatoire, pour une urgence ou un smoke en faux positif qui immobilise la production :
+`-p skip-smoke=true`.
+:::
 
 
 ## Fil rouge
@@ -141,7 +185,7 @@ Les règles regex sont surtout **ancrées** (`^…$`) et ne reconnaissent que de
 standardisés (`carte bancaire`, `prelevement`, `courses`, `restaurant`…). Sur cet extrait BDF,
 les libellés réels (`Ticket CB`, `Prlv Sepa Bouygues`…) ne correspondent pas exactement : la
 plupart des lignes franchissent donc l'étape regex et sont codées par les modèles puis
-arbitrées par le LLM. Voir [2. Codif regex](02-codif-regex.qmd).
+arbitrées par le LLM. Voir [2. Codif regex](02-classify-regex.qmd).
 :::
 
 Chaque page d'étape reprend la même structure : **Rôle · Entrées · Traitement · Exemple sur le
@@ -149,23 +193,38 @@ fil rouge · Sorties**.
 
 
 ```bash
-# Pipeline complet en mode évaluation (input_file vide)
+# 1. (une fois, ou quand la nomenclature / la base d'annotations change)
+#    Construire les deux collections Qdrant. Chacune affiche en fin d'exécution
+#    la ligne exacte à recopier dans argo/params.yaml.
+argo submit argo/index-notices-pipeline.yaml
+argo submit argo/index-annotations-pipeline.yaml            # la KB = toute la base annotée
+
+# 2. Pipeline complet (input_file et les collections viennent de params.yaml)
 argo submit argo/codif-pipeline.yaml --parameter-file argo/params.yaml
 
-# Mode production : sur un fichier d'entrée et son mappage de colonnes
+# Tout passer en ligne de commande : fichier d'entrée et mappage de colonnes
 argo submit argo/codif-pipeline.yaml \
   -p input_file=s3://projet-budget-famille/data/workflow_inputs/mon_fichier.csv \
-  -p text_column=NAT_DEP -p shop_column=MAG_DEP -p budget_column=MONT_DEP
+  -p text_column=NAT_DEP -p shop_column=MAG_DEP -p budget_column=MONT_DEP \
+  -p classify-rag-notices-collection=coicop_notices__2026-09-02__index-notices-a7k2p \
+  -p classify-rag-annotations-collection=coicop_annotations__2026-09-02__index-annotations-b3x9q
 
-# Limiter le test à N observations (sampling centralisé à codif-regex, hérité
-# par tous les classifieurs) : en mode évaluation
-argo submit argo/codif-pipeline.yaml -p sample-annotations=100
-# ... et en mode production (input_file non vide)
-argo submit argo/codif-pipeline.yaml -p input_file=... -p sample-observations=100
+# Limiter le jeu à coder à N observations (sampling centralisé à classify-regex,
+# hérité par les quatre classifieurs)
+argo submit argo/codif-pipeline.yaml --parameter-file argo/params.yaml -p sample-observations=100
 
-# Réutiliser les collections Qdrant existantes (pas de reconstruction)
-argo submit argo/codif-pipeline.yaml -p skip-vector-db=true
+# Plafonner la BASE indexée, elle, se fait au moment de l'indexation :
+argo submit argo/index-annotations-pipeline.yaml -p kb-sample-size=1000
 ```
+
+::: {.callout-important}
+`classify-rag-notices-collection` et `classify-rag-annotations-collection` sont
+**obligatoires** et n'ont pas de valeur par défaut. Argo ne sait pas exprimer « paramètre
+requis » : la garde est donc faite deux fois, dans le script du conteneur et dans l'argparse
+Python, et un nom manquant fait échouer l'étape en quelques secondes. C'est délibéré — mieux
+vaut cet échec immédiat qu'un repli silencieux sur l'index d'un autre run, ou qu'un plantage
+après deux heures de calcul.
+:::
 
 Pour relancer ou déboguer **une seule étape** (via Argo ou en local), voir
 [Lancer une étape individuellement](09-lancer-une-etape.qmd). Les termes et colonnes du
