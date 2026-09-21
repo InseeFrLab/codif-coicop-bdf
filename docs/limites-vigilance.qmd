@@ -210,20 +210,19 @@ périmètre et avec sa propre convention. Pour un même modèle et un même jeu,
 différaient de ceux du rapport, sans que rien ne le signale.
 
 Ces calculs ont disparu des étapes de classification : seule l'[étape
-`evaluate`](11-evaluate.qmd) mesure, et elle n'a plus qu'**une** convention, la stricte —
-voir [la page evaluate](11-evaluate.qmd#une-seule-convention-daccuracy-la-stricte).
+`evaluate`](11-evaluate.qmd) mesure, et elle n'a plus qu'**une** règle — tronquer la vérité
+et la prédiction au niveau `k`, comparer — voir [la page
+evaluate](11-evaluate.qmd#regle-accuracy).
 
-**Subsiste**, et c'est la contrepartie du choix : la convention stricte **écarte** du
-dénominateur les observations dont la vérité est moins profonde que le niveau mesuré, au
-lieu de les compter. Au niveau 4, cela peut représenter près d'un quart de la population.
-Le rapport affiche donc, en regard de chaque tableau d'accuracy, la part écartée à chaque
-niveau. Distinguer une vérité peu profonde *terminale* d'une annotation *incomplète*
-demanderait de marquer les feuilles de la nomenclature prunée — voir le point suivant.
-
-**Subsiste aussi** : la section « Décomposition interne des classifieurs » du rapport est
-calculée par les bibliothèques de mesure des modules RAG, à dénominateur constant. Ses
-accuracies ne sont donc pas comparables chiffre à chiffre avec celles du reste du rapport ;
-un `callout` le signale sur place.
+**Subsiste**, et c'est la contrepartie du choix : une prédiction plus fine que la vérité est
+comptée **fausse** sous la profondeur de celle-ci. Au niveau 4, cela concerne les
+observations dont la vérité s'arrête avant — près d'un quart de la population. Or une vérité
+peu profonde peut être *terminale* (la réponse exacte, et la prédiction plus fine est bien
+une erreur) ou *incomplète* (l'annotateur s'est arrêté, et la prédiction peut être juste) :
+rien ne distingue aujourd'hui les deux cas, et ils sont comptés pareil. Le rapport affiche
+donc, en regard de chaque tableau d'accuracy, la part concernée à chaque niveau. Les
+séparer demanderait de marquer les feuilles de la nomenclature prunée — voir le point
+suivant.
 
 ### Suggester : des codes agrégés indexés comme candidats
 
@@ -247,10 +246,11 @@ tous indexés dans Qdrant comme candidats. Aucun drapeau `is_leaf`, aucun niveau
 une sous-codification**, et rien ne permet de distinguer les deux automatiquement.
 
 **Piste** : ajouter une colonne `is_leaf` à `nomenclature_pruned.parquet` (un code sans enfant
-dans la nomenclature prunée). Elle permettrait de mesurer ce que la convention stricte se
-contente aujourd'hui d'écarter — une vérité peu profonde *et* terminale est évaluable au
-niveau 4, une vérité peu profonde *non* terminale est une annotation incomplète — et de
-signaler une sous-codification dans le fichier livré.
+dans la nomenclature prunée). Elle lèverait l'ambiguïté que la règle d'accuracy tranche
+aujourd'hui dans un seul sens — une vérité peu profonde *et* terminale rend bien fausse une
+prédiction plus fine, tandis qu'une vérité peu profonde *non* terminale est une annotation
+incomplète et la pénalité est alors imméritée — et permettrait de signaler une
+sous-codification dans le fichier livré.
 
 ## Résolus par la sortie de l'évaluation
 

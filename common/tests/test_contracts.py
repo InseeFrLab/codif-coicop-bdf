@@ -82,6 +82,12 @@ class TestConsumers:
         si un RAG échoue à retrouver ou à générer."""
         assert consumers("classify-rag-notices", "retrieved_codes") == ["evaluate"]
 
+    def test_input_counts_feeds_the_evaluation(self):
+        """Le décompte du fichier d'entrée n'a qu'un lecteur, et c'est voulu :
+        il n'existe que pour que le rapport d'évaluation puisse rapprocher le
+        fichier donné au pipeline de celui qu'il rend."""
+        assert consumers("build-datasets", "input_counts") == ["evaluate"]
+
     def test_an_orphan_output_has_no_consumer(self):
         """Le registre dit aussi ce que plus personne ne lit : les contrôles
         qualité de build-datasets sont écrits à chaque run sans lecteur."""

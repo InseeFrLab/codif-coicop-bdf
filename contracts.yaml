@@ -42,6 +42,16 @@ steps:
       annotations_full: build-datasets/annotations_full.parquet
       suggester:        build-datasets/suggester.parquet
       observations:     build-datasets/observations.parquet
+      # Décompte du fichier d'entrée : lignes brutes lues, les deux retraits qui
+      # les séparent de `observations` (libellés vides puis produits non
+      # codables), et le nombre d'étiquettes. Écrit UNIQUEMENT quand
+      # `--input-file` est passé.
+      #
+      # Il existe parce que ce chiffre n'est déductible d'AUCUN autre artefact :
+      # les lignes retirées ne sont écrites nulle part, et `observations` ne
+      # porte que ce qui a survécu. Sans lui, personne ne peut rapprocher le
+      # fichier donné au pipeline de celui qu'il rend.
+      input_counts:     build-datasets/input_counts.parquet
       qa_multiple_codes:            build-datasets/qa/annotations_with_multiple_codes.parquet
       qa_multiple_codes_hors_copain: build-datasets/qa/annotations_hors_copain_with_multiple_codes.parquet
 
@@ -154,6 +164,11 @@ steps:
       # mapping. C'est ce qui rend l'accuracy de bout en bout calculable.
       - export-results.deliverable
       - build-datasets.observations
+      # Le nombre de lignes du fichier d'entrée, que `observations` a déjà perdu
+      # (deux filtres en amont). C'est l'écart entre les deux qui informe.
+      # Facultatif de fait : un run antérieur à cet artefact ne l'a pas, et le
+      # rapport se dégrade au lieu d'échouer.
+      - build-datasets.input_counts
       - prune-codes.mapping_lvl4
     outputs:
       html: evaluate/evaluation_report.html

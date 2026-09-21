@@ -19,7 +19,7 @@ from codif_common.vector_index import build_collection_name, validate_collection
 | `vector_index.py` | nommage, manifeste et validation des collections Qdrant | 2 copies |
 | `contracts.py` | registre des artefacts : `artifact()`, `run_root()`, `external()`, `consumers()` | chemins S3 en dur, éparpillés |
 | `schema.py` | contrôles de frontière : `require_columns()`, `declare_output()` | rien |
-| `metrics.py` | accuracy par niveau (convention stricte, la seule), couverture, régimes, `final_decision` | `report/coicop_metrics.py`, lu par `report/` **et** `evaluate/` |
+| `metrics.py` | accuracy par niveau (troncature des deux codes puis égalité — la règle unique), couverture, régimes, `final_decision` | `report/coicop_metrics.py`, lu par `report/` (`final_decision`, chronos) **et** `evaluate/` (tout le reste) |
 | `tracking.py` | URLs de runs MLflow : `run_url()`, `find_run_url()`, `url_from_artifact_uri()` | rien — aucune étape ne persistait son run_id |
 
 ## Règle d'or

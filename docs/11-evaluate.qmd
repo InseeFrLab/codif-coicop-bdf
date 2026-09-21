@@ -57,6 +57,7 @@ et les lignes captées par la regex, qui n'entrent jamais dans la chaîne d'arbi
 | `…/{run}/classify-rag-notices/predictions.parquet` | `parsed`, `codable` — sans eux, pas de régimes de réponse |
 | `…/{run}/classify-rag-notices/retrieved_codes.parquet` et `…/{run}/classify-rag-annotations/predictions.parquet` | les codes récupérés : **recall du retriever** et accuracy de génération conditionnelle |
 | le livrable d'[`export-results`](07-export-results.qmd), plus `build-datasets/observations.parquet` et `prune-codes/mapping_lvl4.parquet` | l'**accuracy de bout en bout, regex comprise** — le chiffre métier |
+| `…/{run}/build-datasets/input_counts.parquet` | le nombre de lignes du **fichier d'entrée** et les deux retraits qui l'en séparent. Facultatif : un run antérieur ne l'a pas, le tableau de métadonnées se dégrade alors au lieu d'échouer |
 
 Les artefacts de retrieval étaient écrits à chaque run et **jamais relus**.
 
@@ -70,10 +71,14 @@ comptée fausse.
 
 ## Contenu du rapport
 
-- **Métadonnées du run** (dont la colonne de vérité terrain effectivement scorée) ;
+- **Métadonnées du run** : la volumétrie d'abord — lignes du fichier d'entrée, les deux
+  retraits opérés par `build-datasets` (libellés vides, produits non codables), lignes
+  retenues qui sont aussi celles du fichier livré —, puis la colonne de vérité terrain
+  effectivement scorée. C'est le seul endroit où l'on peut rapprocher ce qu'on a donné au
+  pipeline de ce qu'il rend ;
 - **Accuracy globale par niveau** COICOP pour LCS, RAG notices, RAG annotations, TTC
-  et la conciliation (tableau + graphique), et la profondeur de la vérité terrain qui
-  explique le `n` décroissant ;
+  et la conciliation (tableau + graphique), et la profondeur de la vérité terrain, qui dit
+  où une prédiction plus fine que l'annotation est comptée fausse ;
 - **Accuracy du fichier livré, regex comprise** — le chiffre métier, ventilé par
   source de décision et assorti d'une ligne « hors regex » ;
 - **Accuracy par groupe** : niveau COICOP 1 et 2, `shop`, `shop_type_name`, **décile de `budget`** ;
@@ -110,41 +115,52 @@ dans un rapport qui ne mesure rien ; pas quand quelqu'un a explicitement demand�
 Le message d'échec liste les colonnes présentes et nomme la cause probable.
 :::
 
-### Une seule convention d'accuracy : la stricte
+### Une seule règle d'accuracy : troncature et égalité {#regle-accuracy}
 
-| | Convention **stricte** |
+Au niveau `k`, on tronque la vérité **et** la prédiction à leurs `k` premiers segments, et
+on teste l'égalité. C'est toute la règle.
+
+| | Règle **unique** |
 |---|---|
-| Dénominateur | les seules observations dont la vérité atteint le niveau `k` |
-| Vérité moins profonde que `k` | **exclue** — non évaluable |
-| Prédiction plus courte que `k` | erreur |
-| Prédiction plus profonde que la vérité | correcte si le préfixe correspond |
-| Question | parmi les observations codables à la profondeur `k`, quelle part est juste ? |
-| Comparaison entre niveaux | **impossible** : la population change d'un niveau à l'autre |
+| Dénominateur | toutes les observations portant une vérité, **le même à tous les niveaux** |
+| Vérité moins profonde que `k` | tronquée à elle-même et **mesurée** : elle est juste si la prédiction s'arrête au même endroit |
+| Prédiction plus courte que la vérité | erreur au niveau où elles divergent |
+| Prédiction plus profonde que la vérité | **erreur** sous la profondeur de la vérité — `01.4` contre `01.4.3.1` : juste au niveau 2, faux au niveau 4 |
+| Vérité absente | seul cas sorti du calcul : il n'y a rien à juger |
+| Question | sur l'ensemble des observations étiquetées, quelle part porte le bon code à la profondeur `k` ? |
+| Comparaison entre niveaux | **possible** : même population partout |
 
-Le rapport publiait auparavant une seconde convention, dite *inclusive*, à dénominateur
-constant. Elle a été retirée : deux chiffres pour la même question obligeaient chaque
-lecteur à trancher lequel regarder, et le tableau qui les comparait ne servait qu'à
-expliquer pourquoi il y en avait deux.
+Le rapport a successivement publié une convention *inclusive*, puis une convention
+*stricte* qui écartait du dénominateur les vérités moins profondes que `k`. Les deux ont
+été retirées au profit de la règle ci-dessus, qui ne demande au lecteur de retenir qu'une
+phrase — et qui rend enfin **mesurable** le cas le plus fréquent des Postes peu profonds :
+une vérité `01.4` correctement codée `01.4` est juste, là où la convention stricte se
+contentait de ne pas la compter.
 
 ::: {.callout-warning}
-## Pourquoi l'accuracy peut *monter* avec le niveau
-Chaque niveau porte sur une population différente : les observations qui restent au
-niveau 4 sont celles dont la vérité est fine, souvent les plus faciles. Une accuracy qui
-croît avec `k` est un effet de sélection, pas un progrès. Le tableau **« Ce que chaque
-niveau écarte »** donne, pour chaque `k`, la part de la population non évaluable — c'est
-lui qui rend le `n` lisible.
+## Pourquoi l'accuracy *baisse* au niveau 4
+Une prédiction plus fine que la vérité n'est plus créditée au-delà de la profondeur de
+celle-ci. Comme **24 % des Postes ont un code canonique moins profond que le niveau 4**
+(voir [prune-codes](prune-codes.qmd)), un classifieur qui descend systématiquement à
+4 segments est désormais compté faux sur cette part. Le tableau **« Où une prédiction trop
+fine sera comptée fausse »** donne, pour chaque `k`, la part concernée : c'est lui qui
+permet de distinguer une codification qui se dégrade en profondeur d'une annotation qui
+s'arrête avant.
 :::
 
 Le **niveau 5 n'est jamais affiché** avec une vérité canonique : les codes prunés ont au
-plus 4 segments, la colonne serait structurellement vide.
+plus 4 segments, donc tronquer à 5 ne tronque rien et la colonne dupliquerait le niveau 4.
+Elle en différerait seulement face à une prédiction à 5 segments — qu'elle compterait
+fausse, mesurant alors la profondeur de la prédiction et non son exactitude.
 
 ::: {.callout-note}
 ## Une exception assumée, hors pipeline
-`annexes/benchmarking/bilan-codification.qmd` garde un scoreur local à dénominateur
-constant. Il ne mesure pas une accuracy contre une vérité terrain mais un **taux d'accord**
-avec une codification antérieure : un `code_previous` valant `11.2` est une réponse
-complète de l'annotateur précédent, pas une troncature, et l'écarter reviendrait à ne pas
-compter un désaccord réel.
+`annexes/benchmarking/bilan-codification.qmd` garde un scoreur local. Il ne mesure pas une
+accuracy contre une vérité terrain mais un **taux d'accord** avec une codification
+antérieure : un `code_previous` valant `11.2` est une réponse complète de l'annotateur
+précédent, pas une troncature. Son écart avec la règle ci-dessus s'est réduit au point de
+ne plus porter que sur ce point de sens — le scoreur local y est désormais largement
+redondant, et sa suppression est à instruire.
 :::
 
 ## La décomposition interne des classifieurs
@@ -200,26 +216,38 @@ Sont enregistrés :
 - **Paramètres** : `run_id`, `run_date`, la conciliation retenue, la colonne de vérité terrain
   scorée, la colonne de provenance ;
 - **Métriques** : pour chaque méthode (LCS / RAG notices / RAG annotations / TTC /
-  conciliation) et chaque niveau, `accuracy_<méthode>_niv<k>` et son dénominateur
-  `n_evaluable_<méthode>_niv<k>` — sans lui, deux runs dont les annotations n'ont pas la
-  même profondeur semblent comparables alors qu'ils ne le sont pas ; plus
-  `truth_shallower_than_niv<k>_count`, `llm_prompt_tokens_total`, `llm_latency_s_mean` ;
+  conciliation) et chaque niveau, `accuracy_<méthode>_niv<k>`. Son dénominateur n'est plus
+  logué par méthode et par niveau : il ne dépend ni de l'une ni de l'autre et vaut
+  exactement `n_scorable`. Plus `truth_shallower_than_niv<k>_count` — inchangé, c'est une
+  propriété de la vérité seule, mais il se lit désormais comme la part où une prédiction
+  trop fine est comptée fausse —, `llm_prompt_tokens_total`, `llm_latency_s_mean` ;
 - **La décomposition interne**, préfixée par famille pour que l'UI MLflow les regroupe et
   qu'une comparaison entre deux runs porte sur des séries alignées :
   `retrieval/<brique>/recall_niv<k>` et `…/generation_when_retrieved_niv<k>`,
   `regime/<brique>/<régime>/accuracy_niv4` et `…/n`,
   `confidence/<brique>/auroc`, `…/accuracy_at_<seuil>`, `…/coverage_at_<seuil>`,
   `codable/<brique>/lift`, `distortion/<brique>/level_<k>/{tv_distance,kl_divergence}` ;
+- **Volumétrie du fichier d'entrée** : `n_input_rows`, `n_dropped_empty_label`,
+  `n_dropped_uncodable`, `n_observations`. Sans `n_input_rows`, comparer deux runs ne
+  permet pas de distinguer un fichier plus petit d'un filtrage plus lourd ;
 - **Artefacts** : `evaluation_report.html` et `truth_depth_distribution.json`.
 
 ::: {.callout-warning}
 ## Rupture de série sur les runs antérieurs
-Les métriques `accuracy_all_<méthode>_niv<k>` (convention inclusive) ne sont plus émises, et
-`coverage_<méthode>` / `abstention_<méthode>_count` sont devenues
-`coverage_niv4_<méthode>` / `abstention_niv4_<méthode>_count` : leur dénominateur a changé
-— elles portent désormais sur les seules lignes évaluables au niveau 4 — et les tracer sous
-l'ancien nom mettrait deux définitions incompatibles sur une même courbe. Comparer un run
-d'avant et un run d'après montrera donc un trou dans l'UI MLflow.
+Deux ruptures, traitées différemment.
+
+**Par renommage**, lors du passage à la convention stricte : `accuracy_all_<méthode>_niv<k>`
+(convention inclusive) n'est plus émise, et `coverage_<méthode>` /
+`abstention_<méthode>_count` sont devenues `coverage_niv4_<méthode>` /
+`abstention_niv4_<méthode>_count`. Comparer un run d'avant et un run d'après montre un trou
+dans l'UI MLflow.
+
+**Sans renommage**, lors du passage à la règle unique : `accuracy_*`, `coverage_niv4_*` et
+`accuracy_answered_*` gardent leur nom alors que leur définition a changé, et
+`n_evaluable_<méthode>_niv<k>` a disparu. C'est délibéré — la baisse mécanique au niveau 4
+est l'information la plus utile du changement, et la cacher derrière une clé neuve la
+rendrait invisible. La rupture est portée par le **tag** `accuracy_convention`
+(`troncature_egalite`), qui permet de filtrer les runs d'une même convention dans l'UI.
 :::
 
 ## Comment le rapport retrouve les runs des autres étapes
