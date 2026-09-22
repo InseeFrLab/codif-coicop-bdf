@@ -175,6 +175,10 @@ steps:
       # aucun autre artefact ne porte ce partage.
       - classify-regex.predictions
       - classify-regex.test_without_regex
+      # Les libellés des divisions COICOP ("01" → « Produits alimentaires… »).
+      # La nomenclature DU RUN et non le CSV source : les libellés affichés sont
+      # alors ceux contre lesquels ce run a été codé, pas ceux d'aujourd'hui.
+      - prune-codes.nomenclature
       - prune-codes.mapping_lvl4
     outputs:
       html: evaluate/evaluation_report.html

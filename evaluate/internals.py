@@ -363,6 +363,93 @@ def group_summary(
     return out if len(out) else None
 
 
+def division_labels(con, path: Optional[str]) -> Dict[str, str]:
+    """Libellés des divisions COICOP, lus dans la nomenclature du run.
+
+    ``{"01": "Produits alimentaires et boissons non alcoolisées", …}``. Un code
+    de division est un code à **un seul segment** : on filtre là-dessus plutôt
+    que sur la colonne ``type``, dont les libellés dépendent de la version du
+    fichier source.
+
+    Renvoie un dictionnaire vide si la nomenclature est absente ou n'a pas les
+    colonnes attendues — les tableaux affichent alors le code seul. Un libellé
+    manquant ne doit jamais faire échouer un rapport de mesure.
+    """
+    frame = _read(con, path)
+    if frame is None or not {"code", "label_fr"} <= set(frame.columns):
+        return {}
+    codes = frame["code"].astype("string")
+    divisions = frame[codes.notna() & ~codes.str.contains(".", regex=False)]
+    return {
+        str(r["code"]): str(r["label_fr"])
+        for _, r in divisions.iterrows()
+        if pd.notna(r["label_fr"])
+    }
+
+
+def label_division(code: str, labels: Dict[str, str], *, width: int = 48) -> str:
+    """``"01"`` → ``"01 — Produits alimentaires et boissons non alcoolisées"``."""
+    if code is None:
+        return "— (aucun code émis)"
+    libelle = labels.get(str(code))
+    if not libelle:
+        return str(code)
+    if len(libelle) > width:
+        libelle = libelle[: width - 1].rstrip() + "…"
+    return f"{code} — {libelle}"
+
+
+def accuracy_by_predicted_division(
+    data: pd.DataFrame,
+    *,
+    truth_col: str,
+    final_col: str,
+    labels: Optional[Dict[str, str]] = None,
+    target_level: int = 4,
+) -> Optional[pd.DataFrame]:
+    """« Quand le pipeline prédit de l'alimentaire, a-t-il le bon code ? »
+
+    Regroupe par la division **prédite**, et non par la division vraie. Les deux
+    tableaux se ressemblent et répondent à des questions opposées :
+
+    - par division **vraie** : « parmi les vrais produits alimentaires, combien
+      sont bien codés ? » — c'est ce qu'on veut savoir pour juger la couverture
+      d'un domaine ;
+    - par division **prédite** (ici) : « parmi les produits que la chaîne dit
+      alimentaires, combien le sont vraiment, et combien ont le bon code
+      complet ? » — c'est la question opérationnelle, celle qu'on se pose devant
+      un fichier livré, quand la vérité n'est pas connue.
+
+    Deux taux, dans cet ordre de lecture : la division prédite est-elle la bonne,
+    puis le code complet l'est-il. Le second ne peut pas dépasser le premier —
+    avoir le bon code de niveau 4 suppose la bonne division.
+
+    Les lignes sans code émis forment leur propre groupe : elles ne sont pas une
+    division, mais leur volume fait partie de la lecture.
+    """
+    from codif_common.metrics import accuracy, code_parts
+
+    labels = labels or {}
+    div = data[final_col].map(lambda c: code_parts(c)[0] if code_parts(c) else None)
+    work = data.assign(_div=div)
+
+    rows = []
+    for value, sub in work.groupby("_div", dropna=False):
+        value = None if pd.isna(value) else value
+        n_ok1, _, acc1 = accuracy(sub[truth_col], sub[final_col], 1)
+        n_ok4, _, acc4 = accuracy(sub[truth_col], sub[final_col], target_level)
+        rows.append({
+            "division prédite": label_division(value, labels),
+            "n prédits": len(sub),
+            "part des prédictions": len(sub) / len(work),
+            "bonne division": acc1,
+            f"bon code niv{target_level}": acc4,
+        })
+    if not rows:
+        return None
+    return pd.DataFrame(rows).sort_values("n prédits", ascending=False)
+
+
 def distortion_level1(
     data: pd.DataFrame, *, truth_col: str, final_col: str
 ) -> Optional[dict]:

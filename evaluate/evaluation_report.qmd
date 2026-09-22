@@ -72,6 +72,8 @@ MAPPING_PATH = os.environ.get("EVAL_MAPPING_PATH") or None
 # antérieur à son introduction : le tableau de métadonnées se dégrade alors.
 INPUT_COUNTS_PATH = os.environ.get("EVAL_INPUT_COUNTS_PATH") or None
 # Les deux moitiés du partage opéré par la regex, pour l'entonnoir de volumétrie.
+# Nomenclature du run : donne les libellés des divisions COICOP.
+NOMENCLATURE_PATH = os.environ.get("EVAL_NOMENCLATURE_PATH") or None
 REGEX_PATH = os.environ.get("EVAL_REGEX_PATH") or None
 WITHOUT_REGEX_PATH = os.environ.get("EVAL_WITHOUT_REGEX_PATH") or None
 
@@ -143,6 +145,8 @@ SIRUS_MODEL_URI = (
 scorable = df[df[TRUTH].notna() & (df[TRUTH].astype(str).str.len() > 0)].copy()
 
 COUNTS = I.input_counts(con, INPUT_COUNTS_PATH)
+# Vide si la nomenclature manque : les tableaux affichent alors le code seul.
+DIVISION_LABELS = I.division_labels(con, NOMENCLATURE_PATH)
 # `predict_code IS NOT NULL` : même définition que celle d'`export-results`, qui
 # filtre ainsi en lisant ce fichier. Sans ce filtre les deux compteraient
 # différemment ce qu'a fait la regex.
@@ -592,24 +596,32 @@ def render_group_table(data: pd.DataFrame, group_col: str, k: int = 4) -> pd.Dat
     return view
 ```
 
-### Par niveau 1 du code COICOP (vérité terrain)
+### Par division COICOP **prédite**
 
-Regroupe les observations par le premier segment de `code` (ex. `01`, `02`, …).
+C'est la lecture opérationnelle, celle qu'on fait devant un fichier livré, quand la vérité n'est pas connue : **quand la chaîne annonce de l'alimentaire, à quelle fréquence a-t-elle raison ?**
+
+Le regroupement se fait sur la division **prédite** par `{python} FINAL_NAME`, pas sur la division vraie. Les deux tableaux se ressemblent et répondent à des questions opposées — par division vraie, on mesure ce qu'on retrouve d'un domaine ; par division prédite, on mesure ce que vaut une annonce. Seul le second se lit sans connaître la réponse.
+
+Deux taux, dans cet ordre : la division annoncée est-elle la bonne, puis le code complet l'est-il. Le second ne peut pas dépasser le premier — avoir le bon code de niveau 4 suppose la bonne division.
 
 ```{python}
 # | label: tbl-coicop-lvl1
-_lvl = scorable.assign(
-    truth_lvl1=scorable[TRUTH].map(
-        lambda c: code_parts(c)[0] if code_parts(c) else None
-    )
-).dropna(subset=["truth_lvl1"])
-tbl_l1 = render_group_table(_lvl, "truth_lvl1", k=4)
-tbl_l1 = tbl_l1.sort_values("truth_lvl1")
-Markdown(
-    tbl_l1.to_markdown(index=False, disable_numparse=True)
-    if len(tbl_l1)
-    else "_Pas assez d'observations par niveau 1._"
+_pred_div = I.accuracy_by_predicted_division(
+    scorable, truth_col=TRUTH, final_col=FINAL_COL, labels=DIVISION_LABELS
 )
+if _pred_div is None:
+    md = "_Pas assez d'observations pour ventiler par division prédite._"
+else:
+    _v = _pred_div.copy()
+    for c in ["part des prédictions", "bonne division", "bon code niv4"]:
+        _v[c] = _v[c].map(lambda x: "—" if pd.isna(x) else f"{x:.1%}")
+    md = _v.to_markdown(index=False, disable_numparse=True)
+    if not DIVISION_LABELS:
+        md += (
+            "\n\n_Libellés indisponibles : la nomenclature du run "
+            "(`prune-codes/nomenclature_pruned.parquet`) n'a pas pu être lue._"
+        )
+Markdown(md)
 ```
 
 ### Par niveau 2 du code COICOP (vérité terrain)
@@ -766,7 +778,12 @@ else:
     _rows = _rows.rename(columns={"category": "division"})
     # `<none>` n'est pas une division : c'est l'abstention de la conciliation.
     # La nommer évite qu'un lecteur la prenne pour un code COICOP exotique.
-    _rows["division"] = _rows["division"].replace({"<none>": "— (aucun code émis)"})
+    # Les autres reçoivent leur libellé de nomenclature — un tableau de soldes
+    # par division illisible sans les noms ne sert à personne.
+    _rows["division"] = _rows["division"].map(
+        lambda c: "— (aucun code émis)" if c == "<none>"
+        else I.label_division(c, DIVISION_LABELS)
+    )
     _rows["solde"] = _rows["pred_n"] - _rows["true_n"]
     view = pd.DataFrame({
         "division": _rows["division"],

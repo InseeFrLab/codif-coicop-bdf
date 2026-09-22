@@ -325,6 +325,7 @@ def main() -> int:
         # Toujours positionnée, jamais conditionnée : la tolérance vit dans le
         # lecteur (`internals.input_counts`), pas dans la construction du chemin.
         "EVAL_INPUT_COUNTS_PATH": artifact("build-datasets", "input_counts", **RUN),
+        "EVAL_NOMENCLATURE_PATH": artifact("prune-codes", "nomenclature", **RUN),
         "EVAL_REGEX_PATH": artifact("classify-regex", "predictions", **RUN),
         "EVAL_WITHOUT_REGEX_PATH": artifact("classify-regex", "test_without_regex", **RUN),
         "EVAL_MAPPING_PATH": artifact("prune-codes", "mapping_lvl4", **RUN),

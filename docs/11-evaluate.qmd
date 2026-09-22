@@ -59,6 +59,7 @@ et les lignes captées par la regex, qui n'entrent jamais dans la chaîne d'arbi
 | le livrable d'[`export-results`](07-export-results.qmd), plus `build-datasets/observations.parquet` et `prune-codes/mapping_lvl4.parquet` | l'**accuracy de bout en bout, regex comprise** — le chiffre métier |
 | `…/{run}/build-datasets/input_counts.parquet` | le nombre de lignes du **fichier d'entrée** et les deux retraits qui l'en séparent. Facultatif : un run antérieur ne l'a pas, l'entonnoir démarre alors plus bas au lieu d'échouer |
 | `…/{run}/classify-regex/REGEX_pred.parquet` et `…/{run}/classify-regex/raw_test_without_regex.parquet` | les deux moitiés du partage opéré par la regex : ce qu'elle a tranché, et ce qui est entré dans la chaîne. Seules les **lignes** sont comptées |
+| `…/{run}/prune-codes/nomenclature_pruned.parquet` | les **libellés des divisions** COICOP (`01` → « Produits alimentaires… »), lus sur les codes à un seul segment. La nomenclature **du run**, pas le CSV source : les libellés affichés sont ceux contre lesquels ce run a été codé. Absente, les tableaux affichent le code seul |
 
 Les artefacts de retrieval étaient écrits à chaque run et **jamais relus**.
 
@@ -87,7 +88,14 @@ comptée fausse.
   où une prédiction plus fine que l'annotation est comptée fausse ;
 - **Accuracy du fichier livré, regex comprise** — le chiffre métier, ventilé par
   source de décision et assorti d'une ligne « hors regex » ;
-- **Accuracy par groupe** : niveau COICOP 1 et 2, `shop`, `shop_type_name`, **décile de `budget`** ;
+- **Accuracy par groupe** : `shop`, `shop_type_name`, **décile de `budget`**, niveau COICOP 2,
+  et surtout la ventilation **par division COICOP prédite** — le regroupement se fait sur ce
+  que la chaîne annonce, pas sur la vérité. C'est la lecture opérationnelle : « quand elle
+  annonce de l'alimentaire, à quelle fréquence a-t-elle raison ? », la seule question qui se
+  pose devant un fichier livré, quand la vérité n'est pas connue. Deux taux par division, la
+  bonne division puis le code complet — le second ne peut pas dépasser le premier. La
+  ventilation symétrique, par division **vraie**, répondrait à l'autre question (« parmi les
+  vrais produits alimentaires, combien retrouve-t-on ? ») et n'est plus affichée ;
 - **Accuracy par provenance du produit** (ticket de caisse, carnet papier, saisie
   assistée) : volume et part de chaque source, couverture, accuracy aux niveaux 1, 2 et 4,
   et écart en points contre l'ensemble. Le découpage par niveau est le plus parlant — une

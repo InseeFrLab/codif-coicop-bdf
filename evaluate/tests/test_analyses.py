@@ -122,3 +122,98 @@ class TestDistortionLevel1:
     def test_no_labelled_row_yields_none(self):
         frame = pd.DataFrame({TRUTH: [None, None], FINAL: ["01.1", "02.1"]})
         assert I.distortion_level1(frame, truth_col=TRUTH, final_col=FINAL) is None
+
+
+class TestDivisionLabels:
+    @staticmethod
+    def _nomenclature():
+        """Une nomenclature contient TOUS les niveaux : on ne veut que les
+        divisions, c'est-à-dire les codes à un seul segment."""
+        return pd.DataFrame({
+            "code": ["01", "02", "01.1", "01.1.1", "11"],
+            "label_fr": [
+                "Produits alimentaires et boissons non alcoolisées",
+                "Boissons alcoolisées et tabac",
+                "Produits alimentaires",
+                "Pain et céréales",
+                "Restaurants et hôtels",
+            ],
+        })
+
+    def test_keeps_only_the_divisions(self, monkeypatch):
+        monkeypatch.setattr(I, "_read", lambda con, path: self._nomenclature())
+        labels = I.division_labels(None, "peu importe")
+        assert set(labels) == {"01", "02", "11"}
+        assert labels["11"] == "Restaurants et hôtels"
+
+    def test_a_missing_nomenclature_is_not_an_error(self, monkeypatch):
+        """Un libellé absent ne doit jamais faire échouer un rapport de mesure."""
+        monkeypatch.setattr(I, "_read", lambda con, path: None)
+        assert I.division_labels(None, "absente") == {}
+
+    def test_a_nomenclature_without_the_columns_is_ignored(self, monkeypatch):
+        monkeypatch.setattr(I, "_read", lambda con, path: pd.DataFrame({"code": ["01"]}))
+        assert I.division_labels(None, "sans libellés") == {}
+
+    def test_formats_code_and_label_together(self):
+        labels = {"01": "Produits alimentaires"}
+        assert I.label_division("01", labels) == "01 — Produits alimentaires"
+
+    def test_falls_back_to_the_bare_code(self):
+        assert I.label_division("98", {}) == "98"
+
+    def test_truncates_a_very_long_label(self):
+        labels = {"01": "Produits alimentaires et boissons non alcoolisées"}
+        out = I.label_division("01", labels, width=20)
+        assert out.startswith("01 — Produits") and out.endswith("…")
+
+
+class TestAccuracyByPredictedDivision:
+    @staticmethod
+    def _frame():
+        """Cinq produits annoncés en `01`, dont un qui est en réalité du `11`.
+        Parmi les quatre vraiment alimentaires, deux ont le bon code complet."""
+        return pd.DataFrame({
+            TRUTH: ["01.1.1.1", "01.1.1.1", "01.2.2.2", "01.3.3.3", "11.1.1.1"],
+            FINAL: ["01.1.1.1", "01.1.1.1", "01.9.9.9", "01.9.9.9", "01.1.1.1"],
+        })
+
+    def _row(self, label="01"):
+        out = I.accuracy_by_predicted_division(
+            self._frame(), truth_col=TRUTH, final_col=FINAL,
+            labels={"01": "Produits alimentaires"},
+        )
+        return out[out["division prédite"].str.startswith(label)].iloc[0]
+
+    def test_answers_the_operational_question(self):
+        """« Quand la chaîne annonce de l'alimentaire, a-t-elle le bon code ? »
+        4 des 5 annonces sont bien de l'alimentaire, 2 ont le code complet."""
+        row = self._row()
+        assert row["n prédits"] == 5
+        assert row["bonne division"] == 0.8
+        assert row["bon code niv4"] == 0.4
+
+    def test_the_full_code_can_never_beat_the_division(self):
+        """Avoir le bon code de niveau 4 suppose la bonne division : le second
+        taux ne peut pas dépasser le premier, à aucune ligne."""
+        out = I.accuracy_by_predicted_division(
+            self._frame(), truth_col=TRUTH, final_col=FINAL
+        )
+        assert (out["bon code niv4"] <= out["bonne division"]).all()
+
+    def test_it_groups_by_the_prediction_not_the_truth(self):
+        """La ligne `11` n'existe pas : aucune prédiction n'annonce `11`, même
+        si un produit en relève réellement. C'est toute la différence avec la
+        ventilation par division vraie."""
+        out = I.accuracy_by_predicted_division(
+            self._frame(), truth_col=TRUTH, final_col=FINAL
+        )
+        assert list(out["division prédite"]) == ["01"]
+
+    def test_abstentions_form_their_own_group(self):
+        frame = pd.DataFrame({TRUTH: ["01.1.1.1", "01.1.1.1"], FINAL: ["01.1.1.1", None]})
+        out = I.accuracy_by_predicted_division(frame, truth_col=TRUTH, final_col=FINAL)
+        assert "— (aucun code émis)" in list(out["division prédite"])
+
+    def test_labels_are_used_when_available(self):
+        assert "Produits alimentaires" in self._row()["division prédite"]
