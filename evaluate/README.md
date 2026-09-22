@@ -116,7 +116,7 @@ même chose et n'ont pas le même schéma de métriques.
 d'environnement plutôt que des paramètres Quarto : `EVAL_DECIDE_PATH`,
 `EVAL_RAGNOTICES_PATH`, `EVAL_RETRIEVED_PATH`, `EVAL_RAGANN_PATH`,
 `EVAL_DELIVERABLE_PATH`, `EVAL_OBSERVATIONS_PATH`, `EVAL_INPUT_COUNTS_PATH`,
-`EVAL_MAPPING_PATH`, `EVAL_RUN_ID`,
+`EVAL_REGEX_PATH`, `EVAL_WITHOUT_REGEX_PATH`, `EVAL_MAPPING_PATH`, `EVAL_RUN_ID`,
 `EVAL_RUN_DATE`, `EVAL_SOURCE_COLUMN`. `main.py` les positionne avant d'appeler `quarto render` ; pour itérer
 sur le gabarit en local, les exporter soi-même et rendre le `.qmd` directement.
 

@@ -57,7 +57,8 @@ et les lignes captées par la regex, qui n'entrent jamais dans la chaîne d'arbi
 | `…/{run}/classify-rag-notices/predictions.parquet` | `parsed`, `codable` — sans eux, pas de régimes de réponse |
 | `…/{run}/classify-rag-notices/retrieved_codes.parquet` et `…/{run}/classify-rag-annotations/predictions.parquet` | les codes récupérés : **recall du retriever** et accuracy de génération conditionnelle |
 | le livrable d'[`export-results`](07-export-results.qmd), plus `build-datasets/observations.parquet` et `prune-codes/mapping_lvl4.parquet` | l'**accuracy de bout en bout, regex comprise** — le chiffre métier |
-| `…/{run}/build-datasets/input_counts.parquet` | le nombre de lignes du **fichier d'entrée** et les deux retraits qui l'en séparent. Facultatif : un run antérieur ne l'a pas, le tableau de métadonnées se dégrade alors au lieu d'échouer |
+| `…/{run}/build-datasets/input_counts.parquet` | le nombre de lignes du **fichier d'entrée** et les deux retraits qui l'en séparent. Facultatif : un run antérieur ne l'a pas, l'entonnoir démarre alors plus bas au lieu d'échouer |
+| `…/{run}/classify-regex/REGEX_pred.parquet` et `…/{run}/classify-regex/raw_test_without_regex.parquet` | les deux moitiés du partage opéré par la regex : ce qu'elle a tranché, et ce qui est entré dans la chaîne. Seules les **lignes** sont comptées |
 
 Les artefacts de retrieval étaient écrits à chaque run et **jamais relus**.
 
@@ -71,18 +72,39 @@ comptée fausse.
 
 ## Contenu du rapport
 
-- **Métadonnées du run** : la volumétrie d'abord — lignes du fichier d'entrée, les deux
-  retraits opérés par `build-datasets` (libellés vides, produits non codables), lignes
-  retenues qui sont aussi celles du fichier livré —, puis la colonne de vérité terrain
-  effectivement scorée. C'est le seul endroit où l'on peut rapprocher ce qu'on a donné au
-  pipeline de ce qu'il rend ;
+- **Métadonnées du run** : l'identité du run — fichier d'entrée, parquet de conciliation
+  lu, colonne de vérité terrain effectivement scorée, conciliation retenue ;
+- **Ce que devient le fichier d'entrée** : l'entonnoir des volumes, du CSV brut jusqu'aux
+  observations mesurables. Il sépare les trois populations que le pipeline traite
+  différemment mais que rien ne montrait ensemble — les lignes **écartées d'emblée**
+  (produit non codable, libellé vide après nettoyage), celles **tranchées par la regex**,
+  qui sortent du circuit avant tout classifieur, et celles qui **entrent dans la chaîne de
+  codification**, seule population sur laquelle portent les accuracies qui suivent. Un run
+  échantillonné y voit apparaître la ligne correspondante, sans quoi l'entonnoir ne
+  s'additionnerait pas ;
 - **Accuracy globale par niveau** COICOP pour LCS, RAG notices, RAG annotations, TTC
   et la conciliation (tableau + graphique), et la profondeur de la vérité terrain, qui dit
   où une prédiction plus fine que l'annotation est comptée fausse ;
 - **Accuracy du fichier livré, regex comprise** — le chiffre métier, ventilé par
   source de décision et assorti d'une ligne « hors regex » ;
 - **Accuracy par groupe** : niveau COICOP 1 et 2, `shop`, `shop_type_name`, **décile de `budget`** ;
-- **Accuracy par provenance du produit**, si `eval-source-column` est renseigné ;
+- **Accuracy par provenance du produit** (ticket de caisse, carnet papier, saisie
+  assistée) : volume et part de chaque source, couverture, accuracy aux niveaux 1, 2 et 4,
+  et écart en points contre l'ensemble. Le découpage par niveau est le plus parlant — une
+  saisie pauvre laisse souvent le niveau 1 intact et s'effondre au niveau 4 : on sait que
+  c'est de l'alimentaire, pas quel poste. Un second tableau ventile par classifieur, pour
+  distinguer une source qui dégrade toute la chaîne d'une source qui met une brique en
+  défaut. **Exige deux paramètres**, tous deux vides par défaut : `source_column` (la
+  colonne du fichier d'entrée qui porte la provenance, lue par `build-datasets`) et
+  `eval-source-column: "source"` (la dimension d'analyse du rapport) ;
+- **Distorsion de distribution au niveau 1** : la répartition des produits entre divisions
+  COICOP ressemble-t-elle à la vraie ? Question distincte de l'accuracy, et qui n'en
+  découle pas — des erreurs qui se compensent laissent la répartition intacte. Le chapitre
+  donne le solde par division (sur-codée / sous-codée) et trois chiffres : les erreurs
+  brutes, la **distance en variation totale** — la part des produits qu'il faudrait
+  déplacer pour retrouver la vraie répartition —, et le **taux de compensation**, la part
+  des erreurs qui s'annulent entre elles. La divergence de Kullback-Leibler est donnée en
+  complément, à comparer entre runs et non dans l'absolu ;
 - **Analyse d'erreurs** : matrice de confusion (top 20 paires au niveau 4), **calibration**
   (accuracy par tranche de confiance, AUROC) ;
 - **Coût et latence de l'arbitrage LLM** (tokens de prompt, latence moyenne) ;

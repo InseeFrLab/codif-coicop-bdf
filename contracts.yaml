@@ -169,6 +169,12 @@ steps:
       # Facultatif de fait : un run antérieur à cet artefact ne l'a pas, et le
       # rapport se dégrade au lieu d'échouer.
       - build-datasets.input_counts
+      # Les deux moitiés du partage opéré par la regex : ce qu'elle a tranché
+      # d'un côté, ce qui est entré dans la chaîne de codification de l'autre.
+      # `evaluate` n'en compte que les lignes, pour l'entonnoir de volumétrie —
+      # aucun autre artefact ne porte ce partage.
+      - classify-regex.predictions
+      - classify-regex.test_without_regex
       - prune-codes.mapping_lvl4
     outputs:
       html: evaluate/evaluation_report.html

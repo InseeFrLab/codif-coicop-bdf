@@ -171,6 +171,22 @@ def _read(con, path: Optional[str]) -> Optional[pd.DataFrame]:
         return None
 
 
+def _count(con, path: Optional[str], where: str = "") -> Optional[int]:
+    """Nombre de lignes d'un parquet, sans le charger. None si illisible.
+
+    `SELECT count(*)` et non `_read` : ces artefacts font la taille du jeu à
+    coder, et on n'en veut qu'un entier. Même tolérance que `_read`.
+    """
+    if not path:
+        return None
+    try:
+        clause = f" WHERE {where}" if where else ""
+        return int(con.sql(f"SELECT count(*) FROM read_parquet('{path}'){clause}").fetchone()[0])
+    except Exception as exc:  # noqa: BLE001 — cf. `_read`
+        print(f"[evaluate] artefact illisible, ignoré : {path} ({exc})", flush=True)
+        return None
+
+
 def input_counts(con, path: Optional[str]) -> Optional[dict]:
     """Décompte du fichier d'entrée, écrit par `build-datasets`. None si absent.
 
@@ -189,63 +205,212 @@ def input_counts(con, path: Optional[str]) -> Optional[dict]:
     }
 
 
-def run_metadata_rows(
-    counts: Optional[dict], n_deliverable: Optional[int] = None
-) -> List[tuple]:
-    """Lignes « volumétrie » du tableau de métadonnées, déjà formatées.
+def run_metadata_rows(counts: Optional[dict]) -> List[tuple]:
+    """Lignes « identité » du tableau de métadonnées.
 
-    Ici et non dans le `.qmd` : le gabarit ne porte aucun test, ce module si. La
-    logique conditionnelle — artefact absent, écart inexpliqué, livrable qui ne
-    coïncide pas — est exactement ce qu'on veut pouvoir vérifier sans S3 ni
-    Quarto.
-
-    Renvoie une liste de couples `(libellé, valeur)`, les lignes qu'on ne peut
-    pas remplir étant omises plutôt qu'affichées vides.
+    Les VOLUMES n'y sont plus : ils vivent dans `funnel_rows`, qui les présente
+    en entonnoir. Deux tableaux plutôt qu'un parce qu'ils répondent à deux
+    questions — « quel run, sur quel fichier ? » et « qu'est devenu ce fichier ? ».
     """
-    def n(value) -> str:
-        return f"{int(value):,}".replace(",", " ")
-
     if counts is None:
         return [(
             "Fichier d'entrée",
             "_(décompte absent : run antérieur à `build-datasets/input_counts.parquet`, "
             "ou lancé sans `--input-file`)_",
         )]
+    return [("Fichier d'entrée", f"`{counts['input_file']}`")]
 
-    rows = [
-        ("Fichier d'entrée", f"`{counts['input_file']}`"),
-        ("**Lignes du fichier d'entrée**", f"**{n(counts['n_input_rows'])}**"),
-        ("— retirées : libellé vide après nettoyage", n(counts["n_dropped_empty_label"])),
-        ("— retirées : produit non codable", n(counts["n_dropped_uncodable"])),
-    ]
 
-    # L'écart inexpliqué n'est affiché que s'il existe : c'est le signe qu'un
-    # filtre a été ajouté en amont sans mettre à jour le compteur.
-    inexplique = (
-        counts["n_input_rows"]
-        - counts["n_dropped_empty_label"]
-        - counts["n_dropped_uncodable"]
-        - counts["n_observations"]
-    )
-    if inexplique:
-        rows.append(("— retirées : **cause non identifiée**", f"**{n(inexplique)}**"))
+def funnel_rows(
+    counts: Optional[dict],
+    *,
+    n_regex: Optional[int] = None,
+    n_chain: Optional[int] = None,
+    n_conciliation: Optional[int] = None,
+    n_scorable: Optional[int] = None,
+    n_deliverable: Optional[int] = None,
+) -> Optional[List[tuple]]:
+    """L'entonnoir : ce que devient le fichier d'entrée, étape par étape.
 
-    rows.append(
-        ("**Lignes retenues** = lignes du fichier livré", f"**{n(counts['n_observations'])}**")
-    )
-    if counts.get("n_labelled") is not None:
-        rows.append(("dont portant une étiquette", n(counts["n_labelled"])))
+    Répond à « combien de lignes sont écartées d'emblée, combien sont tranchées
+    par la regex, combien entrent vraiment dans la chaîne de codification ». Ces
+    trois volumes vivaient dans trois endroits différents du pipeline et nulle
+    part ensemble.
+
+    Renvoie des triplets `(étape, lignes, part)`. La part se rapporte au fichier
+    d'entrée ; sur un run antérieur à `input_counts`, elle se rapporte aux
+    observations retenues, et l'entonnoir démarre simplement plus bas.
+
+    Chaque ligne est omise si son compte manque : un artefact absent réduit
+    l'entonnoir, il ne le fait pas échouer.
+    """
+    def fmt(value: int) -> str:
+        return f"{int(value):,}".replace(",", " ")
+
+    base = counts["n_input_rows"] if counts else n_deliverable
+    if not base:
+        return None
+
+    def part(value: Optional[int]) -> str:
+        return "—" if value is None else f"{value / base:.1%}"
+
+    rows: List[tuple] = []
+    n_retenues = counts["n_observations"] if counts else n_deliverable
+
+    if counts:
+        rows.append(("**Fichier d'entrée**", f"**{fmt(counts['n_input_rows'])}**",
+                     part(counts["n_input_rows"])))
+        rows.append(("— écartées : libellé vide après nettoyage",
+                     fmt(counts["n_dropped_empty_label"]), part(counts["n_dropped_empty_label"])))
+        rows.append(("— écartées : **produit non codable**",
+                     fmt(counts["n_dropped_uncodable"]), part(counts["n_dropped_uncodable"])))
+        inexplique = (
+            counts["n_input_rows"] - counts["n_dropped_empty_label"]
+            - counts["n_dropped_uncodable"] - counts["n_observations"]
+        )
+        if inexplique:
+            rows.append(("— écartées : **cause non identifiée**",
+                         f"**{fmt(inexplique)}**", part(inexplique)))
+
+    rows.append(("**Observations retenues** = lignes du fichier livré",
+                 f"**{fmt(n_retenues)}**", part(n_retenues)))
 
     # `export-results` part de TOUTES les observations et fusionne en `left` :
-    # les deux nombres sont égaux par construction. Les afficher tous les deux
-    # n'apprendrait rien — mais le jour où une jointure se met à dupliquer, le
-    # rapport doit le dire plutôt que d'annoncer un chiffre faux.
-    if n_deliverable is not None and n_deliverable != counts["n_observations"]:
-        rows.append((
-            "⚠️ Lignes réellement dans le livrable",
-            f"**{n(n_deliverable)}** — devrait égaler les lignes retenues",
-        ))
+    # les deux nombres sont égaux par construction, et la ligne ci-dessus
+    # l'affirme. Le jour où une jointure duplique, il faut le dire plutôt que de
+    # laisser l'entonnoir mentir avec assurance.
+    if counts and n_deliverable is not None and n_deliverable != counts["n_observations"]:
+        rows.append(("⚠️ lignes réellement dans le livrable",
+                     f"**{fmt(n_deliverable)}**", part(n_deliverable)))
+
+    if n_regex is not None:
+        rows.append(("— **codées par la regex**, hors chaîne", fmt(n_regex), part(n_regex)))
+    if n_chain is not None:
+        rows.append(("— **entrées dans la chaîne de codification**", fmt(n_chain), part(n_chain)))
+
+    # Ce qui n'est ni capté par la regex ni entré dans la chaîne a été retiré par
+    # `--sample-observations` (échantillonnage centralisé à classify-regex). Ne
+    # s'affiche que sur un run échantillonné, où c'est l'explication du reste.
+    if n_regex is not None and n_chain is not None and n_retenues is not None:
+        reste = n_retenues - n_regex - n_chain
+        if reste:
+            rows.append(("— retirées par l'échantillonnage", fmt(reste), part(reste)))
+
+    if n_conciliation is not None:
+        rows.append(("parvenues à la conciliation", fmt(n_conciliation), part(n_conciliation)))
+    if n_scorable is not None:
+        rows.append(("dont portant un code de référence (mesurables)",
+                     fmt(n_scorable), part(n_scorable)))
     return rows
+
+
+def group_summary(
+    data: pd.DataFrame,
+    group_col: str,
+    *,
+    truth_col: str,
+    final_col: str,
+    levels: Sequence[int] = (1, 2, 4),
+    min_n: int = 1,
+) -> Optional[pd.DataFrame]:
+    """Accuracy de la conciliation ventilée par modalité de ``group_col``.
+
+    Conçue pour la provenance du produit (ticket de caisse, carnet papier,
+    saisie assistée), où la question n'est pas « quelle brique se trompe » mais
+    « quelle source de saisie coûte de la qualité ». D'où les colonnes :
+
+    - le **volume** et sa part, sans quoi un écart d'accuracy sur 12 lignes se
+      lit comme un écart sur 12 000 ;
+    - la **couverture** : une source peut faire chuter l'accuracy en produisant
+      des libellés que la chaîne refuse de coder, ce qui n'est pas le même
+      défaut que de les coder faux ;
+    - l'accuracy à plusieurs niveaux : une saisie pauvre dégrade souvent le
+      niveau 4 en laissant le niveau 1 intact (on sait que c'est de
+      l'alimentaire, pas quel poste) ;
+    - l'**écart au niveau 4 par rapport à l'ensemble**, en points : c'est lui
+      qui désigne où porter l'effort.
+
+    Renvoie None si la colonne est absente ou entièrement vide.
+    """
+    from codif_common.metrics import accuracy, answer_mask
+
+    if group_col not in data.columns or not data[group_col].notna().any():
+        return None
+
+    ref_level = levels[-1]
+    _, _, acc_ensemble = accuracy(data[truth_col], data[final_col], ref_level)
+
+    rows = []
+    for value, sub in data.groupby(group_col, dropna=False):
+        row = {
+            group_col: value,
+            "n": len(sub),
+            "part": len(sub) / len(data),
+            "couverture": float(answer_mask(sub[final_col]).mean()),
+        }
+        for k in levels:
+            _, _, acc = accuracy(sub[truth_col], sub[final_col], k)
+            row[f"accuracy niv{k}"] = acc
+        row["écart / ensemble"] = (
+            row[f"accuracy niv{ref_level}"] - acc_ensemble
+            if pd.notna(row[f"accuracy niv{ref_level}"]) and pd.notna(acc_ensemble)
+            else None
+        )
+        rows.append(row)
+
+    out = pd.DataFrame(rows)
+    out = out[out["n"] >= min_n].sort_values("n", ascending=False)
+    return out if len(out) else None
+
+
+def distortion_level1(
+    data: pd.DataFrame, *, truth_col: str, final_col: str
+) -> Optional[dict]:
+    """Distorsion entre la distribution VRAIE et la distribution PRÉDITE au niveau 1.
+
+    Question différente de l'accuracy : celle-ci demande « chaque produit est-il
+    bien codé ? », celle-là « la répartition par division ressemble-t-elle à la
+    vraie ? ». Les deux se séparent dès que les erreurs se **compensent** — mille
+    produits à tort en 01 et mille à tort hors de 01 laissent la distribution
+    intacte et l'accuracy au sol. C'est la différence entre un agrégat
+    exploitable et une codification individuelle juste.
+
+    Réutilise ``rag_annotations.eval.distribution_distortion`` (le TV et la KL y
+    sont déjà implémentés et testés) et lui ajoute ce qui rend le chiffre
+    lisible : les erreurs brutes, et la part d'entre elles qui se compensent.
+
+    Renvoie None si aucune ligne n'est mesurable.
+    """
+    from codif_common.metrics import accuracy
+    from rag_annotations.eval import distribution_distortion
+
+    records = [
+        {"code": t, "code_predict": p}
+        for t, p in zip(data[truth_col], data[final_col])
+    ]
+    dist = distribution_distortion(records, level=1)
+    if not dist["n"]:
+        return None
+
+    n_ok, n, _ = accuracy(data[truth_col], data[final_col], 1)
+    erreurs_brutes = n - n_ok
+    # TV × n : le nombre de produits qu'il faudrait DÉPLACER d'une division à
+    # l'autre pour que la distribution prédite coïncide avec la vraie. C'est la
+    # lecture exacte de la distance en variation totale, pas une approximation.
+    deplacements = dist["tv_distance"] * dist["n"]
+    return {
+        **dist,
+        "n_scored": n,
+        "erreurs_brutes": erreurs_brutes,
+        "deplacements": deplacements,
+        # Part des erreurs de division qui s'annulent entre elles. 0 % : toutes
+        # les erreurs vont dans le même sens, l'agrégat est biaisé d'autant.
+        # 90 % : la distribution est presque juste malgré des erreurs
+        # individuelles nombreuses.
+        "compensation": (
+            1 - deplacements / erreurs_brutes if erreurs_brutes else None
+        ),
+    }
 
 
 def load_classifier_records(
