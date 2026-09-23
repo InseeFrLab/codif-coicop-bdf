@@ -151,9 +151,33 @@ l'étape échoue en cas de divergence.
   l'essentiel du modèle, en silence. `reconcile-sirus` compare les distributions du run à
   celles de l'entraînement et avertit, mais la seule vraie réponse est de réentraîner
   (`./train.sh` sur un run récent).
+- **SIRUS ne court-circuite pas l'unanimité — mais le résultat y ressemble.** Contrairement
+  au juge LLM, qui saute son appel quand les 4 classifieurs s'accordent et que la confiance
+  TTC dépasse 0,90 (`try_consensus_decision`), `reconcile-sirus` score toutes les lignes : il
+  n'a aucun appel à économiser. Seulement, les candidats sont les codes **distincts** proposés
+  par les 4 classifieurs (`VOTERS`, `src/candidates.py` — `ttc_code_1` seul, pas les top-2/3),
+  donc l'unanimité n'en laisse qu'un et l'argmax ne peut que le retenir. Deux différences
+  subsistent, que le rapport d'évaluation chiffre désormais : le score est calculé quand même
+  (un `sirus_proba` bas sur un produit unanime n'est pas une hésitation, il n'y avait rien à
+  comparer), et si ce candidat unique est écarté par `scorable_mask`, le produit ressort
+  **sans code** là où un court-circuit l'aurait codé.
+- **L'accuracy de SIRUS est mécaniquement gonflée par ces produits**, et son entraînement
+  les inclut aussi. Un produit à candidat unique compte comme une réussite du modèle alors
+  qu'il n'a rien choisi — ce sont les cas faciles, donc majoritairement corrects. Deux
+  conséquences : le rapport d'évaluation ventile désormais l'accuracy par **régime de
+  décision** (`sirus_n_candidats` : aucun candidat / candidat unique / choix réel) et ne
+  retient que la dernière colonne comme mesure du modèle ; et `build_calibration` logue
+  `accuracy_product_multi` à côté d'`accuracy_product`. Rien ne filtre l'entraînement
+  lui-même : la table candidat-level part telle quelle vers `fit_sirus.R`. C'est une piste
+  à instruire — la sélection de règles de SIRUS se fait par stabilité, et une masse de
+  lignes faciles à `nb_votants = 4` pousse vers des règles sur les votes, ce qui pourrait
+  expliquer que `code_candidat_n1` n'apparaisse dans aucune des 20 règles.
 - **SIRUS ne crée pas de candidat.** Si le bon code n'est proposé par aucun classifieur,
   aucun réglage ne le retrouvera : c'est la métrique `upper_bound`.
 - Le [rapport de production](08-report.qmd) saute ses sections d'accord avec le juge en
-  conciliation SIRUS ; le [rapport d'évaluation](11-evaluate.qmd) est complet dans les deux cas.
+  conciliation SIRUS. Le [rapport d'évaluation](11-evaluate.qmd) fait de même — il ne
+  mentionne pas le juge LLM sur un run SIRUS — mais ses mesures, elles, sont complètes
+  dans les deux cas : seules disparaissent les deux sections qui décrivent des sorties que
+  SIRUS ne produit pas (régime consensus, score entier 1 à 5).
 
 Voir aussi [Limites et points de vigilance](limites-vigilance.qmd).

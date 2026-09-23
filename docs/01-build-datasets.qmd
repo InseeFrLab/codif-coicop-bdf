@@ -141,6 +141,7 @@ captée plus loin par la règle regex `^illisible$ → 98.4`.
 | `{run}/annotations_full.parquet` | annotations consolidées complètes (BdF 2024 + historique 2017 + suggester), budget agrégé. **C'est la base de connaissance** des classifieurs |
 | `{run}/suggester.parquet` | suggester préprocessé (`source="suggester"`), lu directement par [`classify-lcs`](03-classify-lcs.qmd) |
 | `{run}/observations.parquet` | lignes **à coder** (`id`, `raw_product`, `l_pr_product`, `s_pr_product`, `shop`, `shop_type_name`, `budget`, `code`, `_source_input_file`, `source="prediction"`). `code` est `NA` sauf si `--label-column` a été fourni |
+| `{run}/input_counts.parquet` | **décompte du fichier d'entrée** — une ligne : `n_input_rows` (lignes brutes lues), `n_dropped_empty_label`, `n_dropped_uncodable`, `n_observations`, `n_labelled`, plus `input_file`. Écrit seulement avec `--input-file`. C'est la **seule** trace du nombre de lignes brutes : les lignes retirées ci-dessus ne sont écrites nulle part, donc aucun artefact aval ne permet de le retrouver. Lu par [`evaluate`](11-evaluate.qmd), qui affiche l'écart entrée / livrable |
 | `{run}/qa/*.parquet` | contrôles qualité (doublons suggester, produits multi-codes) |
 
 Toutes les étapes aval travaillent sur `observations.parquet` (`classify-regex` via

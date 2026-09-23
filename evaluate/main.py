@@ -43,7 +43,7 @@ from codif_common.metrics import (
 )
 from codif_common.s3 import connect_secret, resolve_endpoint
 
-from internals import flatten_internal, load_classifier_records
+from internals import flatten_internal, input_counts, load_classifier_records
 
 
 def parse_args() -> argparse.Namespace:
@@ -134,7 +134,9 @@ def require_canonical_truth(df: pd.DataFrame) -> str:
     return truth_col
 
 
-def log_to_mlflow(args, df, scorable, truth_col, output_s3, internal=None) -> None:
+def log_to_mlflow(
+    args, df, scorable, truth_col, output_s3, internal=None, counts=None
+) -> None:
     """Métriques d'évaluation. Best-effort : ne casse jamais l'étape."""
     tracking_uri = os.environ.get("MLFLOW_TRACKING_URI")
     if not tracking_uri:
@@ -154,6 +156,13 @@ def log_to_mlflow(args, df, scorable, truth_col, output_s3, internal=None) -> No
             "report_html": output_s3,
         })
         mlflow.set_tag("mode", "evaluation")
+        # Les séries `accuracy_*`, `coverage_*` et `accuracy_answered_*` gardent
+        # leur nom alors que leur définition a changé (l'ancienne convention
+        # stricte écartait les vérités peu profondes du dénominateur). C'est
+        # délibéré : la baisse mécanique au niveau 4 est l'information la plus
+        # utile du changement, et la cacher derrière une clé neuve la rendrait
+        # invisible. Ce tag rend la rupture filtrable dans l'UI.
+        mlflow.set_tag("accuracy_convention", "troncature_egalite")
         for tag, val in (("git.commit", _git(["rev-parse", "HEAD"])),
                          ("git.branch", _git(["rev-parse", "--abbrev-ref", "HEAD"]))):
             if val:
@@ -161,8 +170,21 @@ def log_to_mlflow(args, df, scorable, truth_col, output_s3, internal=None) -> No
 
         mlflow.log_metric("n_obs_total", len(df))
         mlflow.log_metric("n_scorable", len(scorable))
+
+        # Volumétrie du fichier d'entrée. Sans `n_input_rows`, comparer deux runs
+        # ne permet pas de distinguer un fichier plus petit d'un filtrage plus
+        # lourd : `n_obs_total` vaut toujours moins que l'entrée, sans dire
+        # pourquoi. Quatre entiers, et des noms neufs — aucune série rompue.
+        if counts:
+            for key in ("n_input_rows", "n_dropped_empty_label",
+                        "n_dropped_uncodable", "n_observations"):
+                mlflow.log_metric(key, float(counts[key]))
         truth = scorable[truth_col]
 
+        # Définition INCHANGÉE par le passage à la règle unique : c'est une
+        # propriété de la vérité seule. Seule sa lecture change — ces lignes ne
+        # sont plus « écartées », ce sont celles où une prédiction plus fine que
+        # la vérité est comptée fausse.
         depth = truth_depth_distribution(truth)
         for k in CANONICAL_LEVELS:
             mlflow.log_metric(
@@ -170,30 +192,30 @@ def log_to_mlflow(args, df, scorable, truth_col, output_s3, internal=None) -> No
             )
         mlflow.log_dict(depth, "truth_depth_distribution.json")
 
-        # Avec une vérité canonique, le niveau 5 est structurellement vide.
+        # Avec une vérité canonique, le niveau 5 duplique le niveau 4 (les codes
+        # prunés ont au plus 4 segments) : inutile de le tracer.
+        #
+        # Pas de `n_evaluable_<méthode>_niv<k>` : le dénominateur ne dépend plus
+        # ni du niveau ni de la méthode, il vaut exactement `n_scorable`, logué
+        # ci-dessus. L'écrire 20 fois serait 20 fois le même entier.
         strict_levels = CANONICAL_LEVELS if truth_col == TRUTH_COL_CANONICAL else LEVELS
         for name, col in METHODS:
             if col not in scorable.columns:
                 continue
             slug = name.lower()
             for k in strict_levels:
-                n_ok, n_app, acc = accuracy(truth, scorable[col], k)
+                _, n_app, acc = accuracy(truth, scorable[col], k)
                 if n_app:
                     mlflow.log_metric(f"accuracy_{slug}_niv{k}", acc)
-                # Le dénominateur change d'un niveau à l'autre : sans lui, deux
-                # runs dont les annotations n'ont pas la même profondeur
-                # semblent comparables alors qu'ils ne le sont pas.
-                mlflow.log_metric(f"n_evaluable_{slug}_niv{k}", n_app)
 
         # Couverture contre accuracy-sur-réponses : l'accuracy globale compte un
         # refus de coder comme une erreur, ce qui masque si une méthode se trompe
         # ou se tait.
         #
-        # Les trois grandeurs sont désormais rapportées aux lignes évaluables au
-        # niveau REGIME_LEVEL, et non plus à tout le scorable : c'est ce qui rend
-        # la décomposition exacte. Le dénominateur ayant changé, les métriques
-        # changent de nom — les tracer sous `coverage_<méthode>` mettrait deux
-        # définitions incompatibles sur une même série MLflow.
+        # Les trois grandeurs partagent le dénominateur des lignes portant une
+        # vérité — le même à tous les niveaux : c'est ce qui rend la
+        # décomposition exacte. Sur `scorable`, déjà filtré des vérités vides,
+        # il vaut `n_scorable`.
         cov = coverage_table(scorable, REGIME_LEVEL)
         for name in cov.index:
             slug = name.lower()
@@ -300,6 +322,12 @@ def main() -> int:
         # par la regex mais plus la vérité (retirée par PIPELINE_COLS), d'où la
         # jointure sur `observations` et la mise au format canonique.
         "EVAL_OBSERVATIONS_PATH": artifact("build-datasets", "observations", **RUN),
+        # Toujours positionnée, jamais conditionnée : la tolérance vit dans le
+        # lecteur (`internals.input_counts`), pas dans la construction du chemin.
+        "EVAL_INPUT_COUNTS_PATH": artifact("build-datasets", "input_counts", **RUN),
+        "EVAL_NOMENCLATURE_PATH": artifact("prune-codes", "nomenclature", **RUN),
+        "EVAL_REGEX_PATH": artifact("classify-regex", "predictions", **RUN),
+        "EVAL_WITHOUT_REGEX_PATH": artifact("classify-regex", "test_without_regex", **RUN),
         "EVAL_MAPPING_PATH": artifact("prune-codes", "mapping_lvl4", **RUN),
         "EVAL_RUN_ID": args.run_id,
         "EVAL_RUN_DATE": args.run_date,
@@ -335,7 +363,10 @@ def main() -> int:
             ragann_path=env["EVAL_RAGANN_PATH"],
         )
     )
-    log_to_mlflow(args, df, scorable, truth_col, output_s3, internal)
+    # Même fichier que celui lu par le gabarit (`EVAL_INPUT_COUNTS_PATH`) : le
+    # rapport et MLflow ne peuvent pas annoncer deux volumétries différentes.
+    counts = input_counts(con, env["EVAL_INPUT_COUNTS_PATH"])
+    log_to_mlflow(args, df, scorable, truth_col, output_s3, internal, counts)
     print(f"[evaluate] terminé — {output_s3}", flush=True)
     return 0
 

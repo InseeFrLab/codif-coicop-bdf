@@ -296,7 +296,7 @@ class TestEndToEnd:
         out = self._paths(monkeypatch, self._deliverable(), self._observations())
         assert out["n_deliverable"] == 4
         assert out["n_decided"] == 2
-        assert out["levels"].loc[4, "n évaluable"] == 2
+        assert out["levels"].loc[4, "n"] == 2
 
     def test_regex_contribution_is_isolated(self, monkeypatch):
         """La demande « impact de l'étape regex » : la regex code juste,

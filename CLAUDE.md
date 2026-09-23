@@ -177,6 +177,60 @@ Conséquence pratique : ajouter ou renommer un artefact se fait dans `contracts.
 appelants. `common/tests/test_contracts.py` vérifie que toute entrée déclarée désigne bien une sortie
 déclarée. Avant ce registre, renommer une étape avait demandé 162 modifications dans 29 fichiers.
 
+### R dans ce dépôt : `classify-lcs` et l'entraînement `reconcile-sirus`
+
+Deux chemins passent par R, et **aucun n'est couvert par le lock, par ruff, ni par la CI** — un
+changement en R n'est vérifié qu'en lançant l'étape.
+
+- **Aucun `renv.lock`, aucun `DESCRIPTION`.** Les paquets s'installent au runtime, de façon
+  idempotente, gardés par `installed.packages()` : convention posée par `classify-lcs/R/main.R`
+  et reprise par `reconcile-sirus/R/install_deps.R`. Les services SSP Cloud ne les embarquent pas
+  et ne les gardent pas entre deux relances — d'où l'installation dans le script plutôt qu'une
+  image.
+- **Ne jamais forcer `options(repos)`.** L'image Onyxia pointe (via `Rprofile.site`) sur Posit
+  Package Manager, qui sert des binaires Linux. Repartir sur `cloud.r-project.org` recompile
+  depuis les sources : duckdb passe de 7 secondes à plus de 28 minutes. `install_deps.R` ne pose
+  un dépôt que si aucun n'est configuré.
+- **`classify-lcs` n'est pas « du R seulement »** : `R/calcul_distances.R` compile
+  `C/distance_gcd_batch_cpp.cpp` par `Rcpp::sourceCpp` au lancement, par un chemin relatif
+  (`./C/…`). L'étape se lance donc **depuis `classify-lcs/`**, pas depuis la racine.
+- **`reconcile-sirus/R/sirus-0.3.3-cxx17.patch`** : le paquet `sirus` de CRAN ne compile plus avec
+  les toolchains récents. Le patch est appliqué à l'installation ; R ne sert qu'à l'entraînement,
+  jamais au scoring en production.
+- Les fixtures de `reconcile-sirus/tests/golden/` sont **versionnées exprès** : sans CI R, le test
+  d'équivalence Python ↔ `sirus.predict` ne pourrait pas tourner du tout. Elles se régénèrent par
+  `reconcile-sirus/R/make_golden.R` — à refaire dès que le format de `rules.json` change.
+
+### Où atterrit un changement
+
+Modifier ce qu'une étape lit ou écrit touche **trois endroits**, jamais un seul :
+
+1. `contracts.yaml` — la déclaration (`inputs` / `outputs`) ; le test `test_contracts.py` refuse
+   une entrée qui ne désigne aucune sortie déclarée ;
+2. le `README.md` du module — CLI exacte, entrées/sorties ;
+3. la page `docs/<étape>.qmd`.
+
+Les numéros des pages `docs/` suivent l'ordre du pipeline mais ne sont **pas** fiables comme index :
+`prune-codes.qmd` n'est pas numérotée et `09-` est porté par deux pages
+(`09-lancer-une-etape.qmd`, `09-rag-annotations.qmd`). Chercher la page par son nom d'étape, pas
+par son rang.
+
+### Langue
+
+README racine, README de modules, pages `docs/`, `contracts.yaml`, commentaires de code, noms
+d'étapes CI et messages de commit sont **en français** — y compris les commentaires longs qui
+portent le « pourquoi » (racine `pyproject.toml`, `.gitignore`, `checks.yml`). Écrire en français
+dans ces fichiers. Les identifiants de code et les noms d'étapes Argo restent en anglais.
+
+### Répertoires racine hors workspace
+
+- **`sirus/`** — **non suivi par git** (zéro fichier versionné) et porteur d'un `.venv` obsolète à
+  lui : vestige local d'avant le renommage. Le module vivant est `reconcile-sirus/`. Ne rien y lire
+  ni y écrire.
+- **`annexes/benchmarking/`** — analyses hors pipeline (`bilan-codification.qmd`,
+  `prepross_annotations.py`), délibérément hors workspace uv : pas de `pyproject.toml`, aucune
+  étape Argo ne les lance.
+
 ## Checks and Tests
 
 Four mechanical checks, under a minute, no cluster — exactly what the CI runs
@@ -219,8 +273,8 @@ Documentation site: `quarto render docs` — published to GitHub Pages from `mai
 
 ## Module Architecture Notes
 
-Each module carries its own `README.md` (exact CLI, inputs/outputs, design notes) and has a page
-under `docs/` (`01-build-datasets.qmd` … `11-evaluate.qmd`). `classify-ttc/` has its own
+Each module has a page under `docs/` and — except `report/` and `export-results/`, which have
+none — its own `README.md` (exact CLI, inputs/outputs, design notes). `classify-ttc/` has its own
 `CLAUDE.md`. The notes below only cover what is not obvious from a single module's directory.
 
 **`prune-codes/`** — Étape unique de pruning (troncature niveau 4 + élagage des hiérarchies linéaires). Produit tous les artefacts prunés sous `…/{run}/prune-codes/` (nomenclature, mapping, KB annotée, jeu à coder, suggester), lus par les modules RAG. `scripts/main.py`.
@@ -258,9 +312,9 @@ Elle lit **trois** artefacts, et pas seulement le parquet de conciliation : celu
 
 Elle **échoue** si `code_lvl4` est absent au lieu de se rabattre sur `code`. Cette colonne canonique naît en un seul endroit, `reconcile-llm`, et seulement si `--mapping-file` lui est passé ; comparer des prédictions canoniques à une vérité brute compte comme fausses des prédictions justes sur près d'un quart des postes. Repli acceptable dans un rapport qui ne mesure rien, pas quand on a demandé une évaluation.
 
-**`common/`** — Socle partagé, paquet importable **`codif_common`** (pas `common` : trop générique dans le site-packages du consommateur). **Ne dépend d'aucun autre membre du workspace et ne doit jamais en dépendre** — c'est ce qui rend tout cycle impossible, donc tous les autres peuvent en dépendre librement. Regroupe ce qui existait en 2 à 5 copies recopiées, donc vouées à diverger sans que personne ne le voie : `paths.expand_paths`, `codes.truncate_code`/`get_parents`, `s3` (connexions DuckDB), `vector_index` (nommage, manifeste et validation des collections Qdrant), `contracts` (le registre ci-dessus), `schema.require_columns`/`declare_output` (contrôles de frontière), `metrics` (accuracy par niveau, couverture, régimes — lu par `report/` **et** `evaluate/`). Deux des quatre dialectes de connexion S3 en sont délibérément absents : les unifier changerait l'authentification effective, ce qui ne se vérifie pas hors du cluster. Voir `common/README.md`.
+**`common/`** — Socle partagé, paquet importable **`codif_common`** (pas `common` : trop générique dans le site-packages du consommateur). **Ne dépend d'aucun autre membre du workspace et ne doit jamais en dépendre** — c'est ce qui rend tout cycle impossible, donc tous les autres peuvent en dépendre librement. Regroupe ce qui existait en 2 à 5 copies recopiées, donc vouées à diverger sans que personne ne le voie : `paths.expand_paths`, `codes.truncate_code`/`get_parents`, `s3` (connexions DuckDB), `vector_index` (nommage, manifeste et validation des collections Qdrant), `contracts` (le registre ci-dessus), `schema.require_columns`/`declare_output` (contrôles de frontière), `metrics` (accuracy par niveau — troncature des deux codes puis égalité stricte, une seule règle —, couverture, régimes ; `report/` n'en lit que `final_decision` et les chronos, tout le calcul d'accuracy n'a qu'un consommateur, `evaluate/`). Deux des quatre dialectes de connexion S3 en sont délibérément absents : les unifier changerait l'authentification effective, ce qui ne se vérifie pas hors du cluster. Voir `common/README.md`.
 
-**`classify-lcs/`** — R scripts only; entry point is `R/main.R`.
+**`classify-lcs/`** — R + une extension C++ compilée au lancement ; point d'entrée `R/main.R`, à lancer depuis le dossier du module (chemins relatifs). Voir « R dans ce dépôt » ci-dessus.
 
 **`classify-ttc/`** — Classifieur neuronal COICOP (torchtextclassifiers : hierarchical/multihead/basic, train/predict/serve ; étape `classify-ttc` via `predict-basic`). A son propre `CLAUDE.md`.
 

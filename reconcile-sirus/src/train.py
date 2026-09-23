@@ -263,11 +263,28 @@ def build_calibration(test: pd.DataFrame, proba: np.ndarray) -> dict:
     # meilleur candidat en amont.
     borne_haute = float(df.groupby("id")["correcte"].max().mean())
 
+    # `accuracy_product` est GONFLÉE, et c'est structurel : les candidats sont les
+    # codes distincts proposés par les 4 classifieurs, donc un produit sur lequel
+    # ils s'accordent n'en laisse qu'un, et l'argmax ne peut que le retenir. Ces
+    # produits comptent comme des succès du modèle alors qu'il n'a rien choisi —
+    # et ce sont les cas faciles, donc majoritairement corrects.
+    #
+    # La version restreinte aux produits à au moins deux candidats est la seule
+    # qui mesure le modèle. Elle est publiée à côté de l'autre, pas à sa place :
+    # `accuracy_product` reste comparable aux entraînements passés.
+    n_candidats = df.groupby("id")["correcte"].size()
+    multi_ids = set(n_candidats[n_candidats >= 2].index)
+    best_multi = best[best["id"].isin(multi_ids)]
+
     metrics = {
         "accuracy_candidate": float(((proba > 0.5).astype(int) == test["correcte"]).mean()),
         "accuracy_product": float(best["correcte"].mean()),
+        "accuracy_product_multi": (
+            float(best_multi["correcte"].mean()) if len(best_multi) else float("nan")
+        ),
         "upper_bound": borne_haute,
         "n_test_products": int(len(best)),
+        "n_test_products_multi": int(len(best_multi)),
     }
 
     # Balayage volume/fiabilité : à titre INDICATIF, pour que MLflow porte de
@@ -294,9 +311,12 @@ def build_calibration(test: pd.DataFrame, proba: np.ndarray) -> dict:
     )
 
     logger.info(
-        "accuracy candidat %.1f %% | produit %.1f %% | borne haute %.1f %%",
+        "accuracy candidat %.1f %% | produit %.1f %% (dont %.1f %% sur les %d produits "
+        "à plusieurs candidats, le seul chiffre qui mesure le modèle) | borne haute %.1f %%",
         100 * metrics["accuracy_candidate"],
         100 * metrics["accuracy_product"],
+        100 * metrics["accuracy_product_multi"],
+        metrics["n_test_products_multi"],
         100 * metrics["upper_bound"],
     )
     logger.info(

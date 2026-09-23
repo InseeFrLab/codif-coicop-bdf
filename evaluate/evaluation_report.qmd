@@ -68,6 +68,14 @@ RAGANN_PATH = os.environ.get("EVAL_RAGANN_PATH") or None
 DELIVERABLE_PATH = os.environ.get("EVAL_DELIVERABLE_PATH") or None
 OBSERVATIONS_PATH = os.environ.get("EVAL_OBSERVATIONS_PATH") or None
 MAPPING_PATH = os.environ.get("EVAL_MAPPING_PATH") or None
+# Décompte du fichier d'entrée, écrit par `build-datasets`. Absent sur un run
+# antérieur à son introduction : le tableau de métadonnées se dégrade alors.
+INPUT_COUNTS_PATH = os.environ.get("EVAL_INPUT_COUNTS_PATH") or None
+# Les deux moitiés du partage opéré par la regex, pour l'entonnoir de volumétrie.
+# Nomenclature du run : donne les libellés des divisions COICOP.
+NOMENCLATURE_PATH = os.environ.get("EVAL_NOMENCLATURE_PATH") or None
+REGEX_PATH = os.environ.get("EVAL_REGEX_PATH") or None
+WITHOUT_REGEX_PATH = os.environ.get("EVAL_WITHOUT_REGEX_PATH") or None
 
 # Ventilation par provenance du produit. Vide : la section est omise. Ce
 # paramètre ne restreint jamais le périmètre codé — c'est une dimension
@@ -113,6 +121,39 @@ HAS_CANONICAL_TRUTH = TRUTH == TRUTH_COL_CANONICAL
 # rapport de rendre dans les deux modes.
 FINAL_NAME, FINAL_COL = final_decision(df)
 
+# Le juge LLM a des sorties que SIRUS n'a pas : le raccourci consensus
+# (`llm_model`), le score entier 1-5 (`llm_confiance`), l'erreur d'appel
+# (`llm_error`). Les sections qui les décrivent n'ont pas d'équivalent en
+# conciliation SIRUS : elles disparaissent alors du rapport au lieu d'afficher
+# « sans objet ». Un rapport n'a rien à dire d'une étape qui n'a pas tourné.
+#
+# UN SEUL nom porte la condition, et c'est délibéré : dans `report/`, la même
+# expression recopiée section par section avait fini par laisser passer une
+# section non gardée (cf. report/prediction_report.qmd, « Sections propres au
+# juge LLM »).
+IS_LLM = FINAL_COL == "llm_code"
+
+# Cause d'un code final manquant. Elle diffère selon la conciliation, et les
+# nommer toutes les deux ferait décrire au rapport un mode qui n'a pas tourné.
+# Attention : le texte d'une expression `{python}` inline n'est PAS réinterprété
+# comme du Markdown — des backticks y sortiraient tels quels. D'où deux morceaux
+# nus, le balisage restant dans le gabarit.
+ABSTENTION_VALUE = "N/A" if IS_LLM else "NULL"
+ABSTENTION_WHEN = (
+    "l'arbitrage LLM échoue"
+    if IS_LLM
+    else "aucun classifieur n'a proposé de candidat scorable à SIRUS"
+)
+
+# Deux phrases du rapport décrivaient les DEUX conciliations côte à côte. Elles
+# ne décrivent plus que celle qui a tranché : nommer l'autre reviendrait à
+# expliquer au lecteur une mécanique dont son run n'a rien à faire.
+CONFIRM_MECHANISM = (
+    "via le raccourci consensus"
+    if IS_LLM
+    else "via des règles qui votent toutes dans le même sens"
+)
+
 # Score de confiance associé à la décision finale, quand la conciliation en
 # produit un. Sémantiques différentes — entier 1-5 pour le juge LLM, probabilité
 # continue pour SIRUS — donc jamais mélangés dans un même tableau : chaque
@@ -135,20 +176,47 @@ SIRUS_MODEL_URI = (
 
 # Keep a "scorable" view: rows carrying a ground truth
 scorable = df[df[TRUTH].notna() & (df[TRUTH].astype(str).str.len() > 0)].copy()
+
+COUNTS = I.input_counts(con, INPUT_COUNTS_PATH)
+# Vide si la nomenclature manque : les tableaux affichent alors le code seul.
+DIVISION_LABELS = I.division_labels(con, NOMENCLATURE_PATH)
+# `predict_code IS NOT NULL` : même définition que celle d'`export-results`, qui
+# filtre ainsi en lisant ce fichier. Sans ce filtre les deux compteraient
+# différemment ce qu'a fait la regex.
+N_REGEX = I._count(con, REGEX_PATH, where="predict_code IS NOT NULL")
+N_CHAIN = I._count(con, WITHOUT_REGEX_PATH)
+# Calculé ici et non au chapitre « Accuracy du fichier livré » qui l'affiche :
+# les métadonnées, plus haut dans le rapport, en ont besoin pour confronter le
+# nombre de lignes livrées au nombre de lignes retenues. Les deux sont égaux par
+# construction — l'écart, s'il apparaît un jour, est une régression à voir.
+e2e = I.end_to_end(con, DELIVERABLE_PATH, OBSERVATIONS_PATH, MAPPING_PATH)
 ```
 
 ## Métadonnées du run
 
-| Champ | Valeur |
-|---|---|
-| Run ID | `{python} RUN_ID` |
-| Date   | `{python} RUN_DATE` |
-| Fichier source | `{python} INPUT` |
-| Observations totales | `{python} f"{len(df):,}".replace(",", " ")` |
-| Observations avec code de référence | `{python} f"{len(scorable):,}".replace(",", " ")` |
-| Colonne de vérité terrain scorée | `{python} TRUTH` `{python} "(canonique : tronquée niveau 4 + élaguée)" if HAS_CANONICAL_TRUTH else "(code brut — run antérieur à code_lvl4)"` |
-| Conciliation | `{python} FINAL_NAME` (colonne `{python} FINAL_COL`) |
-| Erreurs LLM (`llm_error` non nul) | `{python} int(df["llm_error"].notna().sum()) if "llm_error" in df.columns else "— (pas de conciliation LLM sur ce run)"` |
+```{python}
+# | label: tbl-run-metadata
+# Un chunk plutôt qu'un tableau markdown inline : les lignes de volumétrie
+# s'omettent quand l'artefact de décompte manque, ce qui serait illisible écrit
+# en expressions `{python}` conditionnelles.
+_meta = [
+    ("Run ID", f"`{RUN_ID}`"),
+    ("Date", RUN_DATE),
+]
+_meta += I.run_metadata_rows(COUNTS)
+_meta += [
+    # Ce n'est PAS le fichier d'entrée : c'est le parquet que ce rapport lit.
+    ("Parquet de conciliation (lu par ce rapport)", f"`{INPUT}`"),
+    ("Colonne de vérité terrain scorée",
+     f"`{TRUTH}` " + ("(canonique : tronquée niveau 4 + élaguée)"
+                      if HAS_CANONICAL_TRUTH else "(code brut — run antérieur à code_lvl4)")),
+]
+_meta += I.conciliation_rows(df, FINAL_NAME, FINAL_COL)
+Markdown(
+    "| Champ | Valeur |\n|---|---|\n"
+    + "\n".join(f"| {label} | {value} |" for label, value in _meta)
+)
+```
 
 ```{python}
 # | tags: [utils]
@@ -163,28 +231,84 @@ def style_acc(tbl: pd.DataFrame):
     )
 ```
 
+## Ce que devient le fichier d'entrée
+
+Trois volumes que le pipeline sépare mais que rien ne montrait ensemble : les lignes **écartées d'emblée** (produit non codable, ou libellé qui ne survit pas au nettoyage), celles **tranchées par la regex** — qui sortent du circuit avant tout classifieur —, et celles qui **entrent réellement dans la chaîne de codification**. Les accuracies des chapitres suivants portent sur cette dernière population, sauf mention contraire.
+
+```{python}
+# | label: tbl-funnel
+_funnel = I.funnel_rows(
+    COUNTS,
+    n_regex=N_REGEX,
+    n_chain=N_CHAIN,
+    n_conciliation=len(df),
+    n_scorable=len(scorable),
+    n_deliverable=None if e2e is None else e2e["n_deliverable"],
+)
+if _funnel is None:
+    md = (
+        "_Volumétrie non calculable : ni le décompte du fichier d'entrée "
+        "(`build-datasets/input_counts.parquet`) ni le livrable ne sont lisibles._"
+    )
+else:
+    md = (
+        "| Étape | Lignes | Part |\n|---|---|---|\n"
+        + "\n".join(f"| {etape} | {lignes} | {part} |" for etape, lignes, part in _funnel)
+    )
+    if COUNTS is None:
+        md += (
+            "\n\n_Ce run est antérieur à `build-datasets/input_counts.parquet` : "
+            "l'entonnoir démarre aux observations retenues, et les parts s'y "
+            "rapportent. Le nombre de lignes du fichier d'entrée n'est pas "
+            "récupérable après coup._"
+        )
+Markdown(md)
+```
+
 ## Accuracy globale par niveau
 
-On tronque la vérité terrain (`{python} TRUTH`) et la prédiction aux `k` premiers niveaux, puis on compare :
+On tronque la vérité terrain (`{python} TRUTH`) et la prédiction aux `k` premiers niveaux, puis on teste l'**égalité**. C'est toute la règle, et il n'y en a qu'une.
 
-- une vérité de moins de `k` niveaux est **non évaluable** et sort du dénominateur — d'où un `n` qui décroît avec `k` ;
-- une prédiction plus courte que `k` est une **erreur** ;
-- une prédiction plus profonde que la vérité est **correcte** si le préfixe correspond.
+- une vérité de moins de `k` niveaux est tronquée à elle-même et reste **mesurée** : un Poste peu profond correctement codé est juste ;
+- une prédiction plus fine que la vérité est **fausse** dès qu'on descend sous la profondeur de celle-ci — vérité `01.4` contre prédiction `01.4.3.1` : juste au niveau 2, fausse au niveau 4 ;
+- une prédiction plus courte que la vérité est fausse au niveau où elles divergent ;
+- seules les lignes **sans vérité** sortent du calcul : il n'y a rien à y juger.
 
-> **Question :** parmi les observations codables à la profondeur `k`, quelle part est correctement codée ?
+> **Question :** sur l'ensemble des observations étiquetées, quelle part porte le bon code à la profondeur `k` ?
 
-::: {.callout-warning}
-## Les colonnes ne sont pas comparables entre elles
-Chaque niveau porte sur une **population différente** — lire les `n`. L'accuracy peut donc *augmenter* avec `k` : non parce que la codification s'améliore en profondeur, mais parce que les observations qui restent sont celles dont la vérité est fine, souvent les plus faciles. C'est un effet de sélection, pas un progrès. Le tableau de profondeur ci-dessous donne la population que chaque niveau écarte.
+::: {.callout-note}
+## Les colonnes sont comparables entre elles
+Tous les niveaux portent sur la **même population** — les observations étiquetées — et le `n` ne bouge plus. Une accuracy qui **baisse** avec `k` est donc un vrai signal : soit la codification se dégrade en profondeur, soit les prédictions sont plus fines que les annotations. Le tableau de profondeur ci-dessous permet de trancher entre les deux.
 :::
 
 ```{python}
 # | label: tbl-global-accuracy
-# Avec une vérité canonique, le niveau 5 est structurellement vide (les codes
-# prunés ont au plus 4 segments) : on ne l'affiche que pour les runs anciens.
+# Avec une vérité canonique, le niveau 5 duplique le niveau 4 (les codes prunés
+# ont au plus 4 segments, tronquer à 5 ne tronque rien) : on ne l'affiche que
+# pour les runs anciens, scorés contre la vérité brute.
 STRICT_LEVELS = CANONICAL_LEVELS if HAS_CANONICAL_TRUTH else LEVELS
 global_tbl = accuracy_table(scorable, levels=STRICT_LEVELS)
-Markdown(global_tbl.to_markdown(floatfmt=".1%"))
+# Le `n` ne dépendant plus du niveau, il est annoncé une fois ici plutôt que
+# répété dans chaque en-tête de colonne.
+# Avertissement délibérément placé SOUS le tableau d'en-tête : ce chiffre reste
+# celui de bout en bout — c'est le chiffre métier, et le restreindre casserait la
+# comparabilité entre runs — mais il ne doit pas se lire sans savoir qu'une part
+# est acquise d'avance (cf. « Accuracy par régime de décision »).
+_avertissement = (
+    ""
+    if regime_masks(scorable) is None
+    else (
+        f"\n\n_La ligne {FINAL_NAME} agrège des observations que la conciliation a "
+        "réellement tranchées et d'autres où elle n'avait aucun choix à faire. "
+        "Le découpage par régime de décision, plus bas, sépare les deux._"
+    )
+)
+Markdown(
+    f"Sur **{len(scorable):,} observations étiquetées**".replace(",", " ")
+    + ", à tous les niveaux.\n\n"
+    + global_tbl.to_markdown(floatfmt=".1%")
+    + _avertissement
+)
 ```
 
 ```{python}
@@ -199,7 +323,7 @@ fig, ax = plt.subplots()
 sns.lineplot(long, x="niveau", y="accuracy", hue="méthode", marker="o", ax=ax)
 ax.set_ylim(0, 1)
 ax.set_xticks(STRICT_LEVELS)
-ax.set_title("Accuracy par niveau COICOP (convention stricte, population variable)")
+ax.set_title("Accuracy par niveau COICOP (population constante)")
 ax.set_ylabel("Accuracy")
 ax.set_xlabel("Niveau (k)")
 plt.tight_layout()
@@ -208,26 +332,30 @@ plt.show()
 
 ```{python}
 # | label: tbl-truth-depth
-# Ce tableau explique le `n` décroissant ci-dessus : à chaque niveau, la part de
-# la population dont la vérité est trop peu profonde pour être évaluée. Sans
-# lui, un lecteur ne peut pas savoir si une accuracy de niveau 4 porte sur toute
-# la population ou sur un quart.
+# Clé de lecture du tableau ci-dessus : ces lignes restent mesurées, mais ce sont
+# exactement celles où une prédiction plus fine que la vérité est comptée fausse.
+# Sans ce décompte, on ne peut pas distinguer une codification qui se dégrade en
+# profondeur d'une annotation qui s'arrête avant.
 depth = truth_depth_distribution(scorable[TRUTH])
 depth_tbl = pd.DataFrame(
     [
         {
             "niveau k": k,
             "vérité moins profonde que k": depth["shallower_than"][k]["count"],
-            "part écartée": depth["shallower_than"][k]["pct"] / 100,
+            "part de la population": depth["shallower_than"][k]["pct"] / 100,
         }
         for k in CANONICAL_LEVELS
     ]
 ).set_index("niveau k")
 n_scorable = f"{len(scorable):,}".replace(",", " ")
 Markdown(
-    "**Ce que chaque niveau écarte.** Observations non évaluables au niveau `k`, "
-    f"faute d'une vérité assez profonde — sur {n_scorable} observations scorables.\n\n"
+    "**Où une prédiction trop fine sera comptée fausse.** Observations dont la vérité "
+    "s'arrête avant le niveau `k` : elles sont mesurées comme les autres, mais seule "
+    "une prédiction s'arrêtant au même endroit y est juste — sur "
+    f"{n_scorable} observations étiquetées.\n\n"
     + depth_tbl.to_markdown(floatfmt=(".0f", ".0f", ".1%"))
+    + "\n\nC'est la lecture de la chute entre deux niveaux : une baisse d'accuracy "
+    "adossée à une hausse de cette part vient des annotations, pas des classifieurs."
 )
 ```
 
@@ -237,7 +365,8 @@ C'est le chiffre à annoncer : il décrit ce que reçoit l'utilisateur. Tous les
 
 ```{python}
 # | label: tbl-end-to-end
-e2e = I.end_to_end(con, DELIVERABLE_PATH, OBSERVATIONS_PATH, MAPPING_PATH)
+# `e2e` est calculé dans le chunk `setup` : les métadonnées en ont besoin avant
+# ce chapitre.
 if e2e is None:
     out = (
         "*Non calculable : le livrable, les observations ou le mapping manquent. "
@@ -298,18 +427,17 @@ Markdown(md)
 Une brique peut se taire au lieu de se tromper :
 
 - `rag_code` et `ragann_code` sont NULL quand le RAG ne trouve rien d'exploitable ;
-- le code final (`{python} FINAL_COL`) peut manquer aussi — `N/A` si l'arbitrage LLM échoue, NULL si aucun classifieur n'a proposé de candidat scorable à SIRUS.
+- le code final (`{python} FINAL_COL`) peut manquer aussi — `{python} ABSTENTION_VALUE` si `{python} ABSTENTION_WHEN`.
 
 Les tableaux d'accuracy comptent ces abstentions comme des erreurs. C'est légitime pour mesurer la chaîne, mais **mélange deux défauts opposés** — coder faux appelle un meilleur modèle, ne pas coder une meilleure couverture. D'où la décomposition, exacte :
 
 $$\text{accuracy globale} = \text{couverture} \times \text{accuracy sur les réponses}$$
 
-Elle n'est exacte que parce que les trois grandeurs partagent **un seul dénominateur** : les lignes évaluables au niveau `{python} REGIME_LEVEL`, colonne `n évaluable`. Une ligne dont la vérité est trop peu profonde en sort — son abstention comprise. La couverture affichée est donc celle du sous-ensemble mesurable, pas celle du fichier.
+Elle n'est exacte que parce que les trois grandeurs partagent **un seul dénominateur** : les lignes portant une vérité, colonne `n`. Seule une ligne sans vérité en sort — son abstention comprise.
 
 ```{python}
 # | label: tbl-coverage
 cov_tbl = coverage_table(scorable, REGIME_LEVEL)
-_n_eval_col = f"n évaluable niv{REGIME_LEVEL}"
 # Refus exprimés autrement que par un NULL (chaîne vide, "N/A", …) : ils passeraient
 # pour des codes si on ne les traitait pas comme des abstentions.
 sentinels = {
@@ -354,10 +482,10 @@ for n_silent, sub in scorable.assign(_silent=_silent).groupby("_silent"):
             "sources muettes": int(n_silent),
             "n": len(sub),
             "part des observations": len(sub) / len(scorable),
-            # Deux dénominateurs distincts, donc deux colonnes : la couverture
-            # porte sur tout le groupe, l'accuracy sur ses seules lignes
-            # évaluables au niveau visé.
-            f"n évaluable niv{REGIME_LEVEL}": n_eval,
+            # `n` compte le groupe entier, `n avec vérité` le dénominateur de
+            # l'accuracy : les deux ne diffèrent que par les lignes non
+            # étiquetées, `scorable` n'en portant en principe aucune.
+            "n avec vérité": n_eval,
             f"accuracy {FINAL_NAME} niv{REGIME_LEVEL}": acc,
             f"couverture {FINAL_NAME}": float(answer_mask(sub[FINAL_COL]).mean()),
         }
@@ -386,24 +514,30 @@ else:
     _view[_acc_col] = _view[_acc_col].map(lambda v: "—" if pd.isna(v) else f"{v:.1%}")
     md = (
         "L'accuracy n'est renseignée que sur les lignes où un code a été émis : sur une "
-        f"abstention elle vaut 0 par construction. `n` compte la cellule, `n évaluable "
-        f"niv{REGIME_LEVEL}` le dénominateur réel de l'accuracy — les deux diffèrent dès "
-        "qu'une vérité est trop peu profonde.\n\n"
+        "abstention elle vaut 0 par construction. `n` compte la cellule, `n avec vérité` "
+        "le dénominateur réel de l'accuracy — les deux ne diffèrent que par les lignes "
+        "non étiquetées.\n\n"
         + _view.to_markdown(index=False, disable_numparse=True)
     )
 Markdown(md)
 ```
-
-## Accuracy par régime de décision : consensus ou arbitrage réel
 
 ```{python}
 # | label: txt-regime-intro
 # Section propre au juge LLM : le court-circuit consensus est une mécanique de
 # `reconcile-llm`, sans équivalent dans la conciliation par règles SIRUS (qui
 # score tous les candidats de la même façon, sans raccourci).
-if "llm_model" in scorable.columns:
+#
+# Le TITRE est dans le chunk, pas en markdown brut : sinon il s'afficherait en
+# mode SIRUS au-dessus d'un vide, ou pire, au-dessus d'un « sans objet ». Même
+# idiome qu'à la section « Trois chiffres pour juger de l'ampleur ».
+if regime_masks(scorable) is None:
+    md = ""
+elif IS_LLM:
     md = dedent(
         """
+        ## Accuracy par régime de décision : consensus ou arbitrage réel
+
         Les tableaux ci-dessus agrègent deux régimes de décision que `reconcile-llm`
         traite différemment, et que la colonne `llm_model` distingue :
 
@@ -421,11 +555,28 @@ if "llm_model" in scorable.columns:
         """
     )
 else:
-    md = (
-        f"_Sans objet : la conciliation de ce run est **{FINAL_NAME}**, qui n'a pas "
-        "de régime de décision — tous les candidats sont scorés de la même façon, "
-        "sans raccourci consensus. Ce découpage est propre au juge LLM "
-        "(`reconcile-llm`)._"
+    md = dedent(
+        """
+        ## Accuracy par régime de décision : SIRUS a-t-il vraiment choisi ?
+
+        SIRUS n'a pas de court-circuit — il score toutes les lignes. Mais ses candidats
+        sont les codes **distincts** proposés par les 4 classifieurs : quand ceux-ci
+        s'accordent, il n'en reste qu'un, et le meilleur d'un seul candidat est ce
+        candidat. La colonne `sirus_n_candidats` dit combien le modèle en avait
+        réellement devant lui, et sépare trois situations :
+
+        - **Aucun candidat** — tous écartés par le modèle (division COICOP absente de
+          son entraînement). Aucun code émis : ces produits partent en reprise.
+        - **Candidat unique** — rien à trancher. L'accuracy y mesure les classifieurs
+          amont, pas SIRUS, et ce sont les cas faciles : elle y est élevée.
+        - **Choix réel** — au moins deux candidats en concurrence. **C'est la seule
+          colonne qui mesure SIRUS.**
+
+        La colonne « Ensemble » est donc en partie acquise d'avance, et l'écart entre
+        elle et « Choix réel » chiffre exactement ce que le modèle doit à ses sources
+        plutôt qu'à lui-même. Corollaire utile : un `sirus_proba` bas sur un produit à
+        candidat unique n'est pas une hésitation — il n'y avait rien à comparer.
+        """
     )
 Markdown(md)
 ```
@@ -436,12 +587,15 @@ regime_tbl = regime_accuracy_table(scorable, REGIME_LEVEL)
 if regime_tbl is None:
     md = ""  # l'explication est déjà donnée par le chunk d'introduction
 else:
+    # Volume du régime « sans choix », quel que soit son nom : c'est lui qui dit
+    # quelle part de la colonne Ensemble est acquise d'avance.
     _masks = regime_masks(scorable)
-    _n_cons = int(_masks[0][2].sum())
+    _sans_choix = int(sum(int(m.sum()) for _l, s_, m in _masks if s_ != "arbitrated"))
+    _lbl = "Consensus" if IS_LLM else "Sans choix à faire"
     md = (
         f"**Accuracy au niveau {REGIME_LEVEL}**, ventilée par régime. "
-        f"Consensus : {_n_cons} observations sur {len(scorable)} "
-        f"({_n_cons / len(scorable):.1%} du scorable).\n\n"
+        f"{_lbl} : {_sans_choix} observations sur {len(scorable)} "
+        f"({_sans_choix / len(scorable):.1%} du scorable).\n\n"
         + regime_tbl.to_markdown(floatfmt=".1%")
     )
 Markdown(md)
@@ -458,7 +612,17 @@ else:
     sources = [name for name, col in available_methods(scorable) if col != FINAL_COL]
     rows = []
     for label, _suffix, mask in regime_masks(scorable):
-        sub = regime_tbl[[c for c in regime_tbl.columns if c.startswith(label)]].iloc[:, 0]
+        # Un régime peut être vide (SIRUS en compte trois, dont « aucun candidat »
+        # souvent à zéro). `regime_accuracy_table` n'émet alors PAS de colonne :
+        # tester la présence de la colonne avant d'y accéder, et non après.
+        _cols = [c for c in regime_tbl.columns if c.startswith(label)]
+        if not _cols:
+            continue
+        sub = regime_tbl[_cols].iloc[:, 0]
+        # Même sans être vide, un régime peut n'avoir aucune accuracy calculable
+        # (aucune vérité terrain) : `idxmax` n'aurait rien à renvoyer.
+        if not sub[sources].notna().any():
+            continue
         best_src = sub[sources].idxmax()
         rows.append(
             {
@@ -469,12 +633,52 @@ else:
                 f"écart {FINAL_NAME} − meilleure source": sub.get(FINAL_NAME) - sub[best_src],
             }
         )
-    gap_regime = pd.DataFrame(rows).set_index("régime")
+    if not rows:
+        md = ""
+    else:
+        gap_regime = pd.DataFrame(rows).set_index("régime")
+        _ligne = "Arbitré" if IS_LLM else "Choix réel"
+        md = (
+            f"**{FINAL_NAME} fait-il mieux que la meilleure source amont ?** Un écart "
+            f"négatif sur la ligne `{_ligne}` signifie qu'un choix systématique de cette "
+            "source aurait mieux codé les observations que la conciliation a réellement "
+            "tranchées.\n\n"
+            + gap_regime.to_markdown(floatfmt=(".0f", ".0f", ".1%", "", ".1%"))
+        )
+Markdown(md)
+```
+
+```{python}
+# | label: md-arbitration-merit
+# Répond à « l'accuracy de SIRUS n'est-elle pas gonflée par les produits où il
+# n'avait rien à choisir ? ». Oui, et voici le chiffre qui ne l'est pas — encadré
+# par le hasard et par ce qui était atteignable, sans quoi une accuracy nue ne
+# dit pas si le modèle a du mérite.
+_merit = I.arbitration_merit(
+    scorable, truth_col=TRUTH, final_col=FINAL_COL,
+    sources=[(n, c) for n, c in available_methods(scorable) if c != FINAL_COL],
+)
+if _merit is None:
+    md = ""
+else:
+    _tbl = pd.DataFrame([
+        ("Tirage au sort parmi les candidats", _merit["plancher"],
+         "le plancher : aucun mérite"),
+        (f"{FINAL_NAME}", _merit["accuracy"], "ce qu'il fait réellement"),
+        ("Au moins un candidat juste", _merit["plafond"],
+         "le plafond : au-delà, il faudrait un meilleur candidat en amont"),
+    ], columns=["", "accuracy niv4", "lecture"])
     md = (
-        "**Le juge fait-il mieux que la meilleure source amont ?** Un écart négatif sur "
-        "la ligne `Arbitré` signifie qu'un choix systématique de cette source aurait mieux "
-        "codé les observations soumises au juge.\n\n"
-        + gap_regime.to_markdown(floatfmt=(".0f", ".0f", ".1%", "", ".1%"))
+        f"**Sur les {_merit['n']} produits à au moins deux candidats** "
+        f"({_merit['n'] / _merit['n_total']:.1%} du scorable) — les seuls où "
+        f"{FINAL_NAME} a eu quelque chose à trancher :\n\n"
+        + _tbl.to_markdown(index=False, floatfmt=("", ".1%", ""))
+        + (
+            f"\n\n{FINAL_NAME} va chercher **{_merit['capture']:.1%}** de ce qui était "
+            "atteignable. C'est ce chiffre, et non l'accuracy globale, qui mesure la "
+            "conciliation : partout ailleurs elle n'avait pas le choix."
+            if _merit["capture"] is not None else ""
+        )
     )
 Markdown(md)
 ```
@@ -512,24 +716,51 @@ def render_group_table(data: pd.DataFrame, group_col: str, k: int = 4) -> pd.Dat
     return view
 ```
 
-### Par niveau 1 du code COICOP (vérité terrain)
+### Par division COICOP **prédite**
 
-Regroupe les observations par le premier segment de `code` (ex. `01`, `02`, …).
+C'est la lecture opérationnelle, celle qu'on fait devant un fichier livré, quand la vérité n'est pas connue : **quand la chaîne annonce de l'alimentaire, à quelle fréquence a-t-elle raison ?**
+
+Le regroupement se fait sur la division **prédite** par `{python} FINAL_NAME`, pas sur la division vraie. Les deux tableaux se ressemblent et répondent à des questions opposées — par division vraie, on mesure ce qu'on retrouve d'un domaine ; par division prédite, on mesure ce que vaut une annonce. Seul le second se lit sans connaître la réponse.
+
+Deux taux, dans cet ordre : la division annoncée est-elle la bonne, puis le code complet l'est-il. Le second ne peut pas dépasser le premier — avoir le bon code de niveau 4 suppose la bonne division.
 
 ```{python}
 # | label: tbl-coicop-lvl1
-_lvl = scorable.assign(
-    truth_lvl1=scorable[TRUTH].map(
-        lambda c: code_parts(c)[0] if code_parts(c) else None
-    )
-).dropna(subset=["truth_lvl1"])
-tbl_l1 = render_group_table(_lvl, "truth_lvl1", k=4)
-tbl_l1 = tbl_l1.sort_values("truth_lvl1")
-Markdown(
-    tbl_l1.to_markdown(index=False, disable_numparse=True)
-    if len(tbl_l1)
-    else "_Pas assez d'observations par niveau 1._"
+_pred_div = I.accuracy_by_predicted_division(
+    scorable, truth_col=TRUTH, final_col=FINAL_COL, labels=DIVISION_LABELS
 )
+if _pred_div is None:
+    md = "_Pas assez d'observations pour ventiler par division prédite._"
+else:
+    _v = _pred_div.copy()
+    for c in ["part des prédictions", "bonne division", "bon code niv4"]:
+        _v[c] = _v[c].map(lambda x: "—" if pd.isna(x) else f"{x:.1%}")
+    md = _v.to_markdown(index=False, disable_numparse=True)
+    if not DIVISION_LABELS:
+        md += (
+            "\n\n_Libellés indisponibles : la nomenclature du run "
+            "(`prune-codes/nomenclature_pruned.parquet`) n'a pas pu être lue._"
+        )
+Markdown(md)
+```
+
+### Par division prédite **et par classifieur**
+
+Le tableau ci-dessus dit ce que vaut l'annonce du pipeline ; celui-ci dit **d'où elle vient**. Une division où toutes les sources s'effondrent est un problème de nomenclature ou de libellés ; une division où une seule décroche est un problème de brique — et les deux n'appellent pas le même correctif.
+
+Chaque colonne est regroupée par **sa propre** division prédite : une ligne n'agrège donc pas les mêmes observations d'une colonne à l'autre. D'où le `n` entre parenthèses, qui est le dénominateur de l'accuracy affichée à côté — les observations que cette source a rangées dans cette division **et** qui portent une vérité. Un tiret signale qu'il n'y a rien à mesurer, ce qui n'est pas la même chose que 0 %.
+
+```{python}
+# | label: tbl-division-par-classifieur
+_srcs_div = available_methods(scorable)
+_par_src = I.accuracy_by_predicted_division_per_source(
+    scorable, truth_col=TRUTH, sources=_srcs_div, labels=DIVISION_LABELS
+)
+if _par_src is None:
+    md = "_Aucune source amont exploitable dans ce run._"
+else:
+    md = _par_src.to_markdown(index=False, disable_numparse=True)
+Markdown(md)
 ```
 
 ### Par niveau 2 du code COICOP (vérité terrain)
@@ -563,13 +794,47 @@ Cette ventilation n'apparaît que si le run a été lancé avec `source-column`.
 Elle ne restreint jamais le périmètre codé : c'est une dimension d'analyse.
 
 ```{python}
-# | label: tbl-source
-if SOURCE_COLUMN and SOURCE_COLUMN in scorable.columns and scorable[SOURCE_COLUMN].notna().any():
-    out = render_group_table(scorable, SOURCE_COLUMN, k=4).to_markdown(index=False)
+# | label: tbl-source-summary
+# Vue « métier » : où la qualité se perd selon le mode de saisie. La couverture
+# est à lire avec l'accuracy — une source peut produire des libellés que la
+# chaîne refuse de coder, ce qui n'est pas le même défaut que de les coder faux.
+_src = I.group_summary(
+    scorable, SOURCE_COLUMN, truth_col=TRUTH, final_col=FINAL_COL
+) if SOURCE_COLUMN else None
+if _src is not None:
+    _view = _src.copy()
+    for c in ["part", "couverture", "accuracy niv1", "accuracy niv2", "accuracy niv4"]:
+        _view[c] = _view[c].map(lambda v: "—" if pd.isna(v) else f"{v:.1%}")
+    _view["écart / ensemble"] = _view["écart / ensemble"].map(
+        lambda v: "—" if pd.isna(v) else f"{v * 100:+.1f} pts"
+    )
+    out = (
+        f"**Qualité de la codification selon la provenance**, pour {FINAL_NAME}.\n\n"
+        + _view.to_markdown(index=False, disable_numparse=True)
+        + "\n\nL'écart est mesuré au niveau 4 contre l'ensemble des observations "
+        "étiquetées. Une source très minoritaire peut afficher un écart spectaculaire "
+        "sans qu'il soit significatif : lire la colonne `n` avant l'écart."
+    )
 elif SOURCE_COLUMN:
     out = f"_Colonne `{SOURCE_COLUMN}` annoncée mais absente ou vide dans les données._"
 else:
-    out = "_Ventilation par source non demandée (`source-column` vide)._"
+    out = (
+        "_Ventilation par source non demandée. Elle exige **deux** paramètres : "
+        "`source_column` (la colonne du fichier d'entrée qui porte la provenance, lue "
+        "par `build-datasets`) et `eval-source-column: \"source\"` (la dimension "
+        "d'analyse du rapport). Les deux sont vides dans `argo/params.yaml`._"
+    )
+Markdown(out)
+```
+
+Le détail par classifieur, pour savoir si une source dégrade toute la chaîne ou une brique en particulier :
+
+```{python}
+# | label: tbl-source
+if SOURCE_COLUMN and SOURCE_COLUMN in scorable.columns and scorable[SOURCE_COLUMN].notna().any():
+    out = render_group_table(scorable, SOURCE_COLUMN, k=4).to_markdown(index=False)
+else:
+    out = "_—_"
 Markdown(out)
 ```
 
@@ -636,14 +901,86 @@ else:
 Markdown(md)
 ```
 
+## Distorsion de distribution au niveau 1
+
+Les chapitres précédents demandent « chaque produit est-il bien codé ? ». Celui-ci pose une question différente, et qui n'en découle pas : **la répartition des produits entre divisions COICOP ressemble-t-elle à la vraie ?** C'est ce qui compte quand le résultat alimente un agrégat plutôt qu'un dossier individuel.
+
+Les deux se séparent dès que les erreurs se **compensent**. Mille produits classés à tort en `01` et mille produits de `01` classés à tort ailleurs laissent la distribution intacte alors que deux mille codifications sont fausses. À l'inverse, des erreurs qui vont toutes dans le même sens biaisent l'agrégat même si elles sont peu nombreuses.
+
+```{python}
+# | label: tbl-distortion-lvl1
+_dist = I.distortion_level1(scorable, truth_col=TRUTH, final_col=FINAL_COL)
+if _dist is None:
+    md = "_Aucune observation étiquetée : distorsion non calculable._"
+else:
+    _rows = pd.DataFrame(_dist["per_category"]).sort_values("true_n", ascending=False)
+    _rows = _rows.rename(columns={"category": "division"})
+    # `<none>` n'est pas une division : c'est l'abstention de la conciliation.
+    # La nommer évite qu'un lecteur la prenne pour un code COICOP exotique.
+    # Les autres reçoivent leur libellé de nomenclature — un tableau de soldes
+    # par division illisible sans les noms ne sert à personne.
+    _rows["division"] = _rows["division"].map(
+        lambda c: "— (aucun code émis)" if c == "<none>"
+        else I.label_division(c, DIVISION_LABELS)
+    )
+    _rows["solde"] = _rows["pred_n"] - _rows["true_n"]
+    view = pd.DataFrame({
+        "division": _rows["division"],
+        "n vérité": _rows["true_n"],
+        "part vérité": _rows["true_share"].map("{:.1%}".format),
+        "n prédit": _rows["pred_n"],
+        "part prédite": _rows["pred_share"].map("{:.1%}".format),
+        "écart": _rows["diff"].map(lambda v: f"{v * 100:+.1f} pts"),
+        "solde (produits)": _rows["solde"].map(lambda v: f"{v:+d}"),
+    })
+    md = (
+        "**Répartition vraie contre répartition prédite.** Un solde positif signifie "
+        "que la chaîne met plus de produits dans cette division que la réalité "
+        "n'en contient — elle la *sur-code* ; un solde négatif, qu'elle la sous-code.\n\n"
+        + view.to_markdown(index=False, disable_numparse=True)
+    )
+Markdown(md)
+```
+
+```{python}
+# | label: md-distortion-indicators
+if _dist is None:
+    md = ""
+else:
+    n = _dist["n_scored"]
+    tv = _dist["tv_distance"]
+    brut = _dist["erreurs_brutes"]
+    depl = _dist["deplacements"]
+    comp = _dist["compensation"]
+    _n = lambda v: f"{int(round(v)):,}".replace(",", " ")  # noqa: E731
+    # f-string BRUTE : la formule LaTeX ci-dessous contient `\tfrac` et `\sum`,
+    # que Python interpréterait sinon comme une tabulation et une échappée
+    # invalide — la formule sortirait muette dans le rendu.
+    md = rf"""### Trois chiffres pour juger de l'ampleur
+
+| Indicateur | Valeur | Ce qu'il veut dire |
+|---|---|---|
+| **Erreurs de division (brut)** | {_n(brut)} produits, soit {brut / n:.1%} | Produits dont la division prédite n'est pas la bonne. C'est l'erreur telle qu'on la vit dossier par dossier. |
+| **Distorsion nette — distance en variation totale** | {tv:.1%} | Part des produits qu'il faudrait **déplacer** d'une division à l'autre pour que la répartition prédite coïncide exactement avec la vraie, soit {_n(depl)} produits. C'est l'erreur telle qu'elle se voit sur un agrégat. |
+| **Taux de compensation** | {"—" if comp is None else f"{comp:.1%}"} | Part des erreurs de division qui **s'annulent entre elles**. Proche de 0 % : les erreurs vont dans le même sens et biaisent l'agrégat d'autant. Proche de 100 % : la répartition est presque juste malgré des codifications individuelles fausses. |
+
+::: {{.callout-note}}
+## Comment lire la distance en variation totale
+C'est la moitié de la somme des écarts en valeur absolue entre les deux répartitions, $\tfrac{{1}}{{2}}\sum_i |p_i - q_i|$. Elle vaut 0 % quand les deux répartitions sont identiques et 100 % quand elles n'ont aucune division en commun. Sa lecture est directe et ne demande aucune convention : **c'est la proportion de produits mal placés en net**.
+
+La divergence de Kullback-Leibler de la vraie répartition vers la prédite vaut ici **{_dist["kl_divergence"]:.4f}**. Elle pénalise beaucoup plus fortement qu'un simple écart le fait de donner un poids quasi nul à une division qui existe réellement. Elle n'a pas d'unité interprétable — on la compare entre deux runs, pas dans l'absolu : plus elle est basse, mieux c'est.
+:::
+
+Ces chiffres portent sur les {_n(n)} observations étiquetées passées par la chaîne. Les lignes captées par la regex n'y figurent pas : la répartition du **fichier livré**, elle, les inclut.
+"""
+Markdown(md)
+```
+
 ## Décomposition interne des classifieurs
 
 Les tableaux précédents disent **combien** chaque brique se trompe, pas **où**. Un RAG à 70 % peut être un retriever qui ne ramène jamais la bonne réponse — aucun prompt ne le sauvera — ou un générateur qui la voit et choisit autre chose. Les corrections sont opposées, et le chiffre agrégé ne permet pas de trancher.
 
-::: {.callout-warning}
-## Cette section ne compte pas comme le reste du rapport
-Elle est calculée par les bibliothèques de mesure des modules RAG, dont le dénominateur est **constant** : une observation dont la vérité est trop peu profonde y compte comme une erreur au lieu d'être écartée. Partout ailleurs, ce rapport l'écarte. Les accuracies de cette section ne sont donc pas comparables chiffre à chiffre avec celles des sections précédentes — c'est leur **écart entre briques et entre régimes** qui informe, pas leur niveau absolu.
-:::
+Elle est calculée par les bibliothèques de mesure des modules RAG et non par `codif_common`, mais les deux appliquent désormais la **même** règle — tronquer les deux codes à `k` et comparer. Les chiffres de cette section sont donc comparables à ceux des sections précédentes. L'équivalence est vérifiée par un test (`evaluate/tests/test_accuracy_parity.py`) plutôt que supposée : c'est lui qu'il faut lire si un écart réapparaît.
 
 ```{python}
 # | label: setup-internals
@@ -780,7 +1117,25 @@ Une confiance n'a d'utilité que si elle **trie**.
 | > 0,7 | la confiance trie utilement ce qui part en relecture |
 | < 0,5 | la confiance est **inversée** : anomalie à investiguer, pas à exploiter |
 
-Seules les confiances de l'échelle [0, 1] figurent ici, donc directement comparables. `llm_confiance` (entier de 1 à 5) et `sirus_proba` ont chacun leur propre section de calibration plus bas ; les mêler produirait des seuils qui ne veulent rien dire.
+```{python}
+# | label: txt-conf-scale-note
+# Le score de la conciliation vit sur une autre échelle que les confiances des
+# classifieurs : entier 1-5 pour le juge LLM, probabilité continue pour SIRUS.
+# On ne nomme que celui de ce run — l'autre décrirait une étape qui n'a pas
+# tourné.
+_echelle = "entier de 1 à 5" if IS_LLM else "probabilité continue"
+Markdown(
+    "Seules les confiances de l'échelle [0, 1] figurent ici, donc directement "
+    "comparables. "
+    + (
+        f"Le score de la conciliation, `{FINAL_CONF_COL}` ({_echelle}), a sa propre "
+        "section de calibration plus bas ; l'y mêler produirait des seuils qui ne "
+        "veulent rien dire."
+        if FINAL_CONF_COL
+        else "Cette conciliation ne produit pas de score de confiance."
+    )
+)
+```
 
 ```{python}
 # | label: tbl-confidence-auroc
@@ -880,10 +1235,14 @@ Markdown(
 
 On liste les couples (code réel, code retenu par `{python} FINAL_COL`) les plus fréquents **parmi les erreurs** au niveau 4 (le niveau typiquement visé par l'enquête).
 
+Les clés sont les codes **tronqués** au niveau 4, exactement comme les compte l'accuracy : elles peuvent donc porter moins de 4 segments quand la vérité s'arrête avant. Une vérité `01.4` face à une prédiction `01.4.3.1` apparaît ici comme la paire `01.4` → `01.4.3.1`, et c'est une erreur de niveau 4.
+
 ```{python}
 # | label: tbl-confusion
 def at_level(s: pd.Series, k: int) -> pd.Series:
-    return s.map(lambda x: ".".join(code_parts(x)[:k]) if len(code_parts(x)) >= k else None)
+    """Tronque au niveau k. None sur un code vide seulement — un code plus court
+    que k est tronqué à lui-même, comme dans `level_result`."""
+    return s.map(lambda x: ".".join(code_parts(x)[:k]) or None)
 
 
 k = 4
@@ -908,22 +1267,17 @@ else:
 Markdown(md)
 ```
 
-### Calibration du LLM : accuracy vs `llm_confiance`
-
 ```{python}
 # | label: txt-calibration-llm-intro
-# Prose dans un chunk gardé plutôt qu'en Markdown brut : en mode SIRUS il n'y a
-# pas de score de confiance 1-5, et laisser cette introduction s'afficher
-# décrirait une sortie que le run ne contient pas.
+# Titre et prose dans un chunk gardé plutôt qu'en Markdown brut : en mode SIRUS
+# il n'y a pas de score de confiance 1-5, et laisser ce titre s'afficher
+# annoncerait une sortie que le run ne contient pas.
 Markdown(
+    "### Calibration du LLM : accuracy vs `llm_confiance`\n\n"
     "La commande `reconcile-llm` retourne un score de confiance de 1 à 5. Une "
     "calibration saine montre une accuracy croissante avec la confiance."
-    if "llm_confiance" in scorable.columns
-    else (
-        f"_Sans objet : la conciliation de ce run est **{FINAL_NAME}**, qui ne "
-        "produit pas de score de confiance `llm_confiance`. La calibration de "
-        "SIRUS est traitée dans la section suivante._"
-    )
+    if IS_LLM
+    else ""
 )
 ```
 
@@ -940,10 +1294,14 @@ cal_df = (
     else pd.DataFrame()
 )
 if not _has_llm_conf:
+    # Rien du tout en mode SIRUS — la section entière n'existe pas. Mais sur un
+    # run LLM, une colonne manquante est une ANOMALIE, pas un autre mode : le
+    # silence la ferait passer pour normale.
     Markdown(
-        f"_Sans objet : la conciliation de ce run est **{FINAL_NAME}**, qui ne "
-        "produit pas de score entier 1-5. Voir la calibration de SIRUS "
-        "ci-dessous._"
+        "_Colonne `llm_confiance` absente de ce parquet : calibration du juge "
+        "non mesurable._"
+        if IS_LLM
+        else ""
     )
 elif len(cal_df):
     cal_df["acc_niv4"] = accuracy_series(cal_df[TRUTH], cal_df["llm_code"], 4)
@@ -973,13 +1331,15 @@ else:
     Markdown("_Pas de valeur `llm_confiance` disponible._")
 ```
 
-### Calibration de SIRUS : accuracy vs `sirus_proba`
-
 ```{python}
 # | label: txt-sirus-calib-intro
+# Titre dans le chunk, comme la section symétrique du juge LLM : sur un run LLM
+# il n'y a pas de `sirus_proba`, et le titre annoncerait une section vide.
 if "sirus_proba" in scorable.columns:
     md = dedent(
         """
+        ### Calibration de SIRUS : accuracy vs `sirus_proba`
+
         SIRUS ne renvoie pas une classe mais une **probabilité que le candidat
         retenu soit le bon code**, sans verdict : l'étape n'applique aucun seuil.
         C'est ici que se décide lequel exiger.
@@ -996,10 +1356,7 @@ if "sirus_proba" in scorable.columns:
         """
     )
 else:
-    md = (
-        f"_Sans objet : la conciliation de ce run est **{FINAL_NAME}**, qui ne "
-        "produit pas de colonne `sirus_proba`._"
-    )
+    md = ""
 Markdown(md)
 ```
 
@@ -1018,10 +1375,9 @@ if "sirus_proba" in scorable.columns:
     _sc = scorable.dropna(subset=["sirus_proba"]).copy()
     if len(_sc):
         _res = accuracy_series(_sc[TRUTH], _sc[FINAL_COL], REGIME_LEVEL)
-        # Volume : toute la population scorée par SIRUS — c'est une décision
-        # d'exploitation, elle porte sur les lignes qu'on livrerait.
-        # Fiabilité : les seules lignes évaluables. Deux dénominateurs, annoncés
-        # comme tels dans les tableaux.
+        # Un seul dénominateur : toute la population scorée par SIRUS et
+        # étiquetée. `_res` ne vaut None que sur une ligne sans vérité, et
+        # `scorable` n'en porte pas — volume et fiabilité coïncident.
         _SIRUS = {
             "all": _sc,
             "eval": _sc[_res.notna()].assign(_ok=_res[_res.notna()] == True),  # noqa: E712
@@ -1051,7 +1407,7 @@ else:
     _p = _SIRUS["all"]["sirus_proba"]
     md = (
         f"**Accuracy au niveau {REGIME_LEVEL}** par tranche de `sirus_proba`, sur "
-        f"{len(_ev)} observations évaluables. Probabilités observées : "
+        f"{len(_ev)} observations étiquetées. Probabilités observées : "
         f"min {_p.min():.3f}, médiane {_p.median():.3f}, max {_p.max():.3f}.\n\n"
         + calib_tbl[["tranche", "n", "part des observations", "accuracy"]].to_markdown(
             index=False, floatfmt=("", ".0f", ".1%", ".1%")
@@ -1080,7 +1436,7 @@ else:
                 "seuil": seuil,
                 "n auto-codé": n_auto,
                 "volume auto-codé": n_auto / len(_all),
-                "n évaluable": n_ev,
+                "n étiqueté": n_ev,
                 f"fiabilité niv{REGIME_LEVEL}": (
                     float(_ev.loc[auto_ev, "_ok"].mean()) if n_ev else np.nan
                 ),
@@ -1089,7 +1445,7 @@ else:
     md = (
         "**Arbitrage volume / fiabilité selon le score exigé.** Le volume porte sur "
         f"les {len(_all)} lignes scorées par SIRUS — c'est ce qu'on livrerait ; la "
-        f"fiabilité sur les {len(_ev)} évaluables au niveau {REGIME_LEVEL}. Le score "
+        f"fiabilité sur les {len(_ev)} d'entre elles qui sont étiquetées. Le score "
         f"maximum atteignable par ce modèle est **{_all['sirus_proba'].max():.3f}** sur "
         "ce run : au-delà, l'exigence écarterait **100 % du volume**. C'est pourquoi un "
         "seuil se lit sur ce tableau et ne se transpose pas d'un modèle à l'autre.\n\n"
@@ -1100,7 +1456,18 @@ else:
 Markdown(md)
 ```
 
-### Les règles du modèle SIRUS
+```{python}
+# | label: txt-sirus-rules-title
+# Chunk séparé, et SANS préfixe `tbl-` : un chunk étiqueté `tbl-*` est enveloppé
+# par Quarto dans un div de tableau référençable, et un titre émis à l'intérieur
+# n'atteint plus la table des matières. Le rendu l'a montré — la section
+# existait dans le corps mais avait disparu du sommaire.
+Markdown(
+    "### Les règles du modèle SIRUS"
+    if SIRUS_MODEL_URI or "sirus_proba" in scorable.columns
+    else ""
+)
+```
 
 ```{python}
 # | label: tbl-sirus-rules
@@ -1197,8 +1564,13 @@ K_EVAL = 4  # niveau cible de l'enquête
 
 
 def keyk(s: pd.Series, k: int = K_EVAL) -> pd.Series:
-    """Tronque des codes COICOP pointés aux k premiers segments (None si trop court)."""
-    return s.map(lambda x: ".".join(code_parts(x)[:k]) if len(code_parts(x)) >= k else None)
+    """Tronque des codes COICOP pointés aux k premiers segments.
+
+    None sur un code vide seulement — même convention que `level_result` : un
+    code plus court que k est tronqué à lui-même. `_src_vals` n'écarte donc plus
+    que les abstentions, et non plus aussi les sources peu profondes.
+    """
+    return s.map(lambda x: ".".join(code_parts(x)[:k]) or None)
 
 
 # `_final` : le code de la conciliation qui a tranché, tronqué au niveau cible.
@@ -1271,7 +1643,7 @@ summary = summary[[
 Markdown(summary.to_markdown(index=False))
 ```
 
-**Lecture :** sur les cas d'accord total, l'accuracy de la conciliation doit avoisiner celle des sources (elle ne fait que confirmer — via le raccourci consensus pour le juge LLM, via des règles qui votent toutes dans le même sens pour SIRUS). Sur les configurations de désaccord, l'écart entre `{python} ACC_FINAL_COL` et `≥1 source juste` mesure la capacité de la conciliation à retrouver la bonne source quand elle existe ; l'écart avec `code majoritaire juste` indique si elle fait mieux qu'un simple vote majoritaire.
+**Lecture :** sur les cas d'accord total, l'accuracy de la conciliation doit avoisiner celle des sources (elle ne fait que confirmer, `{python} CONFIRM_MECHANISM`). Sur les configurations de désaccord, l'écart entre `{python} ACC_FINAL_COL` et `≥1 source juste` mesure la capacité de la conciliation à retrouver la bonne source quand elle existe ; l'écart avec `code majoritaire juste` indique si elle fait mieux qu'un simple vote majoritaire.
 
 ## Accord de chaque classifieur avec la décision finale
 
@@ -1321,7 +1693,18 @@ if PREDICTORS:
 
 Cas où le code final retenu ne figure dans aucune prédiction des classifieurs. On distingue les codes restés accessibles via le top-2/3 de TTC et les codes totalement inédits, et — grâce à la vérité terrain — on mesure si sortir du périmètre des classifieurs aide ou nuit (accuracy niveau 4).
 
-En conciliation LLM, l'analyse est restreinte aux observations réellement arbitrées : les consensus retiennent par construction un code prédit. En conciliation SIRUS la question ne se pose pas — le modèle **choisit parmi les candidats proposés** et ne peut structurellement pas sortir du périmètre, ce que ce tableau doit confirmer.
+```{python}
+# | label: txt-outside-scope-intro
+# Le périmètre analysé n'est pas le même selon la conciliation. Décrire les deux
+# obligerait le lecteur à trouver lui-même laquelle le concerne.
+Markdown(
+    "L'analyse est restreinte aux observations réellement arbitrées : les "
+    "consensus retiennent par construction un code prédit."
+    if IS_LLM
+    else "SIRUS **choisit parmi les candidats proposés** et ne peut "
+    "structurellement pas sortir du périmètre : ce tableau doit le confirmer."
+)
+```
 
 ```{python}
 # | label: tbl-judge-outside
@@ -1352,12 +1735,13 @@ else:
 
     arb["_in_main"] = arb.apply(lambda r: str(r[FINAL_COL]) in main_set(r), axis=1)
     arb["_in_avail"] = arb.apply(lambda r: str(r[FINAL_COL]) in avail_set(r), axis=1)
-    # `accuracy_series` renvoie None sur une vérité trop peu profonde pour être
-    # évaluée au niveau 4. Un `== True` direct la compte comme fausse : les deux
-    # colonnes d'accuracy de ce tableau étaient sous-estimées d'autant. Le masque
-    # ne dépend que de la vérité, il vaut donc pour toutes les colonnes.
+    # `accuracy_series` ne renvoie None que sur une ligne sans vérité, qu'un
+    # `== True` direct compterait comme fausse. Le masque est donc vide sur
+    # `scorable` — on le garde parce qu'il coûte zéro et que `arb` pourrait un
+    # jour venir d'ailleurs. Il ne dépend que de la vérité, donc il vaut pour
+    # toutes les colonnes.
     _res_final = accuracy_series(arb[TRUTH], arb[FINAL_COL], 4)
-    arb["_evaluable"] = _res_final.notna()
+    arb["_scored"] = _res_final.notna()
     arb["_final_ok"] = _res_final == True  # noqa: E712
     src_ok_cols = []
     for c in PRED_COLS:
@@ -1380,9 +1764,9 @@ else:
     arb["Périmètre"] = arb.apply(perim, axis=1)
     order_p = ["Dans les prédictions", "Hors prédict., vu (TTC top2/3)", "Totalement inédit"]
     # `n` compte les décisions — c'est la question du périmètre. Les accuracies
-    # portent sur les seules lignes évaluables au niveau 4 : deux dénominateurs,
-    # donc deux colonnes.
-    _ev = arb[arb["_evaluable"]]
+    # portent sur les lignes étiquetées, qui sont toutes celles de `scorable` :
+    # un seul dénominateur, donc une seule colonne `n`.
+    _ev = arb[arb["_scored"]]
     ptbl = (
         pd.concat(
             [
@@ -1404,7 +1788,6 @@ else:
     ptbl[acc_perim_col] = (100 * ptbl["acc"]).round(1)
     ptbl["≥1 source juste (%)"] = (100 * ptbl["src"]).round(1)
     ptbl["n"] = ptbl["n"].fillna(0).astype(int)
-    ptbl["n évaluable"] = ptbl["n_eval"].fillna(0).astype(int)
 
     display(Markdown(
         f"Sur **{n_arb:,}** observations tranchées (vérité terrain disponible) : "
@@ -1413,7 +1796,7 @@ else:
         f"totalement inédits (hors même du top-2/3 de TTC).".replace(",", " ")
     ))
     display(Markdown(
-        ptbl[["Périmètre", "n", "% arbitrées", "n évaluable", acc_perim_col,
+        ptbl[["Périmètre", "n", "% arbitrées", acc_perim_col,
               "≥1 source juste (%)"]]
         .to_markdown(index=False)
     ))
@@ -1421,8 +1804,8 @@ else:
     out = arb[~arb["_in_main"]]
     if len(out):
         # Une décision « manquée » suppose qu'on puisse la juger : restreint aux
-        # lignes évaluables, comme le tableau ci-dessus.
-        missed = out[out["_evaluable"] & out["_any_src_ok"] & ~out["_final_ok"]]
+        # lignes étiquetées, comme le tableau ci-dessus.
+        missed = out[out["_scored"] & out["_any_src_ok"] & ~out["_final_ok"]]
         display(Markdown(
             f"**Opportunités manquées :** parmi les {len(out):,} décisions hors périmètre, "
             f"**{len(missed):,}** ({len(missed) / len(out) * 100:.1f} %) sont fausses au niveau 4 "
@@ -1499,7 +1882,8 @@ else:
         url_from_artifact_uri(TRACKING_URI, TTC_MODEL_URI) if TTC_MODEL_URI else None,
         "`classify-ttc-model-uri` non renseignée pour ce run",
     )
-    if SIRUS_MODEL_URI:
+    _sirus_deja_liste = bool(SIRUS_MODEL_URI)
+    if _sirus_deja_liste:
         _ligne(
             "reconcile-sirus",
             "entraînement du modèle de règles, hors pipeline",
@@ -1507,8 +1891,15 @@ else:
             "",
         )
 
-    for etape in ("build-datasets", "classify-regex", "classify-lcs", "prune-codes",
-                  "reconcile-llm", "export-results"):
+    # L'étape de conciliation était écrite en dur `reconcile-llm` : un run SIRUS
+    # affichait donc une ligne pour une étape qui n'avait pas tourné. Et quand
+    # son entraînement vient d'être listé ci-dessus, on ne la répète pas — deux
+    # lignes du même nom pour deux choses différentes se lisent mal.
+    _etapes = ["build-datasets", "classify-regex", "classify-lcs", "prune-codes"]
+    if not _sirus_deja_liste:
+        _etapes.append(I.conciliation_step(FINAL_COL))
+    _etapes.append("export-results")
+    for etape in _etapes:
         _ligne(etape, "—", None, SANS_MLFLOW)
 
     md = (
@@ -1577,7 +1968,7 @@ Markdown(
 
 ## Récapitulatif
 
-Accuracy par niveau, sur les seules observations évaluables à ce niveau — le `n` de chaque colonne. Ces chiffres excluent les lignes captées par la regex : le chiffre livré, regex comprise, est en tête de rapport.
+Accuracy par niveau, sur toutes les observations étiquetées — même population à chaque niveau, les colonnes se comparent. Ces chiffres excluent les lignes captées par la regex : le chiffre livré, regex comprise, est en tête de rapport.
 
 ```{python}
 # | label: tbl-summary
@@ -1586,8 +1977,12 @@ for name, col in available_methods(scorable):
     row = {"méthode": name}
     for k in CANONICAL_LEVELS:
         _, n_app, acc = accuracy(scorable[TRUTH], scorable[col], k)
-        row[f"niv{k} (n={n_app})"] = acc
+        row[f"niv{k}"] = acc
     summary_rows.append(row)
 summ = pd.DataFrame(summary_rows).set_index("méthode")
-Markdown(summ.to_markdown(floatfmt=".1%"))
+Markdown(
+    f"Sur **{len(scorable):,} observations étiquetées**".replace(",", " ")
+    + ", à tous les niveaux.\n\n"
+    + summ.to_markdown(floatfmt=".1%")
+)
 ```

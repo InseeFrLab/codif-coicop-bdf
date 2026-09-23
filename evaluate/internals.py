@@ -19,7 +19,7 @@ rapport et MLflow ne peuvent pas diverger.
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import pandas as pd
 
@@ -169,6 +169,510 @@ def _read(con, path: Optional[str]) -> Optional[pd.DataFrame]:
     except Exception as exc:  # noqa: BLE001 — cf. docstring
         print(f"[evaluate] artefact illisible, ignoré : {path} ({exc})", flush=True)
         return None
+
+
+def _count(con, path: Optional[str], where: str = "") -> Optional[int]:
+    """Nombre de lignes d'un parquet, sans le charger. None si illisible.
+
+    `SELECT count(*)` et non `_read` : ces artefacts font la taille du jeu à
+    coder, et on n'en veut qu'un entier. Même tolérance que `_read`.
+    """
+    if not path:
+        return None
+    try:
+        clause = f" WHERE {where}" if where else ""
+        return int(con.sql(f"SELECT count(*) FROM read_parquet('{path}'){clause}").fetchone()[0])
+    except Exception as exc:  # noqa: BLE001 — cf. `_read`
+        print(f"[evaluate] artefact illisible, ignoré : {path} ({exc})", flush=True)
+        return None
+
+
+def input_counts(con, path: Optional[str]) -> Optional[dict]:
+    """Décompte du fichier d'entrée, écrit par `build-datasets`. None si absent.
+
+    Absent veut dire : run antérieur à l'introduction de cet artefact, ou run
+    lancé sans `--input-file`. Même contrat tolérant que `_read` — le rapport se
+    dégrade, il n'échoue pas.
+    """
+    frame = _read(con, path)
+    if frame is None or not len(frame):
+        return None
+    # pandas remonte en NaN ce que l'écrivain avait mis à None (`n_labelled` est
+    # nullable) : on le ramène à None pour que l'appelant teste une seule chose.
+    return {
+        k: (None if pd.isna(v) else v)
+        for k, v in frame.iloc[0].to_dict().items()
+    }
+
+
+def run_metadata_rows(counts: Optional[dict]) -> List[tuple]:
+    """Lignes « identité » du tableau de métadonnées.
+
+    Les VOLUMES n'y sont plus : ils vivent dans `funnel_rows`, qui les présente
+    en entonnoir. Deux tableaux plutôt qu'un parce qu'ils répondent à deux
+    questions — « quel run, sur quel fichier ? » et « qu'est devenu ce fichier ? ».
+    """
+    if counts is None:
+        return [(
+            "Fichier d'entrée",
+            "_(décompte absent : run antérieur à `build-datasets/input_counts.parquet`, "
+            "ou lancé sans `--input-file`)_",
+        )]
+    return [("Fichier d'entrée", f"`{counts['input_file']}`")]
+
+
+LLM_CODE_COL = "llm_code"
+
+
+def conciliation_step(final_col: str) -> str:
+    """Étape du pipeline qui a produit la décision finale de ce run.
+
+    Les deux conciliations sont exclusives : la déduire de la colonne évite
+    d'écrire `reconcile-llm` en dur dans un tableau qu'un run SIRUS affiche
+    aussi — c'est exactement le défaut que ce nom supprime.
+    """
+    return "reconcile-llm" if final_col == LLM_CODE_COL else "reconcile-sirus"
+
+
+def conciliation_rows(data, final_name: str, final_col: str) -> List[tuple]:
+    """Lignes de métadonnées propres à la conciliation qui a tranché ce run.
+
+    `llm_error` n'existe que chez `reconcile-llm`. La ligne DISPARAÎT sur un run
+    SIRUS au lieu d'afficher « pas de conciliation LLM sur ce run » : un rapport
+    n'a rien à dire d'une étape qui n'a pas tourné, et le lecteur d'un run SIRUS
+    n'a aucune raison de lire le mot « LLM » à propos de la conciliation.
+
+    Sur un run LLM dont la colonne manque (run ancien), la ligne est omise de la
+    même façon — il n'y a pas de décompte à donner.
+    """
+    rows = [("Conciliation", f"{final_name} (colonne `{final_col}`)")]
+    if final_col == LLM_CODE_COL and "llm_error" in data.columns:
+        rows.append((
+            "Erreurs LLM (`llm_error` non nul)",
+            str(int(data["llm_error"].notna().sum())),
+        ))
+    return rows
+
+
+def funnel_rows(
+    counts: Optional[dict],
+    *,
+    n_regex: Optional[int] = None,
+    n_chain: Optional[int] = None,
+    n_conciliation: Optional[int] = None,
+    n_scorable: Optional[int] = None,
+    n_deliverable: Optional[int] = None,
+) -> Optional[List[tuple]]:
+    """L'entonnoir : ce que devient le fichier d'entrée, étape par étape.
+
+    Répond à « combien de lignes sont écartées d'emblée, combien sont tranchées
+    par la regex, combien entrent vraiment dans la chaîne de codification ». Ces
+    trois volumes vivaient dans trois endroits différents du pipeline et nulle
+    part ensemble.
+
+    Renvoie des triplets `(étape, lignes, part)`. La part se rapporte au fichier
+    d'entrée ; sur un run antérieur à `input_counts`, elle se rapporte aux
+    observations retenues, et l'entonnoir démarre simplement plus bas.
+
+    Chaque ligne est omise si son compte manque : un artefact absent réduit
+    l'entonnoir, il ne le fait pas échouer.
+    """
+    def fmt(value: int) -> str:
+        return f"{int(value):,}".replace(",", " ")
+
+    base = counts["n_input_rows"] if counts else n_deliverable
+    if not base:
+        return None
+
+    def part(value: Optional[int]) -> str:
+        return "—" if value is None else f"{value / base:.1%}"
+
+    rows: List[tuple] = []
+    n_retenues = counts["n_observations"] if counts else n_deliverable
+
+    if counts:
+        rows.append(("**Fichier d'entrée**", f"**{fmt(counts['n_input_rows'])}**",
+                     part(counts["n_input_rows"])))
+        rows.append(("— écartées : libellé vide après nettoyage",
+                     fmt(counts["n_dropped_empty_label"]), part(counts["n_dropped_empty_label"])))
+        rows.append(("— écartées : **produit non codable**",
+                     fmt(counts["n_dropped_uncodable"]), part(counts["n_dropped_uncodable"])))
+        inexplique = (
+            counts["n_input_rows"] - counts["n_dropped_empty_label"]
+            - counts["n_dropped_uncodable"] - counts["n_observations"]
+        )
+        if inexplique:
+            rows.append(("— écartées : **cause non identifiée**",
+                         f"**{fmt(inexplique)}**", part(inexplique)))
+
+    rows.append(("**Observations retenues** = lignes du fichier livré",
+                 f"**{fmt(n_retenues)}**", part(n_retenues)))
+
+    # `export-results` part de TOUTES les observations et fusionne en `left` :
+    # les deux nombres sont égaux par construction, et la ligne ci-dessus
+    # l'affirme. Le jour où une jointure duplique, il faut le dire plutôt que de
+    # laisser l'entonnoir mentir avec assurance.
+    if counts and n_deliverable is not None and n_deliverable != counts["n_observations"]:
+        rows.append(("⚠️ lignes réellement dans le livrable",
+                     f"**{fmt(n_deliverable)}**", part(n_deliverable)))
+
+    if n_regex is not None:
+        rows.append(("— **codées par la regex**, hors chaîne", fmt(n_regex), part(n_regex)))
+    if n_chain is not None:
+        rows.append(("— **entrées dans la chaîne de codification**", fmt(n_chain), part(n_chain)))
+
+    # Ce qui n'est ni capté par la regex ni entré dans la chaîne a été retiré par
+    # `--sample-observations` (échantillonnage centralisé à classify-regex). Ne
+    # s'affiche que sur un run échantillonné, où c'est l'explication du reste.
+    if n_regex is not None and n_chain is not None and n_retenues is not None:
+        reste = n_retenues - n_regex - n_chain
+        if reste:
+            rows.append(("— retirées par l'échantillonnage", fmt(reste), part(reste)))
+
+    if n_conciliation is not None:
+        rows.append(("parvenues à la conciliation", fmt(n_conciliation), part(n_conciliation)))
+    if n_scorable is not None:
+        rows.append(("dont portant un code de référence (mesurables)",
+                     fmt(n_scorable), part(n_scorable)))
+    return rows
+
+
+def group_summary(
+    data: pd.DataFrame,
+    group_col: str,
+    *,
+    truth_col: str,
+    final_col: str,
+    levels: Sequence[int] = (1, 2, 4),
+    min_n: int = 1,
+) -> Optional[pd.DataFrame]:
+    """Accuracy de la conciliation ventilée par modalité de ``group_col``.
+
+    Conçue pour la provenance du produit (ticket de caisse, carnet papier,
+    saisie assistée), où la question n'est pas « quelle brique se trompe » mais
+    « quelle source de saisie coûte de la qualité ». D'où les colonnes :
+
+    - le **volume** et sa part, sans quoi un écart d'accuracy sur 12 lignes se
+      lit comme un écart sur 12 000 ;
+    - la **couverture** : une source peut faire chuter l'accuracy en produisant
+      des libellés que la chaîne refuse de coder, ce qui n'est pas le même
+      défaut que de les coder faux ;
+    - l'accuracy à plusieurs niveaux : une saisie pauvre dégrade souvent le
+      niveau 4 en laissant le niveau 1 intact (on sait que c'est de
+      l'alimentaire, pas quel poste) ;
+    - l'**écart au niveau 4 par rapport à l'ensemble**, en points : c'est lui
+      qui désigne où porter l'effort.
+
+    Renvoie None si la colonne est absente ou entièrement vide.
+    """
+    from codif_common.metrics import accuracy, answer_mask
+
+    if group_col not in data.columns or not data[group_col].notna().any():
+        return None
+
+    ref_level = levels[-1]
+    _, _, acc_ensemble = accuracy(data[truth_col], data[final_col], ref_level)
+
+    rows = []
+    for value, sub in data.groupby(group_col, dropna=False):
+        row = {
+            group_col: value,
+            "n": len(sub),
+            "part": len(sub) / len(data),
+            "couverture": float(answer_mask(sub[final_col]).mean()),
+        }
+        for k in levels:
+            _, _, acc = accuracy(sub[truth_col], sub[final_col], k)
+            row[f"accuracy niv{k}"] = acc
+        row["écart / ensemble"] = (
+            row[f"accuracy niv{ref_level}"] - acc_ensemble
+            if pd.notna(row[f"accuracy niv{ref_level}"]) and pd.notna(acc_ensemble)
+            else None
+        )
+        rows.append(row)
+
+    out = pd.DataFrame(rows)
+    out = out[out["n"] >= min_n].sort_values("n", ascending=False)
+    return out if len(out) else None
+
+
+def division_labels(con, path: Optional[str]) -> Dict[str, str]:
+    """Libellés des divisions COICOP, lus dans la nomenclature du run.
+
+    ``{"01": "Produits alimentaires et boissons non alcoolisées", …}``. Un code
+    de division est un code à **un seul segment** : on filtre là-dessus plutôt
+    que sur la colonne ``type``, dont les libellés dépendent de la version du
+    fichier source.
+
+    Renvoie un dictionnaire vide si la nomenclature est absente ou n'a pas les
+    colonnes attendues — les tableaux affichent alors le code seul. Un libellé
+    manquant ne doit jamais faire échouer un rapport de mesure.
+    """
+    frame = _read(con, path)
+    if frame is None or not {"code", "label_fr"} <= set(frame.columns):
+        return {}
+    codes = frame["code"].astype("string")
+    divisions = frame[codes.notna() & ~codes.str.contains(".", regex=False)]
+    return {
+        str(r["code"]): str(r["label_fr"])
+        for _, r in divisions.iterrows()
+        if pd.notna(r["label_fr"])
+    }
+
+
+def label_division(code: str, labels: Dict[str, str], *, width: int = 48) -> str:
+    """``"01"`` → ``"01 — Produits alimentaires et boissons non alcoolisées"``."""
+    if code is None:
+        return "— (aucun code émis)"
+    libelle = labels.get(str(code))
+    if not libelle:
+        return str(code)
+    if len(libelle) > width:
+        libelle = libelle[: width - 1].rstrip() + "…"
+    return f"{code} — {libelle}"
+
+
+def accuracy_by_predicted_division(
+    data: pd.DataFrame,
+    *,
+    truth_col: str,
+    final_col: str,
+    labels: Optional[Dict[str, str]] = None,
+    target_level: int = 4,
+) -> Optional[pd.DataFrame]:
+    """« Quand le pipeline prédit de l'alimentaire, a-t-il le bon code ? »
+
+    Regroupe par la division **prédite**, et non par la division vraie. Les deux
+    tableaux se ressemblent et répondent à des questions opposées :
+
+    - par division **vraie** : « parmi les vrais produits alimentaires, combien
+      sont bien codés ? » — c'est ce qu'on veut savoir pour juger la couverture
+      d'un domaine ;
+    - par division **prédite** (ici) : « parmi les produits que la chaîne dit
+      alimentaires, combien le sont vraiment, et combien ont le bon code
+      complet ? » — c'est la question opérationnelle, celle qu'on se pose devant
+      un fichier livré, quand la vérité n'est pas connue.
+
+    Deux taux, dans cet ordre de lecture : la division prédite est-elle la bonne,
+    puis le code complet l'est-il. Le second ne peut pas dépasser le premier —
+    avoir le bon code de niveau 4 suppose la bonne division.
+
+    Les lignes sans code émis forment leur propre groupe : elles ne sont pas une
+    division, mais leur volume fait partie de la lecture.
+    """
+    from codif_common.metrics import accuracy, code_parts
+
+    labels = labels or {}
+    div = data[final_col].map(lambda c: code_parts(c)[0] if code_parts(c) else None)
+    work = data.assign(_div=div)
+
+    rows = []
+    for value, sub in work.groupby("_div", dropna=False):
+        value = None if pd.isna(value) else value
+        n_ok1, _, acc1 = accuracy(sub[truth_col], sub[final_col], 1)
+        n_ok4, _, acc4 = accuracy(sub[truth_col], sub[final_col], target_level)
+        rows.append({
+            "division prédite": label_division(value, labels),
+            "n prédits": len(sub),
+            "part des prédictions": len(sub) / len(work),
+            "bonne division": acc1,
+            f"bon code niv{target_level}": acc4,
+        })
+    if not rows:
+        return None
+    return pd.DataFrame(rows).sort_values("n prédits", ascending=False)
+
+
+def accuracy_by_predicted_division_per_source(
+    data: pd.DataFrame,
+    *,
+    truth_col: str,
+    sources: List[Tuple[str, str]],
+    labels: Optional[Dict[str, str]] = None,
+    target_level: int = 4,
+) -> Optional[pd.DataFrame]:
+    """La même question que ci-dessus, posée à chaque brique séparément.
+
+    « Quand LCS annonce de l'alimentaire, a-t-il le bon code ? Et TTC ? » Le
+    tableau de la décision finale dit ce que vaut l'annonce du pipeline ; celui-ci
+    dit d'où elle vient. Une division où toutes les sources s'effondrent est un
+    problème de nomenclature ou de libellés ; une division où une seule source
+    décroche est un problème de brique — et les deux n'appellent pas le même
+    correctif.
+
+    Chaque source est regroupée par SA PROPRE division prédite : une ligne
+    n'agrège donc pas les mêmes observations d'une colonne à l'autre, et c'est le
+    point. D'où le `n` dans chaque cellule — sans lui, une accuracy calculée sur
+    trois observations se lirait comme un résultat.
+
+    Le `n` d'une cellule est le nombre d'observations que cette source a rangées
+    dans cette division **et** qui portent une vérité : c'est le dénominateur de
+    l'accuracy affichée à côté, pas le volume prédit.
+    """
+    from codif_common.metrics import accuracy, code_parts
+
+    labels = labels or {}
+    sources = [(name, col) for name, col in sources if col in data.columns]
+    if not sources:
+        return None
+
+    def _division(code):
+        parts = code_parts(code)
+        return parts[0] if parts else None
+
+    cells: Dict[Tuple[Optional[str], str], str] = {}
+    volumes: Dict[Optional[str], int] = {}
+    for name, col in sources:
+        work = data.assign(_div=data[col].map(_division))
+        for value, sub in work.groupby("_div", dropna=False):
+            key = None if pd.isna(value) else value
+            _, n, acc = accuracy(sub[truth_col], sub[col], target_level)
+            # Une cellule sans vérité terrain n'a pas d'accuracy à montrer ; le
+            # tiret la distingue d'un zéro, qui serait un résultat.
+            cells[(key, name)] = f"{acc:.1%} ({n})" if n else "—"
+            volumes[key] = volumes.get(key, 0) + len(sub)
+
+    # Les divisions par volume décroissant, l'abstention en dernier : ce n'est
+    # pas une division, seulement un volume qu'on ne veut pas perdre de vue.
+    order = sorted(volumes, key=lambda k: (k is None, -volumes[k], str(k)))
+
+    rows = []
+    for key in order:
+        row = {"division prédite": label_division(key, labels)}
+        for name, _ in sources:
+            row[name] = cells.get((key, name), "—")
+        rows.append(row)
+    return pd.DataFrame(rows) if rows else None
+
+
+def arbitration_merit(
+    data: pd.DataFrame,
+    *,
+    truth_col: str,
+    final_col: str,
+    sources: List[Tuple[str, str]],
+    candidates_col: str = "sirus_n_candidats",
+    target_level: int = 4,
+) -> Optional[dict]:
+    """Ce que vaut la conciliation là où elle a réellement choisi.
+
+    Restreint aux produits à **au moins deux candidats**. Ailleurs il n'y avait
+    rien à trancher : l'accuracy y mesure les classifieurs amont, pas la
+    conciliation, et l'agréger avec le reste la flatte.
+
+    Sur ce sous-ensemble, trois chiffres qui se lisent ensemble et encadrent la
+    conciliation entre un plancher et un plafond :
+
+    - **plancher** — tirer un candidat au hasard. Pour chaque produit, la
+      probabilité de tomber juste vaut ``1/n`` si la vérité figure parmi les
+      candidats, ``0`` sinon : un seul candidat peut égaler la vérité, donc le
+      calcul est exact et n'a aucune règle de départage à inventer ;
+    - **accuracy** de la conciliation ;
+    - **plafond** — au moins un classifieur proposait la bonne réponse. Au-delà,
+      aucune conciliation ne peut faire mieux : il faudrait un meilleur candidat
+      en amont. C'est l'``upper_bound`` de `reconcile-sirus`, recalculée ici sur
+      les données du run.
+
+    ``capture`` = accuracy / plafond répond à la question posée : de ce qui était
+    atteignable, quelle part la conciliation est-elle allée chercher. Un modèle
+    qui ne ferait que suivre le hasard aurait une accuracy au niveau du plancher.
+
+    Les candidats sont reconstruits depuis les colonnes des classifieurs — ce
+    sont les codes distincts qu'ils ont proposés. Ils peuvent différer de
+    ``candidates_col``, qui ne compte que les candidats **scorables** par le
+    modèle : le plafond est donc bien ce qui était atteignable en principe, et
+    non ce que le modèle avait le droit de regarder.
+    """
+    from codif_common.metrics import code_parts
+
+    cols = [col for _, col in sources if col in data.columns]
+    if not cols or candidates_col not in data.columns or final_col not in data.columns:
+        return None
+
+    n_cand = pd.to_numeric(data[candidates_col], errors="coerce")
+    sub = data[n_cand >= 2]
+    if sub.empty:
+        return None
+
+    def _key(value, k=target_level):
+        return ".".join(code_parts(value)[:k]) or None
+
+    truth = sub[truth_col].map(_key)
+    scored = truth.notna()
+    if not scored.any():
+        return None
+
+    sub = sub[scored]
+    truth = truth[scored]
+    proposals = pd.DataFrame({col: sub[col].map(_key) for col in cols})
+
+    juste_parmi = proposals.eq(truth, axis=0).any(axis=1)
+    # Nombre de candidats DISTINCTS réellement proposés, recompté ici : c'est le
+    # dénominateur du tirage au sort, et il doit correspondre aux codes qu'on
+    # vient de comparer à la vérité.
+    n_distincts = proposals.nunique(axis=1, dropna=True).clip(lower=1)
+
+    accuracy = float(sub[final_col].map(_key).eq(truth).mean())
+    plafond = float(juste_parmi.mean())
+    plancher = float((juste_parmi / n_distincts).mean())
+    return {
+        "n": int(len(sub)),
+        "n_total": int(len(data)),
+        "plancher": plancher,
+        "accuracy": accuracy,
+        "plafond": plafond,
+        "capture": accuracy / plafond if plafond else None,
+    }
+
+
+def distortion_level1(
+    data: pd.DataFrame, *, truth_col: str, final_col: str
+) -> Optional[dict]:
+    """Distorsion entre la distribution VRAIE et la distribution PRÉDITE au niveau 1.
+
+    Question différente de l'accuracy : celle-ci demande « chaque produit est-il
+    bien codé ? », celle-là « la répartition par division ressemble-t-elle à la
+    vraie ? ». Les deux se séparent dès que les erreurs se **compensent** — mille
+    produits à tort en 01 et mille à tort hors de 01 laissent la distribution
+    intacte et l'accuracy au sol. C'est la différence entre un agrégat
+    exploitable et une codification individuelle juste.
+
+    Réutilise ``rag_annotations.eval.distribution_distortion`` (le TV et la KL y
+    sont déjà implémentés et testés) et lui ajoute ce qui rend le chiffre
+    lisible : les erreurs brutes, et la part d'entre elles qui se compensent.
+
+    Renvoie None si aucune ligne n'est mesurable.
+    """
+    from codif_common.metrics import accuracy
+    from rag_annotations.eval import distribution_distortion
+
+    records = [
+        {"code": t, "code_predict": p}
+        for t, p in zip(data[truth_col], data[final_col])
+    ]
+    dist = distribution_distortion(records, level=1)
+    if not dist["n"]:
+        return None
+
+    n_ok, n, _ = accuracy(data[truth_col], data[final_col], 1)
+    erreurs_brutes = n - n_ok
+    # TV × n : le nombre de produits qu'il faudrait DÉPLACER d'une division à
+    # l'autre pour que la distribution prédite coïncide avec la vraie. C'est la
+    # lecture exacte de la distance en variation totale, pas une approximation.
+    deplacements = dist["tv_distance"] * dist["n"]
+    return {
+        **dist,
+        "n_scored": n,
+        "erreurs_brutes": erreurs_brutes,
+        "deplacements": deplacements,
+        # Part des erreurs de division qui s'annulent entre elles. 0 % : toutes
+        # les erreurs vont dans le même sens, l'agrégat est biaisé d'autant.
+        # 90 % : la distribution est presque juste malgré des erreurs
+        # individuelles nombreuses.
+        "compensation": (
+            1 - deplacements / erreurs_brutes if erreurs_brutes else None
+        ),
+    }
 
 
 def load_classifier_records(
@@ -540,7 +1044,7 @@ def end_to_end(
         [
             {
                 "niveau": k,
-                "n évaluable": ensemble[k][1],
+                "n": ensemble[k][1],
                 "justes": ensemble[k][0],
                 "accuracy livrée": ensemble[k][2],
                 **(
@@ -574,7 +1078,7 @@ def end_to_end(
                     "source": src,
                     "n livré": len(sub),
                     "part du livré": len(sub) / len(merged),
-                    f"n évaluable niv{TARGET_LEVEL}": n_app,
+                    "n avec vérité": n_app,
                     f"accuracy niv{TARGET_LEVEL}": acc,
                 }
             )

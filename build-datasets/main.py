@@ -112,17 +112,34 @@ def merge_shop_types(df: pd.DataFrame, shops_mapping: pd.DataFrame) -> pd.DataFr
 
 
 def normalize_products(
-    df: pd.DataFrame, uncodable_products, stopwords, logger
+    df: pd.DataFrame, uncodable_products, stopwords, logger, counts=None
 ) -> pd.DataFrame:
     """Normalise les libellés produits, retire les non codables, attribue un UUID.
 
     Deux variantes de libellé sont produites :
     - `l_pr_product` : normalisation *légère* (`normalize_text`) — utilisée par les modèles ;
     - `s_pr_product` : normalisation *forte* (`preprocess_text`) — utilisée par les regex.
+
+    `counts`, s'il est fourni, est rempli avec les deux retraits de lignes opérés
+    ici. C'est un paramètre de sortie plutôt qu'une valeur de retour parce que
+    cette fonction sert aussi au pipeline ANNOTATIONS, qui n'en a pas besoin :
+    la signature reste compatible avec cet appel-là.
+
+    Attention à l'ORDRE, il est contre-intuitif : les libellés devenus vides
+    partent AVANT les produits non codables. Les deux comptes ne commutent pas.
     """
     df["l_pr_product"] = normalize_text(df["raw_product"])
     df["s_pr_product"] = df["l_pr_product"].copy()
+    n_in = len(df)
+    # `preprocess_text` retire au passage les lignes dont le libellé ne survit
+    # pas au nettoyage (ponctuation, chiffres, mots d'une lettre) : un produit
+    # nommé « 12 » ou « A » disparaît ici, sans autre trace que ce compte.
     df = preprocess_text(df, "s_pr_product", stopwords)
+    n_after_clean = len(df)
+    logger.info(
+        f"Libellés vides après nettoyage retirés : {n_in - n_after_clean} "
+        f"({n_in} → {n_after_clean} lignes)"
+    )
 
     # Les produits non codables sont comparés sur `raw_product` après normalisation
     # de la liste de référence (cohérent entre annotations et observations).
@@ -133,6 +150,14 @@ def normalize_products(
         f"Produits non codables retirés : {before - len(df)} "
         f"({before} → {len(df)} lignes)"
     )
+
+    if counts is not None:
+        counts.update(
+            n_input_rows=n_in,
+            n_dropped_empty_label=n_in - n_after_clean,
+            n_dropped_uncodable=n_after_clean - len(df),
+            n_observations=len(df),
+        )
 
     df["id"] = [str(uuid.uuid4()) for _ in range(len(df))]
     return df
@@ -268,7 +293,13 @@ def build_suggester(suggester, stopwords, logger):
 # Prépare les libellés à coder (sans vérité terrain).
 # ---------------------------------------------------------------------------
 def build_observations(args, con, shops_mapping, uncodable_products, stopwords, logger):
-    """Préprocesse le fichier d'observations à coder (mode prédiction)."""
+    """Préprocesse le fichier d'observations à coder (mode prédiction).
+
+    Renvoie `(observations, counts)`. Le second est le décompte du fichier
+    d'entrée : c'est la seule trace du nombre de lignes brutes, qu'aucun artefact
+    aval ne permet de retrouver puisque les lignes retirées ne sont écrites nulle
+    part.
+    """
     logger.info(f"Mode prédiction activé. Chargement du fichier : {args.input_file}")
     df = load_input_file(args.input_file, con)
     logger.info(f"{len(df)} lignes chargées depuis le fichier d'entrée")
@@ -293,8 +324,14 @@ def build_observations(args, con, shops_mapping, uncodable_products, stopwords, 
         }
     )
 
+    counts = {
+        "run_id": args.run_id,
+        "run_date": args.run_date,
+        "input_file": args.input_file,
+        "n_labelled": None,
+    }
     df = merge_shop_types(df, shops_mapping)
-    df = normalize_products(df, uncodable_products, stopwords, logger)
+    df = normalize_products(df, uncodable_products, stopwords, logger, counts=counts)
     logger.info(f"{len(df)} lignes après prétraitement")
 
     # La vérité terrain, quand le fichier d'entrée en porte une : elle traverse
@@ -308,6 +345,7 @@ def build_observations(args, con, shops_mapping, uncodable_products, stopwords, 
             )
         df = df.rename(columns={args.label_column: "code"})
         n_labelled = int(df["code"].notna().sum())
+        counts["n_labelled"] = n_labelled
         logger.info(f"Étiquettes reprises depuis « {args.label_column} » : {n_labelled} lignes")
 
     # Aligne le schéma sur celui des annotations pour que l'aval ne plante pas.
@@ -327,7 +365,24 @@ def build_observations(args, con, shops_mapping, uncodable_products, stopwords, 
             df[col] = default
 
     df["_source_input_file"] = args.input_file
-    return df
+
+    # L'identité doit fermer. Si elle ne ferme pas, quelqu'un a ajouté un filtre
+    # sans toucher au compteur : on le dit fort, mais on n'échoue PAS. Cette
+    # étape produit le seul jeu à coder du pipeline, elle ne meurt pas sur une
+    # ligne de comptabilité — le rapport affichera « écart non expliqué ».
+    attendu = (
+        counts["n_input_rows"] - counts["n_dropped_empty_label"]
+        - counts["n_dropped_uncodable"]
+    )
+    if attendu != counts["n_observations"]:
+        logger.warning(
+            "Décompte du fichier d'entrée incohérent : "
+            f"{counts['n_input_rows']} lues − {counts['n_dropped_empty_label']} libellés "
+            f"vides − {counts['n_dropped_uncodable']} non codables = {attendu}, mais "
+            f"{counts['n_observations']} observations écrites. Un filtre a été ajouté "
+            "sans mettre à jour `normalize_products`."
+        )
+    return df, counts
 
 
 def main():
@@ -406,13 +461,23 @@ def main():
     # Pipeline OBSERVATIONS (si un fichier d'entrée est fourni)
     # -----------------------------------------------------------------------
     if args.input_file:
-        observations = build_observations(
+        observations, counts = build_observations(
             args, con, shops_mapping, uncodable_products, stopwords, logger
         )
         export_parquet_s3(observations, f"{output_root}/observations.parquet")
         logger.info(
             f"Fichier d'observations à coder exporté : {output_root}/observations.parquet "
             f"({len(observations)} lignes)"
+        )
+
+        # Le décompte du fichier d'entrée, écrit ici parce que c'est la seule
+        # étape qui le lit : aucun artefact aval ne permet de le retrouver, les
+        # lignes retirées n'étant écrites nulle part. Lu par `evaluate`, qui
+        # affiche l'écart entrée / livrable dans les métadonnées de son rapport.
+        export_parquet_s3(pd.DataFrame([counts]), f"{output_root}/input_counts.parquet")
+        logger.info(
+            f"Décompte du fichier d'entrée exporté : {output_root}/input_counts.parquet "
+            f"({counts['n_input_rows']} lignes lues → {counts['n_observations']} retenues)"
         )
 
     logger.info("Fin du preprocessing.")

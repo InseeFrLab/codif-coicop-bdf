@@ -10,12 +10,14 @@
 # --- Code source ----------------------------------------------------------
 # Branche du dépôt clonée par tous les steps (défaut YAML: main).
 # La mettre sur une feature branch permet de tester sans merger dans main.
-git-branch: refactor
+git-branch: main
 
 # --- Input ----------------------------------------------------------------
 # OBLIGATOIRE. Le pipeline n'a plus qu'un mode : il code ce fichier.
 # input_file: s3://projet-budget-famille/data/workflow_inputs/BDF_data_saisie_vague1_a_codif.csv
-input_file: s3://projet-budget-famille/data/annotations_vague1_2026/as_new_input/annotations_vague1_2026_a_codif.parquet
+# input_file: s3://projet-budget-famille/data/annotations_vague1_2026/as_new_input/annotations_vague1_2026_a_codif.parquet
+input_file: s3://projet-budget-famille/data/workflow_inputs/BDF_data_flash_copy_20260917_a_codif.parquet
+
 
 text_column: NAT_DEP        # label column to classify
 shop_column: MAG_DEP        # shop column
@@ -77,4 +79,4 @@ report-experiment: codif-coicop-eval
 reconciliation: sirus
 
 # Modèle SIRUS chargé par reconcile-sirus, OBLIGATOIRE si reconciliation: sirus.
-reconcile-sirus-model-uri: "mlflow-artifacts:/15/312f69aff83943de97b3a91b1f4185fa/artifacts/model/"
+reconcile-sirus-model-uri: "mlflow-artifacts:/15/c0c0ab52a6e94a4684691d2e1ef10127/artifacts/model/"

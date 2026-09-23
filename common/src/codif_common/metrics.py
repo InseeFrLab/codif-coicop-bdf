@@ -40,9 +40,14 @@ CONCILIATIONS = [
 ]
 LEVELS = [1, 2, 3, 4, 5]
 
-# Canonical codes never exceed 4 segments (level 5 is truncated away by the
-# `prune` step), so no row is ever evaluable at level 5: a level-5 column would
-# be structurally empty. `LEVELS` is kept for the runs predating `code_lvl4`.
+# Les codes canoniques ne dépassent jamais 4 segments (le niveau 5 est tronqué
+# par `prune-codes`). Tronquer à 5 ne tronque donc rien : une colonne niv5
+# reproduirait niv4 à l'identique.
+#
+# Nuance, si une prédiction portait un jour 5 segments : niv5 en différerait,
+# mais il la compterait fausse face à une vérité de 4 segments — il mesurerait
+# la profondeur de la prédiction, pas son exactitude. Seconde raison de ne pas
+# le publier. `LEVELS` reste pour les runs antérieurs à `code_lvl4`.
 CANONICAL_LEVELS = [1, 2, 3, 4]
 
 # Ground-truth columns produced by reconcile-llm: the raw annotation, and its
@@ -60,6 +65,25 @@ REGIME_COL = "llm_model"
 CONSENSUS_LABEL = "consensus"
 # (label affiché, suffixe de métrique MLflow)
 REGIMES = [("Consensus", "consensus"), ("Arbitré", "arbitrated")]
+
+# reconcile-sirus a le même biais, par un autre mécanisme. Ses candidats sont les
+# codes DISTINCTS proposés par les 4 classifieurs : quand ceux-ci s'accordent, il
+# n'en reste qu'un et l'argmax ne peut que le retenir. Ces produits gonflent
+# l'accuracy de SIRUS sans qu'aucun choix ait été fait — le mérite est celui des
+# briques amont. `sirus_n_candidats` (écrit par `pick_best`) compte les candidats
+# SCORABLES, donc `0` désigne les produits dont tous les candidats ont été
+# écartés par le modèle, et `>= 2` les seuls où SIRUS a réellement tranché.
+SIRUS_REGIME_COL = "sirus_n_candidats"
+# Le suffixe `arbitrated` est partagé avec le juge LLM : c'est la même notion —
+# « la conciliation a effectivement choisi » — et cela rend les séries MLflow des
+# deux conciliations comparables d'un run à l'autre. Les deux autres suffixes
+# sont propres à SIRUS : un candidat unique n'est PAS un consensus LLM, qui exige
+# en plus une confiance TTC >= 0,90.
+SIRUS_REGIMES = [
+    ("Aucun candidat", "no_candidate"),
+    ("Candidat unique", "single_candidate"),
+    ("Choix réel", "arbitrated"),
+]
 # Niveau auquel le découpage par régime est rapporté (niveau cible de l'enquête),
 # partagé par report.qmd et main.py pour que les deux ne divergent pas.
 REGIME_LEVEL = 4
@@ -142,44 +166,71 @@ def code_parts(s) -> list[str]:
 def level_result(truth: str, pred: str, k: int):
     """Return True/False/None for one observation at level ``k``.
 
-    Convention **stricte**, et c'est désormais la seule du dépôt : une
-    observation dont la vérité compte moins de ``k`` segments n'est pas
-    évaluable à ce niveau et renvoie ``None`` — elle sort du dénominateur. Le
-    ``n`` décroît donc avec ``k``, et les niveaux ne se comparent pas entre eux
-    (voir ``truth_depth_distribution`` pour la population que chaque niveau
-    écarte).
+    **La règle, et c'est toute la règle** : on tronque la vérité et la
+    prédiction à leurs ``k`` premiers segments, et on teste l'égalité.
 
-    Deux propriétés dont dépend ``coverage_table``, à ne pas casser :
+    Il n'y a pas de notion d'observation « non évaluable ». Une vérité plus
+    courte que ``k`` est tronquée à elle-même et reste mesurée : un Poste peu
+    profond correctement codé est **juste**, là où l'ancienne convention stricte
+    le retirait du dénominateur. Le ``n`` ne dépend donc plus de ``k`` et les
+    niveaux se comparent entre eux.
 
-    - ``None`` ne dépend **que de la vérité**, jamais de la prédiction. Le
-      sous-ensemble évaluable au niveau ``k`` est donc le même pour toutes les
-      méthodes ;
-    - toute prédiction plus courte que ``k`` — abstention, chaîne vide, ou
-      sentinelle textuelle du genre ``"N/A"``, qui ne compte qu'un segment — est
-      une **erreur**, pas une exclusion. Autrement dit « juste ⇒ a répondu ».
+    Ce que la règle coûte, et il faut le savoir en lisant le niveau 4 : vérité
+    ``01.4``, prédiction ``01.4.3.1`` → juste au niveau 2, **faux** au niveau 4.
+    Une prédiction plus fine que la vérité n'est plus créditée au-delà de la
+    profondeur de celle-ci. Cela concerne près d'un quart des Postes (voir
+    ``truth_depth_distribution``, et ``docs/prune-codes.qmd``).
+
+    ``None`` a un seul sens désormais : **pas de vérité du tout**. La garde
+    ``if not tp`` est structurelle, pas cosmétique —
+
+    - une vérité absente n'est pas une prédiction ratée, c'est une ligne qu'on
+      ne peut pas juger ;
+    - sans elle, ``[] == []`` vaudrait ``True`` et « pas de vérité + pas de
+      prédiction » compterait comme un succès.
+
+    ``code_parts`` ramenant déjà ``None``, ``NaN``, ``""`` et ``"   "`` à
+    ``[]``, cette garde couvre toutes les formes d'absence.
+
+    Deux propriétés dont dépend ``coverage_table``, toutes deux conservées :
+
+    - ``None`` ne dépend **que de la vérité**, jamais de la prédiction — la
+      sous-population mesurée est la même pour toutes les méthodes ;
+    - **« juste ⇒ a répondu »** : une abstention donne ``pp[:k] == []`` alors
+      que ``tp[:k]`` est non vide dès que la ligne est jugeable, et une
+      sentinelle textuelle donne ``["N/A"]``, jamais égal à un segment COICOP.
+      Les deux ne peuvent donc pas être égaux : une abstention reste une
+      **erreur**.
     """
     tp = code_parts(truth)
     pp = code_parts(pred)
-    if len(tp) < k:
+    if not tp:
         return None
-    if len(pp) < k:
-        return False
     return tp[:k] == pp[:k]
 
 
 def accuracy_series(truth: pd.Series, pred: pd.Series, k: int) -> pd.Series:
     """Series of True/False/NA indexed like truth.
 
-    ``dtype="object"`` et non ``bool`` : le ``None`` des lignes non évaluables
+    ``dtype="object"`` et non ``bool`` : le ``None`` des lignes **sans vérité**
     doit survivre. Attention chez l'appelant — ``serie == True`` écrase ces
-    ``None`` en ``False`` et compte donc comme fausses des lignes qui ne sont
-    pas mesurables. Filtrer sur ``.notna()`` **avant** de comparer.
+    ``None`` en ``False`` et compte donc comme fausses des lignes qu'on ne peut
+    pas juger. Filtrer sur ``.notna()`` **avant** de comparer.
+
+    Sur un jeu déjà filtré (le ``scorable`` de ``evaluate``, qui retire les
+    vérités nulles et vides) il ne reste plus **aucun** ``None``.
     """
     out = [level_result(t, p, k) for t, p in zip(truth, pred)]
     return pd.Series(out, index=truth.index, dtype="object")
 
 
 def accuracy(truth: pd.Series, pred: pd.Series, k: int) -> tuple[int, int, float]:
+    """``(n_justes, n, accuracy)`` au niveau ``k``.
+
+    Le ``n`` renvoyé est **constant en ``k``** : c'est le nombre de lignes
+    portant une vérité, pas une population qui rétrécit avec la profondeur. Ne
+    pas l'afficher par niveau (cf. ``accuracy_table``).
+    """
     s = accuracy_series(truth, pred, k)
     applicable = s.notna()
     n_app = int(applicable.sum())
@@ -190,9 +241,14 @@ def accuracy(truth: pd.Series, pred: pd.Series, k: int) -> tuple[int, int, float
 def accuracy_table(data: pd.DataFrame, *, levels: list[int] | None = None) -> pd.DataFrame:
     """Accuracy per method and per level, scored against ``truth_column(data)``.
 
-    Le ``n`` est porté par l'en-tête de chaque colonne parce qu'il **change d'un
-    niveau à l'autre** : c'est la population évaluable à ce niveau-là. Deux
-    colonnes ne se comparent donc pas entre elles.
+    Les colonnes **se comparent entre elles** : elles portent toutes sur la même
+    population (les lignes ayant une vérité), puisque le ``n`` ne dépend plus du
+    niveau. Il n'est donc plus dans les en-têtes — l'appelant l'annonce une fois
+    dans sa prose.
+
+    Une accuracy qui **baisse** avec ``k`` est dès lors un vrai signal : la
+    codification se dégrade en profondeur, ou les prédictions sont plus fines
+    que la vérité. Ce n'est plus un artefact de sélection.
     """
     truth = data[truth_column(data)]
     levels = levels or LEVELS
@@ -200,8 +256,8 @@ def accuracy_table(data: pd.DataFrame, *, levels: list[int] | None = None) -> pd
     for name, col in available_methods(data):
         row = {"méthode": name}
         for k in levels:
-            _, n_app, acc = accuracy(truth, data[col], k)
-            row[f"niv{k} (n={n_app})"] = acc
+            _, _, acc = accuracy(truth, data[col], k)
+            row[f"niv{k}"] = acc
         rows.append(row)
     return pd.DataFrame(rows).set_index("méthode")
 
@@ -223,22 +279,22 @@ def coverage_table(data: pd.DataFrame, k: int = REGIME_LEVEL) -> pd.DataFrame:
     coder. Le premier demande un meilleur modèle, le second une meilleure
     couverture.
 
-    Les trois grandeurs partagent **un seul dénominateur** — les lignes
-    évaluables au niveau ``k``, c'est-à-dire celles dont la vérité atteint ``k``
-    segments — et c'est ce qui rend la décomposition exacte :
+    Les trois grandeurs partagent **un seul dénominateur** — les lignes portant
+    une vérité, les mêmes à tous les niveaux — et c'est ce qui rend la
+    décomposition exacte :
 
         accuracy globale = couverture × accuracy sur les réponses
 
-    Elle tient parce qu'une abstention reste une **erreur** sous la convention
-    stricte (aucun code ne fait ``k`` segments) : le numérateur des deux
-    accuracies est le même entier, seuls les dénominateurs diffèrent.
+    Elle tient parce qu'une abstention reste une **erreur** (cf.
+    ``level_result`` : une abstention ne peut pas égaler une vérité jugeable) :
+    le numérateur des deux accuracies est le même entier, seuls les
+    dénominateurs diffèrent.
 
-    Le piège, si l'on rapporte la couverture à ``len(data)`` comme le faisait la
-    version inclusive : les deux facteurs ne portent plus sur la même
-    population et le produit cesse de retomber sur l'accuracy globale, **sans
-    qu'aucune erreur ne soit levée**. Les lignes dont la vérité est trop peu
-    profonde sortent des trois grandeurs, leurs abstentions comprises — d'où la
-    colonne ``n évaluable``, sans laquelle la couverture se lit de travers.
+    Le piège, si l'on rapporte la couverture à ``len(data)`` : les lignes
+    **sans vérité** sortent des trois grandeurs, abstentions comprises. Les deux
+    facteurs ne portent alors plus sur la même population et le produit cesse de
+    retomber sur l'accuracy globale, **sans qu'aucune erreur ne soit levée** —
+    d'où la colonne ``n``, sans laquelle la couverture se lit de travers.
     """
     truth = data[truth_column(data)]
     rows = []
@@ -246,10 +302,10 @@ def coverage_table(data: pd.DataFrame, k: int = REGIME_LEVEL) -> pd.DataFrame:
         pred = data[col]
         res = accuracy_series(truth, pred, k)
         # `notna()` ne dépend que de la vérité (cf. level_result) : même
-        # sous-population évaluable pour toutes les méthodes.
-        evaluable = res.notna()
-        n_eval = int(evaluable.sum())
-        answered = evaluable & answer_mask(pred)
+        # sous-population pour toutes les méthodes, et à tous les niveaux.
+        scored = res.notna()
+        n_eval = int(scored.sum())
+        answered = scored & answer_mask(pred)
         n_ans = int(answered.sum())
         # Compté sur `answered` et non sur `evaluable` : « juste ⇒ a répondu »
         # est vrai, mais l'écrire ainsi rend l'identité vraie par construction
@@ -258,7 +314,7 @@ def coverage_table(data: pd.DataFrame, k: int = REGIME_LEVEL) -> pd.DataFrame:
         rows.append(
             {
                 "méthode": name,
-                f"n évaluable niv{k}": n_eval,
+                "n": n_eval,
                 "couverture": (n_ans / n_eval) if n_eval else float("nan"),
                 "abstentions": n_eval - n_ans,
                 f"accuracy niv{k} sur réponses": (n_ok / n_ans) if n_ans else float("nan"),
@@ -290,12 +346,10 @@ def declared_refusal_table(data: pd.DataFrame, k: int = REGIME_LEVEL) -> pd.Data
                 # (aucun code n'a k segments) : on la laisse vide plutôt que
                 # d'afficher un chiffre qui n'apporte rien.
                 #
-                # `n` compte la cellule entière, `n évaluable` le dénominateur
-                # réel de l'accuracy : sous la convention stricte les deux
-                # diffèrent, et sans la seconde colonne un lecteur divise l'une
-                # par l'autre. La cellule qui fait l'intérêt du tableau — refus
-                # déclaré ET code émis — est petite par nature ; c'est là que
-                # l'écart se voit le plus.
+                # `n` compte la cellule entière, `n avec vérité` le
+                # dénominateur réel de l'accuracy : les deux ne diffèrent que
+                # par les lignes sans vérité, mais sans la seconde colonne un
+                # lecteur divise l'une par l'autre.
                 acc = float("nan")
                 n_app = 0
                 if ans_label == "code émis" and mask.any():
@@ -306,7 +360,7 @@ def declared_refusal_table(data: pd.DataFrame, k: int = REGIME_LEVEL) -> pd.Data
                         "drapeau": f"{flag} = {decl_label}",
                         "sortie": ans_label,
                         "n": int(mask.sum()),
-                        f"n évaluable niv{k}": n_app,
+                        "n avec vérité": n_app,
                         f"accuracy niv{k}": acc,
                     }
                 )
@@ -316,29 +370,61 @@ def declared_refusal_table(data: pd.DataFrame, k: int = REGIME_LEVEL) -> pd.Data
 
 
 def regime_masks(data: pd.DataFrame) -> list[tuple[str, str, pd.Series]] | None:
-    """Split ``data`` into consensus vs judge-arbitrated rows.
+    """Découpe ``data`` par régime de décision de la conciliation.
 
-    Returns ``[(label, metric_suffix, mask), …]``, or None when ``REGIME_COL`` is
-    absent (runs produced before reconcile-llm tagged the regime).
+    Renvoie ``[(label, suffixe de métrique, masque), …]``, ou None quand aucune
+    colonne de régime n'est présente (runs antérieurs au marquage).
+
+    Les deux conciliations ont le même biais — une part des lignes est décidée
+    sans que la conciliation choisisse quoi que ce soit — mais ne le portent pas
+    dans la même colonne :
+
+    - `reconcile-llm` marque le court-circuit consensus dans ``llm_model`` ;
+    - `reconcile-sirus` n'a pas de court-circuit, mais un produit dont les
+      classifieurs s'accordent ne laisse qu'un candidat, et l'argmax ne peut que
+      le retenir. ``sirus_n_candidats`` dit combien de candidats le modèle avait
+      réellement devant lui.
+
+    L'ordre de préférence n'est pas arbitraire : les deux colonnes ne coexistent
+    pas (les conciliations sont exclusives), et si elles coexistaient, c'est la
+    décision effectivement retenue par le run qui primerait.
     """
-    if REGIME_COL not in data.columns:
-        return None
-    consensus = data[REGIME_COL] == CONSENSUS_LABEL
-    masks = {"consensus": consensus, "arbitrated": ~consensus}
-    return [(label, suffix, masks[suffix]) for label, suffix in REGIMES]
+    if REGIME_COL in data.columns:
+        consensus = data[REGIME_COL] == CONSENSUS_LABEL
+        masks = {"consensus": consensus, "arbitrated": ~consensus}
+        return [(label, suffix, masks[suffix]) for label, suffix in REGIMES]
+
+    if SIRUS_REGIME_COL in data.columns:
+        n = pd.to_numeric(data[SIRUS_REGIME_COL], errors="coerce")
+        # Un compte manquant (run ancien, ligne non jointe) tombe avec `0` : il
+        # n'a pas de code, donc il n'a pas non plus été arbitré. Le compter comme
+        # un choix réel gonflerait précisément le chiffre qu'on cherche à isoler.
+        masks = {
+            "no_candidate": n.isna() | (n <= 0),
+            "single_candidate": n == 1,
+            "arbitrated": n >= 2,
+        }
+        return [(label, suffix, masks[suffix]) for label, suffix in SIRUS_REGIMES]
+
+    return None
 
 
 def regime_accuracy_table(data: pd.DataFrame, k: int = 4) -> pd.DataFrame | None:
     """Accuracy at level ``k`` per method, split by arbitration regime.
 
-    The pooled figures mix two regimes that measure different things. On the
-    consensus rows the judge was never called and ``llm_code`` *is* TTC top-1, so
-    the LLM and TTC columns are identical there by construction — those rows say
-    nothing about the judge while pulling both figures up (they are the easy
-    cases, selected on TTC confidence). Only the arbitrated subset compares the
-    judge with the sources it actually arbitrated.
+    Les chiffres agrégés mélangent des régimes qui ne mesurent pas la même chose,
+    et dans les deux conciliations la colonne « Ensemble » est en partie acquise
+    d'avance :
 
-    Returns None when the regime column is absent.
+    - juge LLM : sur les lignes de consensus il n'a jamais été appelé et
+      ``llm_code`` *est* ``ttc_code_1``. Ces lignes ne disent rien du juge tout
+      en tirant les deux colonnes vers le haut — ce sont les cas faciles,
+      sélectionnés sur la confiance de TTC ;
+    - SIRUS : sur les produits à candidat unique il n'y avait rien à choisir.
+
+    Seule la colonne « Arbitré » / « Choix réel » mesure la conciliation.
+
+    Renvoie None quand aucune colonne de régime n'est présente.
     """
     masks = regime_masks(data)
     if masks is None:
@@ -350,6 +436,13 @@ def regime_accuracy_table(data: pd.DataFrame, k: int = 4) -> pd.DataFrame | None
         _, n_all, acc_all = accuracy(truth, data[col], k)
         row[f"Ensemble (n={n_all})"] = acc_all
         for label, _suffix, mask in masks:
+            # Un régime vide ne produit pas de colonne : SIRUS en déclare trois,
+            # et « aucun candidat » est souvent à zéro. La colonne n'afficherait
+            # que des `nan%` — du bruit là où il n'y a rien à dire. MLflow, lui,
+            # continue de loguer le compte à zéro : c'est une information utile
+            # dans une série temporelle, pas dans un tableau.
+            if not mask.any():
+                continue
             sub = data[mask]
             _, n_sub, acc_sub = accuracy(sub[truth_column(data)], sub[col], k)
             row[f"{label} (n={n_sub})"] = acc_sub
@@ -360,11 +453,12 @@ def regime_accuracy_table(data: pd.DataFrame, k: int = 4) -> pd.DataFrame | None
 def truth_depth_distribution(truth: pd.Series) -> dict:
     """How deep the ground truth actually goes.
 
-    C'est ce qui explique le ``n`` décroissant des tableaux d'accuracy : au
-    niveau ``k``, les lignes dont la vérité compte moins de ``k`` segments ne
-    sont pas évaluables et sortent du dénominateur. Sans ce décompte, un lecteur
-    ne peut pas savoir si une accuracy de niveau 4 porte sur toute la population
-    ou sur un quart.
+    C'est la clé de lecture du niveau 4, et elle répond à « d'où vient la chute
+    entre niv3 et niv4 ? ». Les lignes dont la vérité compte moins de ``k``
+    segments restent mesurées (il n'y a plus de ``n`` décroissant), mais ce sont
+    exactement celles où une prédiction **plus fine que la vérité** est comptée
+    fausse. Sans ce décompte, un lecteur ne peut pas distinguer une codification
+    qui se dégrade en profondeur d'une annotation qui s'arrête avant.
     """
     depths = [len(code_parts(t)) for t in truth]
     depths = [d for d in depths if d]

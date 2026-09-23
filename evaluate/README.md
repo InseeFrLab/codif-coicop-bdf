@@ -104,8 +104,8 @@ Testé par `tests/test_truth.py`.
 
 | Destination | Contenu |
 |---|---|
-| `…/{run}/evaluate/evaluation_report.html` | le rapport, HTML auto-contenu |
-| MLflow (`--experiment-name`, `codif-coicop-eval` par défaut) | l'accuracy par méthode et par niveau avec son dénominateur (`accuracy_*` et `n_evaluable_*`), `truth_shallower_than_niv<k>_count`, `llm_prompt_tokens_total`, `llm_latency_s_mean`, et toute la décomposition interne (`retrieval/…`, `regime/…`, `confidence/…`, `codable/…`, `distortion/…`) |
+| `…/{run}/evaluate/evaluation_report.html` | le rapport, HTML auto-contenu. Il ventile l'accuracy par division COICOP **prédite** — pour la décision finale, puis pour chaque classifieur pris séparément, ce qui distingue un problème de nomenclature (toutes les sources s'effondrent) d'un problème de brique (une seule décroche). Il ne décrit que la conciliation qui a tranché ce run, déduite de ses colonnes (`llm_code` / `sirus_code`) et non du `--reconciliation` reçu : sur un run SIRUS, les sections propres au juge LLM — régime consensus/arbitré, calibration du score 1 à 5 — disparaissent, titre compris, au lieu d'afficher « sans objet » ; et réciproquement |
+| MLflow (`--experiment-name`, `codif-coicop-eval` par défaut) | l'accuracy par méthode et par niveau (`accuracy_*` ; son dénominateur ne dépend plus ni de la méthode ni du niveau, c'est `n_scorable`), `truth_shallower_than_niv<k>_count`, la volumétrie du fichier d'entrée (`n_input_rows`, `n_dropped_*`, `n_observations`), `llm_prompt_tokens_total`, `llm_latency_s_mean`, l'accuracy par **régime de décision** (`accuracy_<méthode>_niv4_<régime>` : `consensus`/`arbitrated` en conciliation LLM, `no_candidate`/`single_candidate`/`arbitrated` en SIRUS — le suffixe `arbitrated` est partagé exprès, c'est la même notion et les deux runs doivent se comparer), et toute la décomposition interne (`retrieval/…`, `regime/…`, `confidence/…`, `codable/…`, `distortion/…`) |
 
 L'expérience est **distincte** de celle du rapport de production : les deux ne mesurent pas la
 même chose et n'ont pas le même schéma de métriques.
@@ -115,7 +115,9 @@ même chose et n'ont pas le même schéma de métriques.
 `evaluation_report.qmd` (ex-`report/report.qmd`) lit ses entrées via des variables
 d'environnement plutôt que des paramètres Quarto : `EVAL_DECIDE_PATH`,
 `EVAL_RAGNOTICES_PATH`, `EVAL_RETRIEVED_PATH`, `EVAL_RAGANN_PATH`,
-`EVAL_DELIVERABLE_PATH`, `EVAL_OBSERVATIONS_PATH`, `EVAL_MAPPING_PATH`, `EVAL_RUN_ID`,
+`EVAL_DELIVERABLE_PATH`, `EVAL_OBSERVATIONS_PATH`, `EVAL_INPUT_COUNTS_PATH`,
+`EVAL_REGEX_PATH`, `EVAL_WITHOUT_REGEX_PATH`, `EVAL_NOMENCLATURE_PATH`,
+`EVAL_MAPPING_PATH`, `EVAL_RUN_ID`,
 `EVAL_RUN_DATE`, `EVAL_SOURCE_COLUMN`. `main.py` les positionne avant d'appeler `quarto render` ; pour itérer
 sur le gabarit en local, les exporter soi-même et rendre le `.qmd` directement.
 
@@ -126,7 +128,7 @@ n'importe quelle prédiction :
 
 | Module | Ce qu'il apporte |
 |---|---|
-| [`common/`](../common/) | `codif_common.metrics` : accuracy par niveau (convention stricte, la seule), couverture, régimes, `final_decision` ; `codif_common.tracking` : URLs de runs MLflow |
+| [`common/`](../common/) | `codif_common.metrics` : accuracy par niveau (troncature des deux codes puis égalité — la règle unique), couverture, régimes, `final_decision` ; `codif_common.tracking` : URLs de runs MLflow |
 | [`rag-notices/`](../rag-notices/) | les 5 filtres, le recall de retrieval, l'accuracy de génération conditionnelle |
 | [`rag-annotations/`](../rag-annotations/) | AUROC, distorsion de distribution (TV et KL), fiabilité du `codable`, `accuracy_by_source` |
 | [`prune-codes/`](../prune-codes/) | vocabulaire de code COICOP (troncature, sentinelles d'abstention) |

@@ -40,36 +40,61 @@ class TestTruthColumn:
         assert truth_column(df) == TRUTH_COL_RAW
 
 
-class TestStrictConvention:
-    def test_shallow_truth_is_excluded(self):
-        """Vérité de profondeur 2 : non évaluable aux niveaux 3 et 4."""
-        assert level_result("01.3", "01.3", 2) is True
-        assert level_result("01.3", "01.3", 3) is None
-        assert level_result("01.3", "01.3", 4) is None
+class TestTruncateAndCompare:
+    """La règle unique : tronquer les deux codes à `k`, comparer. C'est tout."""
+
+    def test_shallow_truth_is_still_scored(self):
+        """Une vérité de profondeur 2 n'est plus écartée : tronquée à elle-même,
+        elle est mesurée — et juste si la prédiction lui est égale. C'est le
+        gain du changement, un Poste peu profond bien codé compte."""
+        for k in [2, 3, 4]:
+            assert level_result("01.3", "01.3", k) is True
+
+    def test_a_prediction_finer_than_the_truth_is_wrong_below_its_depth(self):
+        """Le cas qui a motivé la règle, et ce qu'elle coûte : `01.4.3.1` face à
+        une vérité `01.4` est juste tant qu'on ne descend pas sous la profondeur
+        de la vérité, faux ensuite."""
+        assert level_result("01.4", "01.4.3.1", 1) is True
+        assert level_result("01.4", "01.4.3.1", 2) is True
+        assert level_result("01.4", "01.4.3.1", 3) is False
+        assert level_result("01.4", "01.4.3.1", 4) is False
 
     def test_shorter_prediction_is_an_error(self):
         assert level_result("01.1.1.3", "01.1.1", 4) is False
 
     def test_deeper_prediction_matching_prefix_is_correct(self):
+        """Tant que la vérité atteint `k`, une prédiction plus fine reste juste :
+        la troncature des DEUX côtés les égalise. Ce n'est pas une survivance de
+        la règle du préfixe — au-delà de la profondeur de la vérité, le test
+        ci-dessus montre qu'elle devient fausse."""
         assert level_result("01.1.1", "01.1.1.3", 3) is True
 
-
     def test_missing_truth_is_unscorable(self):
-        assert level_result(None, "01.3", 4) is None
+        """Le SEUL cas de None désormais : pas de vérité, donc rien à juger."""
+        for absent in [None, "", "   ", float("nan")]:
+            assert level_result(absent, "01.3", 4) is None
 
-    def test_level_5_is_structurally_empty_on_canonical_truth(self):
-        """Les codes canoniques ont au plus 4 segments : aucune ligne n'est
-        évaluable au niveau 5. C'est ce qui justifie STRICT_LEVELS =
-        CANONICAL_LEVELS dans le rapport."""
+    def test_empty_truth_and_empty_prediction_are_not_a_match(self):
+        """La garde `if not tp` prise de face : sans elle, `[] == []` vaudrait
+        True et « pas de vérité + pas de prédiction » compterait comme un
+        succès. C'est la seule subtilité du nouveau code."""
+        assert level_result(None, None, 4) is None
+        assert level_result("", "", 4) is None
+
+    def test_level_5_duplicates_level_4_on_canonical_codes(self):
+        """Les codes canoniques ont au plus 4 segments : tronquer à 5 ne tronque
+        rien, niv5 reproduirait niv4. C'est ce qui justifie
+        STRICT_LEVELS = CANONICAL_LEVELS dans le rapport."""
         for truth in ["01.3", "01.1.1.3"]:
-            assert level_result(truth, truth, 5) is None
+            assert level_result(truth, truth, 5) is level_result(truth, truth, 4)
+            assert level_result(truth, truth, 5) is True
 
-    def test_deeper_prediction_is_not_scored_when_the_truth_is_shallow(self):
-        """Perte assumée du passage à la convention unique : dans l'espace pruné
-        `01.3.0.1` désigne un code qui n'existe pas si la vérité canonique est
-        `01.3`, mais la ligne n'est simplement pas comptée au niveau 4."""
-        assert level_result("01.3", "01.3.0.1", 4) is None
-        assert level_result("01.3", "01.3.0.1", 2) is True
+    def test_level_5_would_measure_prediction_depth_not_correctness(self):
+        """La nuance, et la seconde raison de ne pas publier le niveau 5 : face à
+        une prédiction à 5 segments, niv5 la compte fausse alors que niv4 la
+        compte juste. Il mesurerait la profondeur, pas l'exactitude."""
+        assert level_result("01.1.1.3", "01.1.1.3.2", 4) is True
+        assert level_result("01.1.1.3", "01.1.1.3.2", 5) is False
 
     def test_a_correct_row_is_always_an_answered_row(self):
         """Le lemme sur lequel repose l'identité de `coverage_table` : toute
@@ -90,26 +115,32 @@ class TestDenominators:
             }
         )
 
-    def test_strict_denominator_shrinks_with_depth(self):
+    def test_denominator_does_not_move_with_depth(self):
+        """Le `n` ne dépend plus de `k` : c'est le nombre de lignes portant une
+        vérité (4 sur 5 ici, la dernière n'en a pas). Les colonnes du rapport
+        deviennent donc comparables entre elles."""
         df = self._frame()
         _, n2, _ = accuracy(df[TRUTH_COL_CANONICAL], df["llm_code"], 2)
         _, n4, _ = accuracy(df[TRUTH_COL_CANONICAL], df["llm_code"], 4)
-        assert n2 == 4 and n4 == 2
+        assert n2 == n4 == 4
 
-    def test_shallow_rows_leave_the_denominator(self):
+    def test_shallow_truth_stays_in_the_denominator(self):
         df = self._frame()
-        # Niveau 4 : seules les deux lignes 01.1.1.3 sont évaluables. L'une est
-        # juste, l'autre trop courte (01.1.1) => 1/2. Les deux lignes 01.3
-        # (profondeur 2) sortent du dénominateur au lieu d'y entrer comme
-        # erreurs.
-        assert accuracy(df[TRUTH_COL_CANONICAL], df["llm_code"], 4) == (1, 2, 0.5)
+        # Niveau 4, les quatre lignes étiquetées : `01.3`/`01.3` juste (les deux
+        # tronquées valent elles-mêmes), `01.3`/`01.4` faux, `01.1.1.3` juste,
+        # `01.1.1.3`/`01.1.1` faux (prédiction trop courte) => 2/4.
+        # Sous l'ancienne convention les deux lignes `01.3` sortaient et le
+        # résultat était (1, 2, 0.5) : même accuracy, population deux fois plus
+        # petite.
+        assert accuracy(df[TRUTH_COL_CANONICAL], df["llm_code"], 4) == (2, 4, 0.5)
 
 
 class TestTables:
     def test_accuracy_table_uses_canonical_truth(self):
-        """Scorer contre l'annotation brute compterait fausse une prédiction
-        canonique correcte. La vérité canonique `01.3` n'est pas évaluable au
-        niveau 3 ; la brute `01.3.0.0.1` l'est, et y juge `01.3` fausse."""
+        """Scorer contre l'annotation brute compte fausse une prédiction
+        canonique correcte : au niveau 3 la vérité canonique `01.3` égale la
+        prédiction `01.3`, tandis que la brute `01.3.0.0.1` tronquée donne
+        `01.3.0` et la juge fausse."""
         df = pd.DataFrame(
             {
                 TRUTH_COL_RAW: ["01.3.0.0.1"],
@@ -117,15 +148,15 @@ class TestTables:
                 "llm_code": ["01.3"],
             }
         )
-        assert list(accuracy_table(df, levels=[3]).columns) == ["niv3 (n=0)"]
+        assert accuracy_table(df, levels=[3]).loc["LLM", "niv3"] == 1.0
         legacy = accuracy_table(df.drop(columns=[TRUTH_COL_CANONICAL]), levels=[3])
-        assert legacy.loc["LLM", "niv3 (n=1)"] == 0.0
+        assert legacy.loc["LLM", "niv3"] == 0.0
 
-    def test_strict_table_reports_per_level_counts(self):
+    def test_table_columns_are_one_per_level(self):
+        """Plus de `(n=…)` dans les en-têtes : le `n` est le même partout, le
+        répéter inviterait à lire des populations différentes."""
         df = pd.DataFrame({TRUTH_COL_CANONICAL: ["01.3"], "llm_code": ["01.3"]})
-        cols = list(accuracy_table(df).columns)
-        assert cols[0] == "niv1 (n=1)"
-        assert cols[3] == "niv4 (n=0)"
+        assert list(accuracy_table(df).columns) == ["niv1", "niv2", "niv3", "niv4", "niv5"]
 
 
 class TestAbstention:
@@ -144,9 +175,10 @@ class TestAbstention:
         """Quatre observations évaluables au niveau 4 : deux codes justes, un code
         faux, une abstention.
 
-        Les quatre vérités atteignent la profondeur 4 délibérément : une vérité
-        plus courte ferait sortir la ligne d'abstention du dénominateur avant
-        qu'on ait pu l'observer, et le tableau ne mesurerait plus rien.
+        Les quatre vérités atteignent la profondeur 4 délibérément : sur une
+        vérité plus courte, une prédiction à 4 segments serait comptée fausse et
+        le tableau mesurerait la profondeur des annotations autant que la
+        couverture. Ici il ne mesure que la couverture.
         """
         return pd.DataFrame(
             {
@@ -159,10 +191,10 @@ class TestAbstention:
         """L'identité qui justifie le tableau : une abstention est une erreur
         (aucun code ne fait 4 segments), donc globale = couverture × sur
         réponses — à condition que les trois grandeurs partagent le dénominateur
-        des lignes évaluables."""
+        des lignes portant une vérité."""
         tbl = coverage_table(self._frame(), 4)
         row = tbl.loc["LLM"]
-        assert row["n évaluable niv4"] == 4
+        assert row["n"] == 4
         assert row["couverture"] == 0.75
         assert row["abstentions"] == 1
         assert row["accuracy niv4 sur réponses"] == 2 / 3
@@ -184,9 +216,9 @@ class TestAbstention:
         assert tbl.loc["LLM", "accuracy niv4 globale"] == 0.5
 
     def test_declared_flag_is_crossed_with_the_emitted_code(self):
-        # Vérité de profondeur 4 : avec une vérité plus courte la colonne
-        # accuracy serait entièrement vide et le test n'exercerait plus qu'un
-        # comptage.
+        # Vérité de profondeur 4 : avec une vérité plus courte, les codes émis à
+        # 4 segments seraient tous comptés faux et le test mesurerait la
+        # profondeur des annotations au lieu du croisement drapeau × sortie.
         df = pd.DataFrame(
             {
                 TRUTH_COL_CANONICAL: ["01.3.1.1"] * 4,
@@ -203,11 +235,11 @@ class TestAbstention:
             & (tbl["sortie"] == "code émis")
         ]
         assert int(contradiction["n"].iloc[0]) == 1
-        # `n` compte la cellule, `n évaluable` le dénominateur de l'accuracy.
+        # `n` compte la cellule, `n avec vérité` le dénominateur de l'accuracy.
         emitted = tbl[
             (tbl["drapeau"] == "ragann_codable = codable") & (tbl["sortie"] == "code émis")
         ]
-        assert int(emitted["n évaluable niv4"].iloc[0]) == 1
+        assert int(emitted["n avec vérité"].iloc[0]) == 1
         assert float(emitted["accuracy niv4"].iloc[0]) == 1.0
 
     def test_no_flag_column_yields_none(self):
@@ -219,13 +251,22 @@ class TestCoverageDecomposition:
     """Le dénominateur partagé de `coverage_table`.
 
     Ces tests existent parce que l'erreur est silencieuse : rapporter la
-    couverture à `len(data)` plutôt qu'aux lignes évaluables laisse le tableau
-    se rendre normalement, avec un produit qui ne retombe plus sur l'accuracy
-    globale.
+    couverture à `len(data)` plutôt qu'aux lignes portant une vérité laisse le
+    tableau se rendre normalement, avec un produit qui ne retombe plus sur
+    l'accuracy globale.
     """
 
     def test_identity_holds_at_every_level(self):
-        df = TestAbstention._frame()
+        # Une ligne SANS vérité en plus des quatre étiquetées : sans elle le
+        # dénominateur vaudrait trivialement `len(data)` et le test ne mordrait
+        # plus sur ce qu'il prétend vérifier.
+        df = pd.concat(
+            [
+                TestAbstention._frame(),
+                pd.DataFrame({TRUTH_COL_CANONICAL: [None], "llm_code": ["09.9.9.9"]}),
+            ],
+            ignore_index=True,
+        )
         for k in CANONICAL_LEVELS:
             row = coverage_table(df, k).loc["LLM"]
             if not row["couverture"]:
@@ -234,11 +275,11 @@ class TestCoverageDecomposition:
                 row["couverture"] * row[f"accuracy niv{k} sur réponses"]
             ), k
 
-    def test_shallow_truth_takes_its_abstention_with_it(self):
-        """Le piège : une abstention sur une ligne dont la vérité est trop peu
-        profonde n'est pas comptée dans les abstentions au niveau k. La
-        couverture affichée est donc celle du sous-ensemble évaluable, et non
-        celle du fichier."""
+    def test_shallow_truth_keeps_its_abstention(self):
+        """Le piège s'est inversé. Une abstention sur une ligne dont la vérité
+        est peu profonde était retirée du calcul avec sa ligne, ce qui gonflait
+        la couverture affichée ; elle y reste désormais. La couverture est celle
+        de toutes les lignes étiquetées."""
         df = pd.DataFrame(
             {
                 TRUTH_COL_CANONICAL: ["01.1.1.3", "03.2"],
@@ -246,17 +287,17 @@ class TestCoverageDecomposition:
             }
         )
         row = coverage_table(df, 4).loc["LLM"]
-        assert row["n évaluable niv4"] == 1
-        assert row["abstentions"] == 0
-        assert row["couverture"] == 1.0
+        assert row["n"] == 2
+        assert row["abstentions"] == 1
+        assert row["couverture"] == 0.5
 
     def test_accuracy_series_keeps_the_unscorable_rows_apart(self):
-        """`accuracy_series` renvoie None, pas False, sur une ligne non
-        évaluable. Un appelant qui écrit `serie == True` écrase ces None en
-        False et compte comme fausses des lignes qui ne sont pas mesurables :
-        c'est exactement ce que `coverage_table` évite en filtrant d'abord."""
+        """`accuracy_series` renvoie None, pas False, sur une ligne SANS VÉRITÉ.
+        Un appelant qui écrit `serie == True` écrase ces None en False et compte
+        comme fausses des lignes qu'on ne peut pas juger : c'est exactement ce
+        que `coverage_table` évite en filtrant d'abord."""
         res = accuracy_series(
-            pd.Series(["01.1.1.3", "03.2"]), pd.Series(["01.1.1.3", "03.2"]), 4
+            pd.Series(["01.1.1.3", None]), pd.Series(["01.1.1.3", "03.2"]), 4
         )
         assert list(res) == [True, None]
         assert list(res == True) == [True, False]  # noqa: E712
@@ -270,9 +311,10 @@ class TestRegimes:
         trois arbitrages : le juge casse deux bons codes TTC et en répare un.
         TTC arbitré = 2/3, LLM arbitré = 1/3, LLM d'ensemble = 3/5.
 
-        Les cinq vérités atteignent la profondeur 4 : sous la convention stricte
-        une vérité plus courte sortirait du dénominateur au niveau 4 et les
-        effectifs annoncés ci-dessus ne tiendraient plus.
+        Les cinq vérités atteignent la profondeur 4 : sur une vérité plus courte,
+        les codes TTC à 4 segments seraient comptés faux au niveau 4 et les
+        effectifs annoncés ci-dessus ne tiendraient plus. Le test mesurerait la
+        profondeur des annotations au lieu du partage consensus / arbitrage.
         """
         return pd.DataFrame(
             {
@@ -378,3 +420,79 @@ def test_total_uses_llm_conciliation_when_it_ran():
     out = parse_step_timings(raw)
     assert out["codification_total_seconds"] == 300.0
     assert "duration_reconcile_sirus_seconds" not in out
+
+
+class TestSirusRegimes:
+    """SIRUS n'a pas de court-circuit, mais il a le même biais par un autre
+    chemin : quand les classifieurs s'accordent il ne reste qu'un candidat, et
+    l'argmax ne peut que le retenir. Ces produits gonflent son accuracy sans
+    qu'aucun choix ait été fait."""
+
+    @staticmethod
+    def _frame():
+        """Cinq produits : un sans candidat scorable, deux à candidat unique
+        (tous deux justes — ce sont les cas faciles), deux à choix réel dont un
+        seul est juste. Ensemble 3/5 = 60 % (l'abstention du premier compte comme
+        une erreur, règle unique du dépôt) ; sur le choix réel, 1/2 = 50 %."""
+        return pd.DataFrame(
+            {
+                "code_lvl4": ["01.1.1.1", "01.2.2.2", "01.3.3.3", "02.1.1.1", "02.2.2.2"],
+                "sirus_code": [None, "01.2.2.2", "01.3.3.3", "02.1.1.1", "02.9.9.9"],
+                "sirus_n_candidats": [0, 1, 1, 3, 2],
+            }
+        )
+
+    def test_three_regimes_instead_of_two(self):
+        masks = regime_masks(self._frame())
+        assert [label for label, _s, _m in masks] == [
+            "Aucun candidat", "Candidat unique", "Choix réel",
+        ]
+        assert [int(m.sum()) for _l, _s, m in masks] == [1, 2, 2]
+
+    def test_the_arbitrated_suffix_is_shared_with_the_judge(self):
+        """Même nom de série MLflow dans les deux conciliations : « la
+        conciliation a effectivement choisi » est la même notion, et les deux
+        runs doivent se comparer."""
+        suffixes = [s for _l, s, _m in regime_masks(self._frame())]
+        assert suffixes == ["no_candidate", "single_candidate", "arbitrated"]
+
+    def test_the_easy_cases_inflate_the_pooled_figure(self):
+        """LE chiffre qui motive le découpage : 75 % à l'ensemble, 50 % là où
+        SIRUS a réellement tranché."""
+        tbl = regime_accuracy_table(self._frame(), 4)
+        assert tbl.loc["SIRUS", "Ensemble (n=5)"] == 0.6
+        assert tbl.loc["SIRUS", "Candidat unique (n=2)"] == 1.0
+        assert tbl.loc["SIRUS", "Choix réel (n=2)"] == 0.5
+
+    def test_a_missing_count_is_not_an_arbitration(self):
+        """Une ligne non jointe tombe avec « aucun candidat ». La compter comme
+        un choix réel gonflerait précisément le chiffre qu'on isole."""
+        frame = self._frame()
+        frame.loc[4, "sirus_n_candidats"] = None
+        masks = dict((s, m) for _l, s, m in regime_masks(frame))
+        assert int(masks["arbitrated"].sum()) == 1
+        assert int(masks["no_candidate"].sum()) == 2
+
+    def test_the_judge_column_wins_when_both_exist(self):
+        """Les conciliations sont exclusives ; si les deux colonnes coexistaient,
+        c'est la décision du run qui prime, pas le compte de candidats."""
+        frame = self._frame().assign(**{REGIME_COL: CONSENSUS_LABEL})
+        assert [label for label, _s, _m in regime_masks(frame)] == ["Consensus", "Arbitré"]
+
+
+class TestEmptyRegimeColumn:
+    def test_an_empty_regime_produces_no_column(self):
+        """SIRUS déclare trois régimes et « aucun candidat » est souvent vide :
+        la colonne n'afficherait que des `nan%`. MLflow continue de loguer le
+        compte à zéro — utile dans une série, pas dans un tableau."""
+        frame = pd.DataFrame(
+            {
+                "code_lvl4": ["01.1.1.1", "01.2.2.2"],
+                "sirus_code": ["01.1.1.1", "01.9.9.9"],
+                "sirus_n_candidats": [1, 2],
+            }
+        )
+        cols = list(regime_accuracy_table(frame, 4).columns)
+        assert cols == ["Ensemble (n=2)", "Candidat unique (n=1)", "Choix réel (n=1)"]
+        # Le masque, lui, existe toujours : c'est le tableau qui l'omet.
+        assert [label for label, _s, _m in regime_masks(frame)][0] == "Aucun candidat"
