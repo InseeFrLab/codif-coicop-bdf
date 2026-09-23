@@ -135,3 +135,44 @@ class TestFunnelRows:
         qui ne s'additionnent pas."""
         rows = I.funnel_rows({**COUNTS, "n_observations": 850}, n_deliverable=850)
         assert "50" in _value(rows, "non identifiée")
+
+
+class TestConciliationRows:
+    """Les métadonnées ne doivent pas parler d'une conciliation qui n'a pas
+    tourné. La ligne `llm_error` affichait « — (pas de conciliation LLM sur ce
+    run) » sur tous les runs SIRUS : une ligne vide dont le seul contenu était
+    le nom de l'étape absente."""
+
+    @staticmethod
+    def _llm():
+        return pd.DataFrame({"llm_code": ["01.1.1.1", None], "llm_error": ["timeout", None]})
+
+    @staticmethod
+    def _sirus():
+        return pd.DataFrame({"sirus_code": ["01.1.1.1", None], "sirus_proba": [0.8, 0.2]})
+
+    def test_a_sirus_run_never_mentions_the_judge(self):
+        rows = I.conciliation_rows(self._sirus(), "SIRUS", "sirus_code")
+        assert len(rows) == 1
+        assert "LLM" not in " ".join(lbl for lbl, _ in rows)
+
+    def test_an_llm_run_still_counts_its_errors(self):
+        rows = I.conciliation_rows(self._llm(), "LLM", "llm_code")
+        assert _value(rows, "Erreurs LLM") == "1"
+
+    def test_the_conciliation_line_names_its_column(self):
+        assert "sirus_code" in I.conciliation_rows(self._sirus(), "SIRUS", "sirus_code")[0][1]
+
+    def test_an_old_llm_run_without_the_column_omits_the_line(self):
+        """Pas de décompte à donner : on n'affiche pas une ligne pour dire zéro."""
+        frame = pd.DataFrame({"llm_code": ["01.1.1.1"]})
+        assert len(I.conciliation_rows(frame, "LLM", "llm_code")) == 1
+
+
+class TestConciliationStep:
+    """L'étape était écrite en dur dans le tableau de traçabilité, qui listait
+    donc `reconcile-llm` sur un run SIRUS."""
+
+    def test_resolves_both_modes(self):
+        assert I.conciliation_step("llm_code") == "reconcile-llm"
+        assert I.conciliation_step("sirus_code") == "reconcile-sirus"

@@ -19,7 +19,7 @@ rapport et MLflow ne peuvent pas diverger.
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import pandas as pd
 
@@ -219,6 +219,39 @@ def run_metadata_rows(counts: Optional[dict]) -> List[tuple]:
             "ou lancé sans `--input-file`)_",
         )]
     return [("Fichier d'entrée", f"`{counts['input_file']}`")]
+
+
+LLM_CODE_COL = "llm_code"
+
+
+def conciliation_step(final_col: str) -> str:
+    """Étape du pipeline qui a produit la décision finale de ce run.
+
+    Les deux conciliations sont exclusives : la déduire de la colonne évite
+    d'écrire `reconcile-llm` en dur dans un tableau qu'un run SIRUS affiche
+    aussi — c'est exactement le défaut que ce nom supprime.
+    """
+    return "reconcile-llm" if final_col == LLM_CODE_COL else "reconcile-sirus"
+
+
+def conciliation_rows(data, final_name: str, final_col: str) -> List[tuple]:
+    """Lignes de métadonnées propres à la conciliation qui a tranché ce run.
+
+    `llm_error` n'existe que chez `reconcile-llm`. La ligne DISPARAÎT sur un run
+    SIRUS au lieu d'afficher « pas de conciliation LLM sur ce run » : un rapport
+    n'a rien à dire d'une étape qui n'a pas tourné, et le lecteur d'un run SIRUS
+    n'a aucune raison de lire le mot « LLM » à propos de la conciliation.
+
+    Sur un run LLM dont la colonne manque (run ancien), la ligne est omise de la
+    même façon — il n'y a pas de décompte à donner.
+    """
+    rows = [("Conciliation", f"{final_name} (colonne `{final_col}`)")]
+    if final_col == LLM_CODE_COL and "llm_error" in data.columns:
+        rows.append((
+            "Erreurs LLM (`llm_error` non nul)",
+            str(int(data["llm_error"].notna().sum())),
+        ))
+    return rows
 
 
 def funnel_rows(
@@ -448,6 +481,148 @@ def accuracy_by_predicted_division(
     if not rows:
         return None
     return pd.DataFrame(rows).sort_values("n prédits", ascending=False)
+
+
+def accuracy_by_predicted_division_per_source(
+    data: pd.DataFrame,
+    *,
+    truth_col: str,
+    sources: List[Tuple[str, str]],
+    labels: Optional[Dict[str, str]] = None,
+    target_level: int = 4,
+) -> Optional[pd.DataFrame]:
+    """La même question que ci-dessus, posée à chaque brique séparément.
+
+    « Quand LCS annonce de l'alimentaire, a-t-il le bon code ? Et TTC ? » Le
+    tableau de la décision finale dit ce que vaut l'annonce du pipeline ; celui-ci
+    dit d'où elle vient. Une division où toutes les sources s'effondrent est un
+    problème de nomenclature ou de libellés ; une division où une seule source
+    décroche est un problème de brique — et les deux n'appellent pas le même
+    correctif.
+
+    Chaque source est regroupée par SA PROPRE division prédite : une ligne
+    n'agrège donc pas les mêmes observations d'une colonne à l'autre, et c'est le
+    point. D'où le `n` dans chaque cellule — sans lui, une accuracy calculée sur
+    trois observations se lirait comme un résultat.
+
+    Le `n` d'une cellule est le nombre d'observations que cette source a rangées
+    dans cette division **et** qui portent une vérité : c'est le dénominateur de
+    l'accuracy affichée à côté, pas le volume prédit.
+    """
+    from codif_common.metrics import accuracy, code_parts
+
+    labels = labels or {}
+    sources = [(name, col) for name, col in sources if col in data.columns]
+    if not sources:
+        return None
+
+    def _division(code):
+        parts = code_parts(code)
+        return parts[0] if parts else None
+
+    cells: Dict[Tuple[Optional[str], str], str] = {}
+    volumes: Dict[Optional[str], int] = {}
+    for name, col in sources:
+        work = data.assign(_div=data[col].map(_division))
+        for value, sub in work.groupby("_div", dropna=False):
+            key = None if pd.isna(value) else value
+            _, n, acc = accuracy(sub[truth_col], sub[col], target_level)
+            # Une cellule sans vérité terrain n'a pas d'accuracy à montrer ; le
+            # tiret la distingue d'un zéro, qui serait un résultat.
+            cells[(key, name)] = f"{acc:.1%} ({n})" if n else "—"
+            volumes[key] = volumes.get(key, 0) + len(sub)
+
+    # Les divisions par volume décroissant, l'abstention en dernier : ce n'est
+    # pas une division, seulement un volume qu'on ne veut pas perdre de vue.
+    order = sorted(volumes, key=lambda k: (k is None, -volumes[k], str(k)))
+
+    rows = []
+    for key in order:
+        row = {"division prédite": label_division(key, labels)}
+        for name, _ in sources:
+            row[name] = cells.get((key, name), "—")
+        rows.append(row)
+    return pd.DataFrame(rows) if rows else None
+
+
+def arbitration_merit(
+    data: pd.DataFrame,
+    *,
+    truth_col: str,
+    final_col: str,
+    sources: List[Tuple[str, str]],
+    candidates_col: str = "sirus_n_candidats",
+    target_level: int = 4,
+) -> Optional[dict]:
+    """Ce que vaut la conciliation là où elle a réellement choisi.
+
+    Restreint aux produits à **au moins deux candidats**. Ailleurs il n'y avait
+    rien à trancher : l'accuracy y mesure les classifieurs amont, pas la
+    conciliation, et l'agréger avec le reste la flatte.
+
+    Sur ce sous-ensemble, trois chiffres qui se lisent ensemble et encadrent la
+    conciliation entre un plancher et un plafond :
+
+    - **plancher** — tirer un candidat au hasard. Pour chaque produit, la
+      probabilité de tomber juste vaut ``1/n`` si la vérité figure parmi les
+      candidats, ``0`` sinon : un seul candidat peut égaler la vérité, donc le
+      calcul est exact et n'a aucune règle de départage à inventer ;
+    - **accuracy** de la conciliation ;
+    - **plafond** — au moins un classifieur proposait la bonne réponse. Au-delà,
+      aucune conciliation ne peut faire mieux : il faudrait un meilleur candidat
+      en amont. C'est l'``upper_bound`` de `reconcile-sirus`, recalculée ici sur
+      les données du run.
+
+    ``capture`` = accuracy / plafond répond à la question posée : de ce qui était
+    atteignable, quelle part la conciliation est-elle allée chercher. Un modèle
+    qui ne ferait que suivre le hasard aurait une accuracy au niveau du plancher.
+
+    Les candidats sont reconstruits depuis les colonnes des classifieurs — ce
+    sont les codes distincts qu'ils ont proposés. Ils peuvent différer de
+    ``candidates_col``, qui ne compte que les candidats **scorables** par le
+    modèle : le plafond est donc bien ce qui était atteignable en principe, et
+    non ce que le modèle avait le droit de regarder.
+    """
+    from codif_common.metrics import code_parts
+
+    cols = [col for _, col in sources if col in data.columns]
+    if not cols or candidates_col not in data.columns or final_col not in data.columns:
+        return None
+
+    n_cand = pd.to_numeric(data[candidates_col], errors="coerce")
+    sub = data[n_cand >= 2]
+    if sub.empty:
+        return None
+
+    def _key(value, k=target_level):
+        return ".".join(code_parts(value)[:k]) or None
+
+    truth = sub[truth_col].map(_key)
+    scored = truth.notna()
+    if not scored.any():
+        return None
+
+    sub = sub[scored]
+    truth = truth[scored]
+    proposals = pd.DataFrame({col: sub[col].map(_key) for col in cols})
+
+    juste_parmi = proposals.eq(truth, axis=0).any(axis=1)
+    # Nombre de candidats DISTINCTS réellement proposés, recompté ici : c'est le
+    # dénominateur du tirage au sort, et il doit correspondre aux codes qu'on
+    # vient de comparer à la vérité.
+    n_distincts = proposals.nunique(axis=1, dropna=True).clip(lower=1)
+
+    accuracy = float(sub[final_col].map(_key).eq(truth).mean())
+    plafond = float(juste_parmi.mean())
+    plancher = float((juste_parmi / n_distincts).mean())
+    return {
+        "n": int(len(sub)),
+        "n_total": int(len(data)),
+        "plancher": plancher,
+        "accuracy": accuracy,
+        "plafond": plafond,
+        "capture": accuracy / plafond if plafond else None,
+    }
 
 
 def distortion_level1(

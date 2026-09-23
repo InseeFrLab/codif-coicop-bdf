@@ -65,6 +65,25 @@ REGIME_COL = "llm_model"
 CONSENSUS_LABEL = "consensus"
 # (label affiché, suffixe de métrique MLflow)
 REGIMES = [("Consensus", "consensus"), ("Arbitré", "arbitrated")]
+
+# reconcile-sirus a le même biais, par un autre mécanisme. Ses candidats sont les
+# codes DISTINCTS proposés par les 4 classifieurs : quand ceux-ci s'accordent, il
+# n'en reste qu'un et l'argmax ne peut que le retenir. Ces produits gonflent
+# l'accuracy de SIRUS sans qu'aucun choix ait été fait — le mérite est celui des
+# briques amont. `sirus_n_candidats` (écrit par `pick_best`) compte les candidats
+# SCORABLES, donc `0` désigne les produits dont tous les candidats ont été
+# écartés par le modèle, et `>= 2` les seuls où SIRUS a réellement tranché.
+SIRUS_REGIME_COL = "sirus_n_candidats"
+# Le suffixe `arbitrated` est partagé avec le juge LLM : c'est la même notion —
+# « la conciliation a effectivement choisi » — et cela rend les séries MLflow des
+# deux conciliations comparables d'un run à l'autre. Les deux autres suffixes
+# sont propres à SIRUS : un candidat unique n'est PAS un consensus LLM, qui exige
+# en plus une confiance TTC >= 0,90.
+SIRUS_REGIMES = [
+    ("Aucun candidat", "no_candidate"),
+    ("Candidat unique", "single_candidate"),
+    ("Choix réel", "arbitrated"),
+]
 # Niveau auquel le découpage par régime est rapporté (niveau cible de l'enquête),
 # partagé par report.qmd et main.py pour que les deux ne divergent pas.
 REGIME_LEVEL = 4
@@ -351,29 +370,61 @@ def declared_refusal_table(data: pd.DataFrame, k: int = REGIME_LEVEL) -> pd.Data
 
 
 def regime_masks(data: pd.DataFrame) -> list[tuple[str, str, pd.Series]] | None:
-    """Split ``data`` into consensus vs judge-arbitrated rows.
+    """Découpe ``data`` par régime de décision de la conciliation.
 
-    Returns ``[(label, metric_suffix, mask), …]``, or None when ``REGIME_COL`` is
-    absent (runs produced before reconcile-llm tagged the regime).
+    Renvoie ``[(label, suffixe de métrique, masque), …]``, ou None quand aucune
+    colonne de régime n'est présente (runs antérieurs au marquage).
+
+    Les deux conciliations ont le même biais — une part des lignes est décidée
+    sans que la conciliation choisisse quoi que ce soit — mais ne le portent pas
+    dans la même colonne :
+
+    - `reconcile-llm` marque le court-circuit consensus dans ``llm_model`` ;
+    - `reconcile-sirus` n'a pas de court-circuit, mais un produit dont les
+      classifieurs s'accordent ne laisse qu'un candidat, et l'argmax ne peut que
+      le retenir. ``sirus_n_candidats`` dit combien de candidats le modèle avait
+      réellement devant lui.
+
+    L'ordre de préférence n'est pas arbitraire : les deux colonnes ne coexistent
+    pas (les conciliations sont exclusives), et si elles coexistaient, c'est la
+    décision effectivement retenue par le run qui primerait.
     """
-    if REGIME_COL not in data.columns:
-        return None
-    consensus = data[REGIME_COL] == CONSENSUS_LABEL
-    masks = {"consensus": consensus, "arbitrated": ~consensus}
-    return [(label, suffix, masks[suffix]) for label, suffix in REGIMES]
+    if REGIME_COL in data.columns:
+        consensus = data[REGIME_COL] == CONSENSUS_LABEL
+        masks = {"consensus": consensus, "arbitrated": ~consensus}
+        return [(label, suffix, masks[suffix]) for label, suffix in REGIMES]
+
+    if SIRUS_REGIME_COL in data.columns:
+        n = pd.to_numeric(data[SIRUS_REGIME_COL], errors="coerce")
+        # Un compte manquant (run ancien, ligne non jointe) tombe avec `0` : il
+        # n'a pas de code, donc il n'a pas non plus été arbitré. Le compter comme
+        # un choix réel gonflerait précisément le chiffre qu'on cherche à isoler.
+        masks = {
+            "no_candidate": n.isna() | (n <= 0),
+            "single_candidate": n == 1,
+            "arbitrated": n >= 2,
+        }
+        return [(label, suffix, masks[suffix]) for label, suffix in SIRUS_REGIMES]
+
+    return None
 
 
 def regime_accuracy_table(data: pd.DataFrame, k: int = 4) -> pd.DataFrame | None:
     """Accuracy at level ``k`` per method, split by arbitration regime.
 
-    The pooled figures mix two regimes that measure different things. On the
-    consensus rows the judge was never called and ``llm_code`` *is* TTC top-1, so
-    the LLM and TTC columns are identical there by construction — those rows say
-    nothing about the judge while pulling both figures up (they are the easy
-    cases, selected on TTC confidence). Only the arbitrated subset compares the
-    judge with the sources it actually arbitrated.
+    Les chiffres agrégés mélangent des régimes qui ne mesurent pas la même chose,
+    et dans les deux conciliations la colonne « Ensemble » est en partie acquise
+    d'avance :
 
-    Returns None when the regime column is absent.
+    - juge LLM : sur les lignes de consensus il n'a jamais été appelé et
+      ``llm_code`` *est* ``ttc_code_1``. Ces lignes ne disent rien du juge tout
+      en tirant les deux colonnes vers le haut — ce sont les cas faciles,
+      sélectionnés sur la confiance de TTC ;
+    - SIRUS : sur les produits à candidat unique il n'y avait rien à choisir.
+
+    Seule la colonne « Arbitré » / « Choix réel » mesure la conciliation.
+
+    Renvoie None quand aucune colonne de régime n'est présente.
     """
     masks = regime_masks(data)
     if masks is None:
@@ -385,6 +436,13 @@ def regime_accuracy_table(data: pd.DataFrame, k: int = 4) -> pd.DataFrame | None
         _, n_all, acc_all = accuracy(truth, data[col], k)
         row[f"Ensemble (n={n_all})"] = acc_all
         for label, _suffix, mask in masks:
+            # Un régime vide ne produit pas de colonne : SIRUS en déclare trois,
+            # et « aucun candidat » est souvent à zéro. La colonne n'afficherait
+            # que des `nan%` — du bruit là où il n'y a rien à dire. MLflow, lui,
+            # continue de loguer le compte à zéro : c'est une information utile
+            # dans une série temporelle, pas dans un tableau.
+            if not mask.any():
+                continue
             sub = data[mask]
             _, n_sub, acc_sub = accuracy(sub[truth_column(data)], sub[col], k)
             row[f"{label} (n={n_sub})"] = acc_sub

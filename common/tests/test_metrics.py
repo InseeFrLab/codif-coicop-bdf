@@ -420,3 +420,79 @@ def test_total_uses_llm_conciliation_when_it_ran():
     out = parse_step_timings(raw)
     assert out["codification_total_seconds"] == 300.0
     assert "duration_reconcile_sirus_seconds" not in out
+
+
+class TestSirusRegimes:
+    """SIRUS n'a pas de court-circuit, mais il a le même biais par un autre
+    chemin : quand les classifieurs s'accordent il ne reste qu'un candidat, et
+    l'argmax ne peut que le retenir. Ces produits gonflent son accuracy sans
+    qu'aucun choix ait été fait."""
+
+    @staticmethod
+    def _frame():
+        """Cinq produits : un sans candidat scorable, deux à candidat unique
+        (tous deux justes — ce sont les cas faciles), deux à choix réel dont un
+        seul est juste. Ensemble 3/5 = 60 % (l'abstention du premier compte comme
+        une erreur, règle unique du dépôt) ; sur le choix réel, 1/2 = 50 %."""
+        return pd.DataFrame(
+            {
+                "code_lvl4": ["01.1.1.1", "01.2.2.2", "01.3.3.3", "02.1.1.1", "02.2.2.2"],
+                "sirus_code": [None, "01.2.2.2", "01.3.3.3", "02.1.1.1", "02.9.9.9"],
+                "sirus_n_candidats": [0, 1, 1, 3, 2],
+            }
+        )
+
+    def test_three_regimes_instead_of_two(self):
+        masks = regime_masks(self._frame())
+        assert [label for label, _s, _m in masks] == [
+            "Aucun candidat", "Candidat unique", "Choix réel",
+        ]
+        assert [int(m.sum()) for _l, _s, m in masks] == [1, 2, 2]
+
+    def test_the_arbitrated_suffix_is_shared_with_the_judge(self):
+        """Même nom de série MLflow dans les deux conciliations : « la
+        conciliation a effectivement choisi » est la même notion, et les deux
+        runs doivent se comparer."""
+        suffixes = [s for _l, s, _m in regime_masks(self._frame())]
+        assert suffixes == ["no_candidate", "single_candidate", "arbitrated"]
+
+    def test_the_easy_cases_inflate_the_pooled_figure(self):
+        """LE chiffre qui motive le découpage : 75 % à l'ensemble, 50 % là où
+        SIRUS a réellement tranché."""
+        tbl = regime_accuracy_table(self._frame(), 4)
+        assert tbl.loc["SIRUS", "Ensemble (n=5)"] == 0.6
+        assert tbl.loc["SIRUS", "Candidat unique (n=2)"] == 1.0
+        assert tbl.loc["SIRUS", "Choix réel (n=2)"] == 0.5
+
+    def test_a_missing_count_is_not_an_arbitration(self):
+        """Une ligne non jointe tombe avec « aucun candidat ». La compter comme
+        un choix réel gonflerait précisément le chiffre qu'on isole."""
+        frame = self._frame()
+        frame.loc[4, "sirus_n_candidats"] = None
+        masks = dict((s, m) for _l, s, m in regime_masks(frame))
+        assert int(masks["arbitrated"].sum()) == 1
+        assert int(masks["no_candidate"].sum()) == 2
+
+    def test_the_judge_column_wins_when_both_exist(self):
+        """Les conciliations sont exclusives ; si les deux colonnes coexistaient,
+        c'est la décision du run qui prime, pas le compte de candidats."""
+        frame = self._frame().assign(**{REGIME_COL: CONSENSUS_LABEL})
+        assert [label for label, _s, _m in regime_masks(frame)] == ["Consensus", "Arbitré"]
+
+
+class TestEmptyRegimeColumn:
+    def test_an_empty_regime_produces_no_column(self):
+        """SIRUS déclare trois régimes et « aucun candidat » est souvent vide :
+        la colonne n'afficherait que des `nan%`. MLflow continue de loguer le
+        compte à zéro — utile dans une série, pas dans un tableau."""
+        frame = pd.DataFrame(
+            {
+                "code_lvl4": ["01.1.1.1", "01.2.2.2"],
+                "sirus_code": ["01.1.1.1", "01.9.9.9"],
+                "sirus_n_candidats": [1, 2],
+            }
+        )
+        cols = list(regime_accuracy_table(frame, 4).columns)
+        assert cols == ["Ensemble (n=2)", "Candidat unique (n=1)", "Choix réel (n=1)"]
+        # Le masque, lui, existe toujours : c'est le tableau qui l'omet.
+        assert [label for label, _s, _m in regime_masks(frame)][0] == "Aucun candidat"

@@ -217,3 +217,167 @@ class TestAccuracyByPredictedDivision:
 
     def test_labels_are_used_when_available(self):
         assert "Produits alimentaires" in self._row()["division prédite"]
+
+
+class TestAccuracyByPredictedDivisionPerSource:
+    """Le tableau de la décision finale dit ce que vaut une annonce ; celui-ci
+    dit d'où elle vient. Chaque source est regroupée par SA propre division, donc
+    une ligne n'agrège pas les mêmes observations d'une colonne à l'autre."""
+
+    SOURCES = [("LCS", "lcs_code"), ("TTC", "ttc_code_1")]
+
+    @staticmethod
+    def _frame():
+        """Quatre produits alimentaires. LCS range les quatre en `01` et en code
+        deux correctement ; TTC n'en annonce que deux en `01` — les deux qu'il
+        réussit — et envoie les autres en `11`."""
+        return pd.DataFrame({
+            TRUTH: ["01.1.1.1", "01.2.2.2", "01.3.3.3", "01.4.4.4"],
+            "lcs_code": ["01.1.1.1", "01.2.2.2", "01.9.9.9", "01.9.9.9"],
+            "ttc_code_1": ["01.1.1.1", "01.2.2.2", "11.1.1.1", "11.1.1.1"],
+        })
+
+    def _table(self):
+        return I.accuracy_by_predicted_division_per_source(
+            self._frame(), truth_col=TRUTH, sources=self.SOURCES,
+            labels={"01": "Produits alimentaires"},
+        )
+
+    def _cell(self, division, source):
+        out = self._table()
+        return out.loc[out["division prédite"].str.startswith(division), source].iloc[0]
+
+    def test_each_source_is_grouped_by_its_own_prediction(self):
+        """`01` compte 4 observations chez LCS et 2 chez TTC : c'est la même
+        ligne du tableau, ce ne sont pas les mêmes observations."""
+        assert self._cell("01", "LCS") == "50.0% (4)"
+        assert self._cell("01", "TTC") == "100.0% (2)"
+
+    def test_a_division_only_one_source_predicts_still_gets_a_row(self):
+        """TTC seul annonce `11`, et se trompe : la ligne existe, et LCS y est
+        vide — il n'a jamais rangé personne là."""
+        assert self._cell("11", "TTC") == "0.0% (2)"
+        assert self._cell("11", "LCS") == "—"
+
+    def test_the_count_is_the_accuracy_denominator_not_the_volume(self):
+        """Une observation sans vérité est prédite mais pas mesurable : elle
+        gonflerait le n sans peser sur l'accuracy."""
+        frame = self._frame()
+        frame.loc[0, TRUTH] = None
+        out = I.accuracy_by_predicted_division_per_source(
+            frame, truth_col=TRUTH, sources=self.SOURCES
+        )
+        assert out.loc[out["division prédite"] == "01", "LCS"].iloc[0] == "33.3% (3)"
+
+    def test_a_source_without_any_truth_shows_a_dash_not_a_zero(self):
+        """Zéro serait un résultat — « cette source se trompe toujours » — là
+        où il n'y a simplement rien à mesurer."""
+        frame = self._frame().assign(**{TRUTH: None})
+        out = I.accuracy_by_predicted_division_per_source(
+            frame, truth_col=TRUTH, sources=self.SOURCES
+        )
+        assert set(out["LCS"]) == {"—"}
+
+    def test_abstentions_are_listed_last(self):
+        frame = self._frame()
+        frame.loc[3, "lcs_code"] = None
+        out = I.accuracy_by_predicted_division_per_source(
+            frame, truth_col=TRUTH, sources=self.SOURCES
+        )
+        assert out["division prédite"].iloc[-1] == "— (aucun code émis)"
+
+    def test_an_absent_column_is_dropped_not_fatal(self):
+        """Un run antérieur à une brique ne porte pas sa colonne."""
+        out = I.accuracy_by_predicted_division_per_source(
+            self._frame(), truth_col=TRUTH,
+            sources=[("LCS", "lcs_code"), ("RAG", "rag_code")],
+        )
+        assert list(out.columns) == ["division prédite", "LCS"]
+
+    def test_no_source_at_all_yields_none(self):
+        assert I.accuracy_by_predicted_division_per_source(
+            self._frame(), truth_col=TRUTH, sources=[("RAG", "rag_code")]
+        ) is None
+
+
+class TestArbitrationMerit:
+    """« Si SIRUS choisit le code qui fait l'unanimité, ça augmente
+    artificiellement son accuracy alors qu'il n'a aucun mérite. » Exactement :
+    d'où ce calcul, restreint aux produits à plusieurs candidats, et encadré par
+    un plancher (le hasard) et un plafond (ce qui était atteignable)."""
+
+    SOURCES = [("LCS", "lcs_code"), ("RAG", "rag_code"), ("TTC", "ttc_code_1")]
+
+    @staticmethod
+    def _frame():
+        """Quatre produits. Le premier n'a qu'un candidat — il doit être exclu,
+        et il est juste, donc l'inclure flatterait le résultat. Les trois autres
+        ont deux candidats : la conciliation en réussit deux, et le bon code est
+        toujours proposé par quelqu'un."""
+        return pd.DataFrame({
+            TRUTH:        ["01.1.1.1", "01.2.2.2", "01.3.3.3", "01.4.4.4"],
+            "lcs_code":   ["01.1.1.1", "01.2.2.2", "01.3.3.3", "01.4.4.4"],
+            "rag_code":   ["01.1.1.1", "01.9.9.9", "01.9.9.9", "01.9.9.9"],
+            "ttc_code_1": ["01.1.1.1", "01.2.2.2", "01.9.9.9", "01.9.9.9"],
+            FINAL:        ["01.1.1.1", "01.2.2.2", "01.3.3.3", "01.9.9.9"],
+            "sirus_n_candidats": [1, 2, 2, 2],
+        })
+
+    def _merit(self, frame=None):
+        return I.arbitration_merit(
+            frame if frame is not None else self._frame(),
+            truth_col=TRUTH, final_col=FINAL, sources=self.SOURCES,
+        )
+
+    def test_the_single_candidate_products_are_excluded(self):
+        """Le cœur de la demande : l'accuracy affichée ne doit plus créditer la
+        conciliation d'un choix qu'elle n'a pas fait."""
+        assert self._merit()["n"] == 3
+        assert self._merit()["n_total"] == 4
+
+    def test_the_accuracy_is_the_one_measured_on_real_choices(self):
+        """2 justes sur 3, là où le tableau global en compterait 3 sur 4."""
+        assert self._merit()["accuracy"] == 2 / 3
+
+    def test_the_ceiling_is_what_the_sources_made_reachable(self):
+        assert self._merit()["plafond"] == 1.0
+
+    def test_the_floor_is_a_random_pick_among_the_candidates(self):
+        """Deux candidats par produit et la vérité toujours présente : un tirage
+        au sort tombe juste une fois sur deux."""
+        assert self._merit()["plancher"] == 0.5
+
+    def test_the_capture_rate_answers_the_question(self):
+        """De ce qui était atteignable, quelle part est allée chercher ?"""
+        assert self._merit()["capture"] == 2 / 3
+
+    def test_the_floor_never_beats_the_ceiling(self):
+        """L'invariant qui doit tenir sur n'importe quelle donnée : plancher ≤
+        accuracy ≤ plafond. S'il casse, c'est le calcul qui est faux."""
+        m = self._merit()
+        assert m["plancher"] <= m["accuracy"] <= m["plafond"]
+
+    def test_a_truth_absent_from_every_candidate_lowers_the_ceiling(self):
+        """Quand personne ne propose la bonne réponse, aucune conciliation ne
+        peut l'atteindre — et le hasard non plus."""
+        frame = self._frame()
+        frame.loc[1, TRUTH] = "09.9.9.9"
+        m = self._merit(frame)
+        assert m["plafond"] == 2 / 3
+        assert m["plancher"] == 1 / 3
+
+    def test_rows_without_truth_are_out_of_the_calculation(self):
+        frame = self._frame()
+        frame.loc[3, TRUTH] = None
+        assert self._merit(frame)["n"] == 2
+
+    def test_no_multi_candidate_product_yields_none(self):
+        """Un run où la conciliation n'a jamais eu à choisir : il n'y a rien à
+        mesurer, et un zéro serait un résultat."""
+        frame = self._frame().assign(sirus_n_candidats=1)
+        assert self._merit(frame) is None
+
+    def test_a_run_without_the_candidate_count_yields_none(self):
+        """Run LLM, ou run SIRUS antérieur à la colonne."""
+        frame = self._frame().drop(columns=["sirus_n_candidats"])
+        assert self._merit(frame) is None

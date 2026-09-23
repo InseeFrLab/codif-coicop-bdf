@@ -121,6 +121,39 @@ HAS_CANONICAL_TRUTH = TRUTH == TRUTH_COL_CANONICAL
 # rapport de rendre dans les deux modes.
 FINAL_NAME, FINAL_COL = final_decision(df)
 
+# Le juge LLM a des sorties que SIRUS n'a pas : le raccourci consensus
+# (`llm_model`), le score entier 1-5 (`llm_confiance`), l'erreur d'appel
+# (`llm_error`). Les sections qui les décrivent n'ont pas d'équivalent en
+# conciliation SIRUS : elles disparaissent alors du rapport au lieu d'afficher
+# « sans objet ». Un rapport n'a rien à dire d'une étape qui n'a pas tourné.
+#
+# UN SEUL nom porte la condition, et c'est délibéré : dans `report/`, la même
+# expression recopiée section par section avait fini par laisser passer une
+# section non gardée (cf. report/prediction_report.qmd, « Sections propres au
+# juge LLM »).
+IS_LLM = FINAL_COL == "llm_code"
+
+# Cause d'un code final manquant. Elle diffère selon la conciliation, et les
+# nommer toutes les deux ferait décrire au rapport un mode qui n'a pas tourné.
+# Attention : le texte d'une expression `{python}` inline n'est PAS réinterprété
+# comme du Markdown — des backticks y sortiraient tels quels. D'où deux morceaux
+# nus, le balisage restant dans le gabarit.
+ABSTENTION_VALUE = "N/A" if IS_LLM else "NULL"
+ABSTENTION_WHEN = (
+    "l'arbitrage LLM échoue"
+    if IS_LLM
+    else "aucun classifieur n'a proposé de candidat scorable à SIRUS"
+)
+
+# Deux phrases du rapport décrivaient les DEUX conciliations côte à côte. Elles
+# ne décrivent plus que celle qui a tranché : nommer l'autre reviendrait à
+# expliquer au lecteur une mécanique dont son run n'a rien à faire.
+CONFIRM_MECHANISM = (
+    "via le raccourci consensus"
+    if IS_LLM
+    else "via des règles qui votent toutes dans le même sens"
+)
+
 # Score de confiance associé à la décision finale, quand la conciliation en
 # produit un. Sémantiques différentes — entier 1-5 pour le juge LLM, probabilité
 # continue pour SIRUS — donc jamais mélangés dans un même tableau : chaque
@@ -177,11 +210,8 @@ _meta += [
     ("Colonne de vérité terrain scorée",
      f"`{TRUTH}` " + ("(canonique : tronquée niveau 4 + élaguée)"
                       if HAS_CANONICAL_TRUTH else "(code brut — run antérieur à code_lvl4)")),
-    ("Conciliation", f"{FINAL_NAME} (colonne `{FINAL_COL}`)"),
-    ("Erreurs LLM (`llm_error` non nul)",
-     str(int(df["llm_error"].notna().sum())) if "llm_error" in df.columns
-     else "— (pas de conciliation LLM sur ce run)"),
 ]
+_meta += I.conciliation_rows(df, FINAL_NAME, FINAL_COL)
 Markdown(
     "| Champ | Valeur |\n|---|---|\n"
     + "\n".join(f"| {label} | {value} |" for label, value in _meta)
@@ -260,10 +290,24 @@ STRICT_LEVELS = CANONICAL_LEVELS if HAS_CANONICAL_TRUTH else LEVELS
 global_tbl = accuracy_table(scorable, levels=STRICT_LEVELS)
 # Le `n` ne dépendant plus du niveau, il est annoncé une fois ici plutôt que
 # répété dans chaque en-tête de colonne.
+# Avertissement délibérément placé SOUS le tableau d'en-tête : ce chiffre reste
+# celui de bout en bout — c'est le chiffre métier, et le restreindre casserait la
+# comparabilité entre runs — mais il ne doit pas se lire sans savoir qu'une part
+# est acquise d'avance (cf. « Accuracy par régime de décision »).
+_avertissement = (
+    ""
+    if regime_masks(scorable) is None
+    else (
+        f"\n\n_La ligne {FINAL_NAME} agrège des observations que la conciliation a "
+        "réellement tranchées et d'autres où elle n'avait aucun choix à faire. "
+        "Le découpage par régime de décision, plus bas, sépare les deux._"
+    )
+)
 Markdown(
     f"Sur **{len(scorable):,} observations étiquetées**".replace(",", " ")
     + ", à tous les niveaux.\n\n"
     + global_tbl.to_markdown(floatfmt=".1%")
+    + _avertissement
 )
 ```
 
@@ -383,7 +427,7 @@ Markdown(md)
 Une brique peut se taire au lieu de se tromper :
 
 - `rag_code` et `ragann_code` sont NULL quand le RAG ne trouve rien d'exploitable ;
-- le code final (`{python} FINAL_COL`) peut manquer aussi — `N/A` si l'arbitrage LLM échoue, NULL si aucun classifieur n'a proposé de candidat scorable à SIRUS.
+- le code final (`{python} FINAL_COL`) peut manquer aussi — `{python} ABSTENTION_VALUE` si `{python} ABSTENTION_WHEN`.
 
 Les tableaux d'accuracy comptent ces abstentions comme des erreurs. C'est légitime pour mesurer la chaîne, mais **mélange deux défauts opposés** — coder faux appelle un meilleur modèle, ne pas coder une meilleure couverture. D'où la décomposition, exacte :
 
@@ -478,16 +522,22 @@ else:
 Markdown(md)
 ```
 
-## Accuracy par régime de décision : consensus ou arbitrage réel
-
 ```{python}
 # | label: txt-regime-intro
 # Section propre au juge LLM : le court-circuit consensus est une mécanique de
 # `reconcile-llm`, sans équivalent dans la conciliation par règles SIRUS (qui
 # score tous les candidats de la même façon, sans raccourci).
-if "llm_model" in scorable.columns:
+#
+# Le TITRE est dans le chunk, pas en markdown brut : sinon il s'afficherait en
+# mode SIRUS au-dessus d'un vide, ou pire, au-dessus d'un « sans objet ». Même
+# idiome qu'à la section « Trois chiffres pour juger de l'ampleur ».
+if regime_masks(scorable) is None:
+    md = ""
+elif IS_LLM:
     md = dedent(
         """
+        ## Accuracy par régime de décision : consensus ou arbitrage réel
+
         Les tableaux ci-dessus agrègent deux régimes de décision que `reconcile-llm`
         traite différemment, et que la colonne `llm_model` distingue :
 
@@ -505,11 +555,28 @@ if "llm_model" in scorable.columns:
         """
     )
 else:
-    md = (
-        f"_Sans objet : la conciliation de ce run est **{FINAL_NAME}**, qui n'a pas "
-        "de régime de décision — tous les candidats sont scorés de la même façon, "
-        "sans raccourci consensus. Ce découpage est propre au juge LLM "
-        "(`reconcile-llm`)._"
+    md = dedent(
+        """
+        ## Accuracy par régime de décision : SIRUS a-t-il vraiment choisi ?
+
+        SIRUS n'a pas de court-circuit — il score toutes les lignes. Mais ses candidats
+        sont les codes **distincts** proposés par les 4 classifieurs : quand ceux-ci
+        s'accordent, il n'en reste qu'un, et le meilleur d'un seul candidat est ce
+        candidat. La colonne `sirus_n_candidats` dit combien le modèle en avait
+        réellement devant lui, et sépare trois situations :
+
+        - **Aucun candidat** — tous écartés par le modèle (division COICOP absente de
+          son entraînement). Aucun code émis : ces produits partent en reprise.
+        - **Candidat unique** — rien à trancher. L'accuracy y mesure les classifieurs
+          amont, pas SIRUS, et ce sont les cas faciles : elle y est élevée.
+        - **Choix réel** — au moins deux candidats en concurrence. **C'est la seule
+          colonne qui mesure SIRUS.**
+
+        La colonne « Ensemble » est donc en partie acquise d'avance, et l'écart entre
+        elle et « Choix réel » chiffre exactement ce que le modèle doit à ses sources
+        plutôt qu'à lui-même. Corollaire utile : un `sirus_proba` bas sur un produit à
+        candidat unique n'est pas une hésitation — il n'y avait rien à comparer.
+        """
     )
 Markdown(md)
 ```
@@ -520,12 +587,15 @@ regime_tbl = regime_accuracy_table(scorable, REGIME_LEVEL)
 if regime_tbl is None:
     md = ""  # l'explication est déjà donnée par le chunk d'introduction
 else:
+    # Volume du régime « sans choix », quel que soit son nom : c'est lui qui dit
+    # quelle part de la colonne Ensemble est acquise d'avance.
     _masks = regime_masks(scorable)
-    _n_cons = int(_masks[0][2].sum())
+    _sans_choix = int(sum(int(m.sum()) for _l, s_, m in _masks if s_ != "arbitrated"))
+    _lbl = "Consensus" if IS_LLM else "Sans choix à faire"
     md = (
         f"**Accuracy au niveau {REGIME_LEVEL}**, ventilée par régime. "
-        f"Consensus : {_n_cons} observations sur {len(scorable)} "
-        f"({_n_cons / len(scorable):.1%} du scorable).\n\n"
+        f"{_lbl} : {_sans_choix} observations sur {len(scorable)} "
+        f"({_sans_choix / len(scorable):.1%} du scorable).\n\n"
         + regime_tbl.to_markdown(floatfmt=".1%")
     )
 Markdown(md)
@@ -542,7 +612,17 @@ else:
     sources = [name for name, col in available_methods(scorable) if col != FINAL_COL]
     rows = []
     for label, _suffix, mask in regime_masks(scorable):
-        sub = regime_tbl[[c for c in regime_tbl.columns if c.startswith(label)]].iloc[:, 0]
+        # Un régime peut être vide (SIRUS en compte trois, dont « aucun candidat »
+        # souvent à zéro). `regime_accuracy_table` n'émet alors PAS de colonne :
+        # tester la présence de la colonne avant d'y accéder, et non après.
+        _cols = [c for c in regime_tbl.columns if c.startswith(label)]
+        if not _cols:
+            continue
+        sub = regime_tbl[_cols].iloc[:, 0]
+        # Même sans être vide, un régime peut n'avoir aucune accuracy calculable
+        # (aucune vérité terrain) : `idxmax` n'aurait rien à renvoyer.
+        if not sub[sources].notna().any():
+            continue
         best_src = sub[sources].idxmax()
         rows.append(
             {
@@ -553,12 +633,52 @@ else:
                 f"écart {FINAL_NAME} − meilleure source": sub.get(FINAL_NAME) - sub[best_src],
             }
         )
-    gap_regime = pd.DataFrame(rows).set_index("régime")
+    if not rows:
+        md = ""
+    else:
+        gap_regime = pd.DataFrame(rows).set_index("régime")
+        _ligne = "Arbitré" if IS_LLM else "Choix réel"
+        md = (
+            f"**{FINAL_NAME} fait-il mieux que la meilleure source amont ?** Un écart "
+            f"négatif sur la ligne `{_ligne}` signifie qu'un choix systématique de cette "
+            "source aurait mieux codé les observations que la conciliation a réellement "
+            "tranchées.\n\n"
+            + gap_regime.to_markdown(floatfmt=(".0f", ".0f", ".1%", "", ".1%"))
+        )
+Markdown(md)
+```
+
+```{python}
+# | label: md-arbitration-merit
+# Répond à « l'accuracy de SIRUS n'est-elle pas gonflée par les produits où il
+# n'avait rien à choisir ? ». Oui, et voici le chiffre qui ne l'est pas — encadré
+# par le hasard et par ce qui était atteignable, sans quoi une accuracy nue ne
+# dit pas si le modèle a du mérite.
+_merit = I.arbitration_merit(
+    scorable, truth_col=TRUTH, final_col=FINAL_COL,
+    sources=[(n, c) for n, c in available_methods(scorable) if c != FINAL_COL],
+)
+if _merit is None:
+    md = ""
+else:
+    _tbl = pd.DataFrame([
+        ("Tirage au sort parmi les candidats", _merit["plancher"],
+         "le plancher : aucun mérite"),
+        (f"{FINAL_NAME}", _merit["accuracy"], "ce qu'il fait réellement"),
+        ("Au moins un candidat juste", _merit["plafond"],
+         "le plafond : au-delà, il faudrait un meilleur candidat en amont"),
+    ], columns=["", "accuracy niv4", "lecture"])
     md = (
-        "**Le juge fait-il mieux que la meilleure source amont ?** Un écart négatif sur "
-        "la ligne `Arbitré` signifie qu'un choix systématique de cette source aurait mieux "
-        "codé les observations soumises au juge.\n\n"
-        + gap_regime.to_markdown(floatfmt=(".0f", ".0f", ".1%", "", ".1%"))
+        f"**Sur les {_merit['n']} produits à au moins deux candidats** "
+        f"({_merit['n'] / _merit['n_total']:.1%} du scorable) — les seuls où "
+        f"{FINAL_NAME} a eu quelque chose à trancher :\n\n"
+        + _tbl.to_markdown(index=False, floatfmt=("", ".1%", ""))
+        + (
+            f"\n\n{FINAL_NAME} va chercher **{_merit['capture']:.1%}** de ce qui était "
+            "atteignable. C'est ce chiffre, et non l'accuracy globale, qui mesure la "
+            "conciliation : partout ailleurs elle n'avait pas le choix."
+            if _merit["capture"] is not None else ""
+        )
     )
 Markdown(md)
 ```
@@ -621,6 +741,25 @@ else:
             "\n\n_Libellés indisponibles : la nomenclature du run "
             "(`prune-codes/nomenclature_pruned.parquet`) n'a pas pu être lue._"
         )
+Markdown(md)
+```
+
+### Par division prédite **et par classifieur**
+
+Le tableau ci-dessus dit ce que vaut l'annonce du pipeline ; celui-ci dit **d'où elle vient**. Une division où toutes les sources s'effondrent est un problème de nomenclature ou de libellés ; une division où une seule décroche est un problème de brique — et les deux n'appellent pas le même correctif.
+
+Chaque colonne est regroupée par **sa propre** division prédite : une ligne n'agrège donc pas les mêmes observations d'une colonne à l'autre. D'où le `n` entre parenthèses, qui est le dénominateur de l'accuracy affichée à côté — les observations que cette source a rangées dans cette division **et** qui portent une vérité. Un tiret signale qu'il n'y a rien à mesurer, ce qui n'est pas la même chose que 0 %.
+
+```{python}
+# | label: tbl-division-par-classifieur
+_srcs_div = available_methods(scorable)
+_par_src = I.accuracy_by_predicted_division_per_source(
+    scorable, truth_col=TRUTH, sources=_srcs_div, labels=DIVISION_LABELS
+)
+if _par_src is None:
+    md = "_Aucune source amont exploitable dans ce run._"
+else:
+    md = _par_src.to_markdown(index=False, disable_numparse=True)
 Markdown(md)
 ```
 
@@ -978,7 +1117,25 @@ Une confiance n'a d'utilité que si elle **trie**.
 | > 0,7 | la confiance trie utilement ce qui part en relecture |
 | < 0,5 | la confiance est **inversée** : anomalie à investiguer, pas à exploiter |
 
-Seules les confiances de l'échelle [0, 1] figurent ici, donc directement comparables. `llm_confiance` (entier de 1 à 5) et `sirus_proba` ont chacun leur propre section de calibration plus bas ; les mêler produirait des seuils qui ne veulent rien dire.
+```{python}
+# | label: txt-conf-scale-note
+# Le score de la conciliation vit sur une autre échelle que les confiances des
+# classifieurs : entier 1-5 pour le juge LLM, probabilité continue pour SIRUS.
+# On ne nomme que celui de ce run — l'autre décrirait une étape qui n'a pas
+# tourné.
+_echelle = "entier de 1 à 5" if IS_LLM else "probabilité continue"
+Markdown(
+    "Seules les confiances de l'échelle [0, 1] figurent ici, donc directement "
+    "comparables. "
+    + (
+        f"Le score de la conciliation, `{FINAL_CONF_COL}` ({_echelle}), a sa propre "
+        "section de calibration plus bas ; l'y mêler produirait des seuils qui ne "
+        "veulent rien dire."
+        if FINAL_CONF_COL
+        else "Cette conciliation ne produit pas de score de confiance."
+    )
+)
+```
 
 ```{python}
 # | label: tbl-confidence-auroc
@@ -1110,22 +1267,17 @@ else:
 Markdown(md)
 ```
 
-### Calibration du LLM : accuracy vs `llm_confiance`
-
 ```{python}
 # | label: txt-calibration-llm-intro
-# Prose dans un chunk gardé plutôt qu'en Markdown brut : en mode SIRUS il n'y a
-# pas de score de confiance 1-5, et laisser cette introduction s'afficher
-# décrirait une sortie que le run ne contient pas.
+# Titre et prose dans un chunk gardé plutôt qu'en Markdown brut : en mode SIRUS
+# il n'y a pas de score de confiance 1-5, et laisser ce titre s'afficher
+# annoncerait une sortie que le run ne contient pas.
 Markdown(
+    "### Calibration du LLM : accuracy vs `llm_confiance`\n\n"
     "La commande `reconcile-llm` retourne un score de confiance de 1 à 5. Une "
     "calibration saine montre une accuracy croissante avec la confiance."
-    if "llm_confiance" in scorable.columns
-    else (
-        f"_Sans objet : la conciliation de ce run est **{FINAL_NAME}**, qui ne "
-        "produit pas de score de confiance `llm_confiance`. La calibration de "
-        "SIRUS est traitée dans la section suivante._"
-    )
+    if IS_LLM
+    else ""
 )
 ```
 
@@ -1142,10 +1294,14 @@ cal_df = (
     else pd.DataFrame()
 )
 if not _has_llm_conf:
+    # Rien du tout en mode SIRUS — la section entière n'existe pas. Mais sur un
+    # run LLM, une colonne manquante est une ANOMALIE, pas un autre mode : le
+    # silence la ferait passer pour normale.
     Markdown(
-        f"_Sans objet : la conciliation de ce run est **{FINAL_NAME}**, qui ne "
-        "produit pas de score entier 1-5. Voir la calibration de SIRUS "
-        "ci-dessous._"
+        "_Colonne `llm_confiance` absente de ce parquet : calibration du juge "
+        "non mesurable._"
+        if IS_LLM
+        else ""
     )
 elif len(cal_df):
     cal_df["acc_niv4"] = accuracy_series(cal_df[TRUTH], cal_df["llm_code"], 4)
@@ -1175,13 +1331,15 @@ else:
     Markdown("_Pas de valeur `llm_confiance` disponible._")
 ```
 
-### Calibration de SIRUS : accuracy vs `sirus_proba`
-
 ```{python}
 # | label: txt-sirus-calib-intro
+# Titre dans le chunk, comme la section symétrique du juge LLM : sur un run LLM
+# il n'y a pas de `sirus_proba`, et le titre annoncerait une section vide.
 if "sirus_proba" in scorable.columns:
     md = dedent(
         """
+        ### Calibration de SIRUS : accuracy vs `sirus_proba`
+
         SIRUS ne renvoie pas une classe mais une **probabilité que le candidat
         retenu soit le bon code**, sans verdict : l'étape n'applique aucun seuil.
         C'est ici que se décide lequel exiger.
@@ -1198,10 +1356,7 @@ if "sirus_proba" in scorable.columns:
         """
     )
 else:
-    md = (
-        f"_Sans objet : la conciliation de ce run est **{FINAL_NAME}**, qui ne "
-        "produit pas de colonne `sirus_proba`._"
-    )
+    md = ""
 Markdown(md)
 ```
 
@@ -1301,7 +1456,18 @@ else:
 Markdown(md)
 ```
 
-### Les règles du modèle SIRUS
+```{python}
+# | label: txt-sirus-rules-title
+# Chunk séparé, et SANS préfixe `tbl-` : un chunk étiqueté `tbl-*` est enveloppé
+# par Quarto dans un div de tableau référençable, et un titre émis à l'intérieur
+# n'atteint plus la table des matières. Le rendu l'a montré — la section
+# existait dans le corps mais avait disparu du sommaire.
+Markdown(
+    "### Les règles du modèle SIRUS"
+    if SIRUS_MODEL_URI or "sirus_proba" in scorable.columns
+    else ""
+)
+```
 
 ```{python}
 # | label: tbl-sirus-rules
@@ -1477,7 +1643,7 @@ summary = summary[[
 Markdown(summary.to_markdown(index=False))
 ```
 
-**Lecture :** sur les cas d'accord total, l'accuracy de la conciliation doit avoisiner celle des sources (elle ne fait que confirmer — via le raccourci consensus pour le juge LLM, via des règles qui votent toutes dans le même sens pour SIRUS). Sur les configurations de désaccord, l'écart entre `{python} ACC_FINAL_COL` et `≥1 source juste` mesure la capacité de la conciliation à retrouver la bonne source quand elle existe ; l'écart avec `code majoritaire juste` indique si elle fait mieux qu'un simple vote majoritaire.
+**Lecture :** sur les cas d'accord total, l'accuracy de la conciliation doit avoisiner celle des sources (elle ne fait que confirmer, `{python} CONFIRM_MECHANISM`). Sur les configurations de désaccord, l'écart entre `{python} ACC_FINAL_COL` et `≥1 source juste` mesure la capacité de la conciliation à retrouver la bonne source quand elle existe ; l'écart avec `code majoritaire juste` indique si elle fait mieux qu'un simple vote majoritaire.
 
 ## Accord de chaque classifieur avec la décision finale
 
@@ -1527,7 +1693,18 @@ if PREDICTORS:
 
 Cas où le code final retenu ne figure dans aucune prédiction des classifieurs. On distingue les codes restés accessibles via le top-2/3 de TTC et les codes totalement inédits, et — grâce à la vérité terrain — on mesure si sortir du périmètre des classifieurs aide ou nuit (accuracy niveau 4).
 
-En conciliation LLM, l'analyse est restreinte aux observations réellement arbitrées : les consensus retiennent par construction un code prédit. En conciliation SIRUS la question ne se pose pas — le modèle **choisit parmi les candidats proposés** et ne peut structurellement pas sortir du périmètre, ce que ce tableau doit confirmer.
+```{python}
+# | label: txt-outside-scope-intro
+# Le périmètre analysé n'est pas le même selon la conciliation. Décrire les deux
+# obligerait le lecteur à trouver lui-même laquelle le concerne.
+Markdown(
+    "L'analyse est restreinte aux observations réellement arbitrées : les "
+    "consensus retiennent par construction un code prédit."
+    if IS_LLM
+    else "SIRUS **choisit parmi les candidats proposés** et ne peut "
+    "structurellement pas sortir du périmètre : ce tableau doit le confirmer."
+)
+```
 
 ```{python}
 # | label: tbl-judge-outside
@@ -1705,7 +1882,8 @@ else:
         url_from_artifact_uri(TRACKING_URI, TTC_MODEL_URI) if TTC_MODEL_URI else None,
         "`classify-ttc-model-uri` non renseignée pour ce run",
     )
-    if SIRUS_MODEL_URI:
+    _sirus_deja_liste = bool(SIRUS_MODEL_URI)
+    if _sirus_deja_liste:
         _ligne(
             "reconcile-sirus",
             "entraînement du modèle de règles, hors pipeline",
@@ -1713,8 +1891,15 @@ else:
             "",
         )
 
-    for etape in ("build-datasets", "classify-regex", "classify-lcs", "prune-codes",
-                  "reconcile-llm", "export-results"):
+    # L'étape de conciliation était écrite en dur `reconcile-llm` : un run SIRUS
+    # affichait donc une ligne pour une étape qui n'avait pas tourné. Et quand
+    # son entraînement vient d'être listé ci-dessus, on ne la répète pas — deux
+    # lignes du même nom pour deux choses différentes se lisent mal.
+    _etapes = ["build-datasets", "classify-regex", "classify-lcs", "prune-codes"]
+    if not _sirus_deja_liste:
+        _etapes.append(I.conciliation_step(FINAL_COL))
+    _etapes.append("export-results")
+    for etape in _etapes:
         _ligne(etape, "—", None, SANS_MLFLOW)
 
     md = (

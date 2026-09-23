@@ -95,7 +95,11 @@ comptée fausse.
   pose devant un fichier livré, quand la vérité n'est pas connue. Deux taux par division, la
   bonne division puis le code complet — le second ne peut pas dépasser le premier. La
   ventilation symétrique, par division **vraie**, répondrait à l'autre question (« parmi les
-  vrais produits alimentaires, combien retrouve-t-on ? ») et n'est plus affichée ;
+  vrais produits alimentaires, combien retrouve-t-on ? ») et n'est plus affichée. Un second
+  tableau pose la même question **à chaque classifieur séparément** : une division où toutes
+  les sources s'effondrent est un problème de nomenclature, une division où une seule décroche
+  est un problème de brique. Chaque colonne y est groupée par sa propre prédiction, d'où le
+  `n` dans chaque cellule ;
 - **Accuracy par provenance du produit** (ticket de caisse, carnet papier, saisie
   assistée) : volume et part de chaque source, couverture, accuracy aux niveaux 1, 2 et 4,
   et écart en points contre l'ensemble. Le découpage par niveau est le plus parlant — une
@@ -113,16 +117,51 @@ comptée fausse.
   déplacer pour retrouver la vraie répartition —, et le **taux de compensation**, la part
   des erreurs qui s'annulent entre elles. La divergence de Kullback-Leibler est donnée en
   complément, à comparer entre runs et non dans l'absolu ;
+- **Accuracy par régime de décision** : une part des lignes est décidée sans que la
+  conciliation choisisse quoi que ce soit — court-circuit consensus pour le juge LLM,
+  candidat unique pour SIRUS (quand les classifieurs s'accordent, il ne reste qu'un
+  candidat et l'argmax ne peut que le retenir). Seule la colonne « arbitré » / « choix
+  réel » mesure la conciliation. Un tableau complémentaire l'encadre entre un **plancher**
+  (tirer un candidat au hasard) et un **plafond** (au moins un candidat était juste), et
+  donne la part du réalisable effectivement captée ;
 - **Analyse d'erreurs** : matrice de confusion (top 20 paires au niveau 4), **calibration**
   (accuracy par tranche de confiance, AUROC) ;
-- **Coût et latence de l'arbitrage LLM** (tokens de prompt, latence moyenne) ;
 - **Les règles du modèle SIRUS**, en clair, quand c'est la conciliation du run ;
+- **Calibration du score `llm_confiance`** — section propre au juge LLM, **absente du
+  rapport** quand le run a été concilié par SIRUS (voir plus bas) ;
 - **Traçabilité** : URL du run MLflow de chaque brique et template de prompt Langfuse
   de chaque RAG ;
 - **Décomposition interne de chaque brique** — voir la section suivante ;
 - **Accord entre les classifieurs et valeur ajoutée de l'arbitrage** ;
-- **Décisions du juge hors des prédictions des classifieurs** ;
+- **Décisions de conciliation hors des prédictions des classifieurs** ;
 - **Récapitulatif**.
+
+### Le rapport ne parle que de la conciliation qui a tranché
+
+Les deux conciliations sont exclusives, donc un run porte `llm_code` **ou** `sirus_code`,
+jamais les deux. Le rapport le déduit de ses colonnes — pas du `--reconciliation` qu'on lui
+a passé : il décrit le parquet qu'il lit, ce qui le rend juste même sur un relancement
+manuel mal paramétré.
+
+Conséquence : sur un run SIRUS, **le juge LLM n'est pas mentionné**. La section qui lui est
+propre — la calibration du score entier 1 à 5 (`llm_confiance`) — disparaît, titre compris,
+au lieu d'afficher un « sans objet » ; la ligne de métadonnées `llm_error` et l'étape
+`reconcile-llm` du tableau de traçabilité disparaissent aussi. Symétriquement, un run LLM
+ne parle pas de SIRUS.
+
+Le découpage par **régime de décision** fait exception : il ne disparaît pas, parce qu'il a
+un équivalent SIRUS. Les deux conciliations décident une part de leurs lignes sans rien
+choisir, mais ne le marquent pas dans la même colonne — `llm_model` d'un côté,
+`sirus_n_candidats` de l'autre — et la section s'adapte.
+
+Ce qui reste dans les deux cas : tout le reste. Le LLM **classifieur** (les deux RAG) n'est
+pas concerné — c'est une autre brique, elle tourne quelle que soit la conciliation.
+
+::: {.callout-note}
+## Une colonne manquante n'est pas un autre mode
+Sur un run LLM dont le parquet ne porte pas `llm_confiance`, la section ne se tait pas :
+elle le dit. Le silence ferait passer une anomalie pour une conciliation SIRUS.
+:::
 
 ### Sur quelle vérité terrain le rapport score-t-il ?
 
@@ -251,6 +290,11 @@ Sont enregistrés :
   exactement `n_scorable`. Plus `truth_shallower_than_niv<k>_count` — inchangé, c'est une
   propriété de la vérité seule, mais il se lit désormais comme la part où une prédiction
   trop fine est comptée fausse —, `llm_prompt_tokens_total`, `llm_latency_s_mean` ;
+- **L'accuracy par régime de décision**, `accuracy_<méthode>_niv4_<régime>` et
+  `n_<régime>`. Les régimes sont `consensus`/`arbitrated` en conciliation LLM et
+  `no_candidate`/`single_candidate`/`arbitrated` en SIRUS : le suffixe `arbitrated` est
+  partagé **exprès**, c'est la même notion — la conciliation a effectivement choisi — et
+  c'est la série qu'il faut comparer d'un run à l'autre ;
 - **La décomposition interne**, préfixée par famille pour que l'UI MLflow les regroupe et
   qu'une comparaison entre deux runs porte sur des séries alignées :
   `retrieval/<brique>/recall_niv<k>` et `…/generation_when_retrieved_niv<k>`,
