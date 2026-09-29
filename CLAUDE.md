@@ -316,11 +316,11 @@ Elle **échoue** si `code_lvl4` est absent au lieu de se rabattre sur `code`. Ce
 
 **`classify-lcs/`** — R + une extension C++ compilée au lancement ; point d'entrée `R/main.R`, à lancer depuis le dossier du module (chemins relatifs). Voir « R dans ce dépôt » ci-dessus.
 
-**`classify-ttc/`** — Classifieur neuronal COICOP (torchtextclassifiers : hierarchical/multihead/basic, train/predict/serve ; étape `classify-ttc` via `predict-basic`). A son propre `CLAUDE.md`.
+**`classify-ttc/`** — Classifieur neuronal COICOP (torchtextclassifiers : hierarchical/multihead/basic, train/predict/serve ; étape `classify-ttc` via `predict-basic`). A son propre `CLAUDE.md`. Entraînement hors pipeline par `argo/train-ttc-pipeline.yaml` (GPU : `train-basic` → `predict-basic` + `evaluate-predictions`, rapport HTML sur S3) ; le run MLflow est créé par l'étape Argo et repris par `train-basic` via `MLFLOW_RUN_ID`, ce qui donne l'URI du modèle sans rechercher « le dernier run ».
 
 ## Argo gotchas (hard-won — do not "clean up")
 
-**`git -c http.version=HTTP/1.1 clone` at every clone site** (18 today, across the four workflow YAMLs). The image's git (2.54.0, linked
+**`git -c http.version=HTTP/1.1 clone` at every clone site** (20 today, across the five workflow YAMLs). The image's git (2.54.0, linked
 against libcurl3-gnutls) cannot parse GitHub's HTTP/2 ref advertisement: it fails on `expected
 flush after ref listing`, then asks for a Username, which looks exactly like an authentication
 problem and is not one — GitHub answers `200` with the correct content-type (verified under

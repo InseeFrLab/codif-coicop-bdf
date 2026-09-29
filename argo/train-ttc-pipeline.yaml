@@ -1,0 +1,359 @@
+# Entraînement du classifieur TTC basique, puis évaluation du modèle obtenu.
+#
+#   train (GPU) ──→ predict-evaluate (CPU)
+#
+# - `train` lance `classify-ttc/main.py train-basic` sur un jeu d'entraînement
+#   paramétrable (sortie de `build-training-data`), tous les paramètres de la
+#   commande étant exposés ci-dessous.
+# - `predict-evaluate` prédit avec CE modèle sur un parquet S3 étiqueté, puis
+#   produit le rapport d'évaluation : en texte dans la log, en texte et en HTML
+#   sous `output-prefix`.
+#
+# Passage du modèle d'un pod à l'autre : par MLflow. L'étape `train` crée elle-même
+# le run MLflow (nommé d'après le workflow) et le passe à train-basic par
+# `MLFLOW_RUN_ID` : `mlflow.start_run()` reprend alors ce run au lieu d'en créer
+# un. L'URI `runs:/<run_id>/model` est donc connue sans rien lire après coup —
+# chercher « le dernier run de l'expérience » confondrait deux entraînements
+# lancés en parallèle.
+#
+# Hors pipeline de codification, comme l'entraînement de reconcile-sirus : le
+# modèle retenu se recopie ensuite à la main dans `classify-ttc-model-uri`
+# (argo/params.yaml).
+#
+#   argo submit argo/train-ttc-pipeline.yaml --watch
+#   argo submit argo/train-ttc-pipeline.yaml -p git-branch=ma-branche -p num-epochs=1 --watch
+#
+# `git -c http.version=HTTP/1.1` sur tous les clones : NE PAS RETIRER (voir
+# codif-pipeline.yaml : le git de l'image échoue sur la réponse HTTP/2 de GitHub).
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: train-ttc-
+spec:
+  entrypoint: pipeline
+  serviceAccountName: workflow
+
+  podSpecPatch: |
+    containers:
+      - name: main
+        env:
+          - name: AWS_DEFAULT_REGION
+            value: "us-east-1"
+
+  arguments:
+    parameters:
+      # Chaque étape clone le dépôt à cette branche : pousser avant de lancer.
+      - name: git-branch
+        value: main
+
+      # --- Entraînement (train-basic) ---------------------------------------
+      - name: train-data
+        value: s3://projet-budget-famille/data/ddc_raw/ddc_train_20260929.parquet
+      # "true" : le jeu est chiffré avec DDC_ENCRYPTION_KEY (cas de build-training-data
+      # lancé avec --encryption-key).
+      - name: encrypted
+        value: "true"
+        enum: ["true", "false"]
+      # code8 = code de niveau 4 (98/99 compris) : cible du modèle.
+      - name: code-column
+        value: code8
+      - name: text-column
+        value: product
+      # build-training-data a déjà nettoyé le texte.
+      - name: preprocess
+        value: "false"
+        enum: ["true", "false"]
+      - name: ngram-min
+        value: "3"
+      - name: ngram-max
+        value: "6"
+      - name: ngram-vocab-size
+        value: "100000"
+      - name: embedding-dim
+        value: "128"
+      - name: max-seq-length
+        value: "64"
+      # 256 et non 32 (défaut de la CLI) : un lot de 32 laisse la GPU presque vide.
+      - name: batch-size
+        value: "256"
+      - name: lr
+        value: "0.1"
+      - name: num-epochs
+        value: "20"
+      - name: patience
+        value: "5"
+      # Vide = tokenizer n-grammes ; sinon nom HuggingFace (ex. camembert-base).
+      - name: tokenizer
+        value: ""
+      - name: mlflow-experiment
+        value: codif-coicop-ttc-train
+      # Évaluation intégrée à train-basic, loggée dans MLflow. Vide = désactivée
+      # (l'étape predict-evaluate fait l'évaluation de référence).
+      - name: train-eval-data
+        value: ""
+      - name: train-eval-text-column
+        value: product
+      - name: train-eval-code-column
+        value: code
+      - name: train-eval-top-k
+        value: "5"
+      # Colonnes booléennes séparées par des espaces (ex. "from_app is_ddc").
+      - name: train-eval-filter-columns
+        value: ""
+
+      # --- Prédiction et évaluation ---------------------------------------------
+      - name: eval-file
+        value: s3://projet-budget-famille/data/output-annotation-consolidated/annotations-consolidated-2026-04-15/raw_test.parquet
+      - name: eval-text-column
+        value: l_pr_product
+      - name: eval-code-column
+        value: code
+      # Colonne de ventilation du rapport (ex. source). Vide = aucune.
+      - name: eval-category-column
+        value: ""
+      - name: top-k
+        value: "10"
+      - name: max-k
+        value: "5"
+      # Reçoit predictions.parquet, evaluation_report.txt et evaluation_report.html.
+      - name: output-prefix
+        value: "s3://projet-budget-famille/data/workflow_outputs/train-ttc/{{workflow.name}}"
+
+  templates:
+    - name: pipeline
+      dag:
+        tasks:
+          - name: train
+            template: train
+          - name: predict-evaluate
+            dependencies: [train]
+            template: predict-evaluate
+            arguments:
+              parameters:
+                - name: model-uri
+                  value: "{{tasks.train.outputs.parameters.model-uri}}"
+
+    # -------------------------------------------------------------------------
+    # train — GPU. torchTextClassifiers choisit cuda tout seul (accelerator="auto") ;
+    # les wheels torch du lock embarquent CUDA, l'image python standard suffit.
+    # -------------------------------------------------------------------------
+    - name: train
+      outputs:
+        parameters:
+          - name: model-uri
+            valueFrom:
+              path: /tmp/model_uri
+      container:
+        image: inseefrlab/onyxia-vscode-python:py3.13.12
+        command: [ sh, -c ]
+        args:
+          - |
+            set -e
+            git -c http.version=HTTP/1.1 clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo
+            cd repo/classify-ttc
+            uv sync --locked --no-dev
+
+            uv run --locked --no-dev python -c "import torch; print('[train] CUDA disponible :', torch.cuda.is_available())"
+
+            # Run MLflow créé ici, repris par train-basic via MLFLOW_RUN_ID.
+            # L'expérience doit être la même des deux côtés, sinon MLflow refuse la reprise.
+            RUN_ID=$(uv run --locked --no-dev python -c "
+            import mlflow
+            from mlflow import MlflowClient
+            exp = mlflow.set_experiment('{{workflow.parameters.mlflow-experiment}}')
+            run = MlflowClient().create_run(
+                exp.experiment_id,
+                run_name='{{workflow.name}}',
+                tags={'argo_workflow': '{{workflow.name}}'},
+            )
+            print(run.info.run_id)
+            " | tail -n 1)
+            # `set -e` ne voit que le statut de `tail` : on vérifie le résultat.
+            if [ -z "$RUN_ID" ]; then echo "[train] création du run MLflow impossible" >&2; exit 1; fi
+            echo "[train] run MLflow : $RUN_ID"
+
+            # Un échec laisserait le run en RUNNING : on le marque FAILED en sortant.
+            mark_failed() {
+              uv run --locked --no-dev python -c "from mlflow import MlflowClient; MlflowClient().set_terminated('$RUN_ID', 'FAILED')" || true
+            }
+            trap 'rc=$?; if [ "$rc" -ne 0 ]; then mark_failed; fi; exit $rc' EXIT
+
+            ARGS="--data {{workflow.parameters.train-data}} \
+                  --code-column {{workflow.parameters.code-column}} \
+                  --text-column {{workflow.parameters.text-column}} \
+                  --output /tmp/ttc \
+                  --ngram-min {{workflow.parameters.ngram-min}} \
+                  --ngram-max {{workflow.parameters.ngram-max}} \
+                  --ngram-vocab-size {{workflow.parameters.ngram-vocab-size}} \
+                  --embedding-dim {{workflow.parameters.embedding-dim}} \
+                  --max-seq-length {{workflow.parameters.max-seq-length}} \
+                  --batch-size {{workflow.parameters.batch-size}} \
+                  --lr {{workflow.parameters.lr}} \
+                  --num-epochs {{workflow.parameters.num-epochs}} \
+                  --patience {{workflow.parameters.patience}} \
+                  --mlflow-experiment {{workflow.parameters.mlflow-experiment}}"
+            if [ "{{workflow.parameters.preprocess}}" = "true" ]; then ARGS="$ARGS --preprocess"; fi
+            if [ -n "{{workflow.parameters.tokenizer}}" ]; then ARGS="$ARGS --tokenizer {{workflow.parameters.tokenizer}}"; fi
+            if [ -n "{{workflow.parameters.train-eval-data}}" ]; then
+              ARGS="$ARGS --eval-data {{workflow.parameters.train-eval-data}} \
+                    --eval-text-column {{workflow.parameters.train-eval-text-column}} \
+                    --eval-code-column {{workflow.parameters.train-eval-code-column}} \
+                    --eval-top-k {{workflow.parameters.train-eval-top-k}}"
+              if [ -n "{{workflow.parameters.train-eval-filter-columns}}" ]; then
+                ARGS="$ARGS --eval-filter-columns {{workflow.parameters.train-eval-filter-columns}}"
+              fi
+            fi
+            # La clé est ajoutée à part, et n'est jamais affichée.
+            if [ "{{workflow.parameters.encrypted}}" = "true" ]; then
+              ARGS="$ARGS --encryption-key $DDC_ENCRYPTION_KEY"
+            fi
+
+            MLFLOW_RUN_ID="$RUN_ID" uv run --locked --no-dev main.py train-basic $ARGS
+
+            echo "runs:/$RUN_ID/model" > /tmp/model_uri
+            echo "[train] modèle : runs:/$RUN_ID/model"
+        env:
+          - name: MLFLOW_TRACKING_URI
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: MLFLOW_TRACKING_URI
+          - name: MLFLOW_TRACKING_USERNAME
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: MLFLOW_TRACKING_USERNAME
+          - name: MLFLOW_TRACKING_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: MLFLOW_TRACKING_PASSWORD
+          - name: AWS_ACCESS_KEY_ID
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_ACCESS_KEY_ID
+          - name: AWS_SECRET_ACCESS_KEY
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_SECRET_ACCESS_KEY
+          - name: AWS_SESSION_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_SESSION_TOKEN
+          - name: AWS_S3_ENDPOINT
+            value: minio.lab.sspcloud.fr
+          - name: DDC_ENCRYPTION_KEY
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: DDC_ENCRYPTION_KEY
+        # Les DataLoaders (num_workers=12) passent par /dev/shm, limité à 64 Mo
+        # par défaut dans un pod : sans ce volume, « bus error » au premier epoch.
+        volumeMounts:
+          - name: dshm
+            mountPath: /dev/shm
+        resources:
+          requests:
+            memory: 8Gi
+            cpu: 2000m
+          limits:
+            memory: 32Gi
+            cpu: 12000m
+            nvidia.com/gpu: 1
+      volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 8Gi
+
+    # -------------------------------------------------------------------------
+    # predict-evaluate — CPU. Prédit avec le modèle du run MLflow ci-dessus, puis
+    # évalue : rapport texte dans la log et sur S3, rapport HTML sur S3.
+    # -------------------------------------------------------------------------
+    - name: predict-evaluate
+      inputs:
+        parameters:
+          - name: model-uri
+      container:
+        image: inseefrlab/onyxia-vscode-python:py3.13.12
+        command: [ sh, -c ]
+        args:
+          - |
+            set -e
+            git -c http.version=HTTP/1.1 clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo
+            cd repo/classify-ttc
+            uv sync --locked --no-dev
+
+            PREFIX="{{workflow.parameters.output-prefix}}"
+
+            uv run --locked --no-dev main.py predict-basic \
+              --model "{{inputs.parameters.model-uri}}" \
+              --file "{{workflow.parameters.eval-file}}" \
+              --output "$PREFIX/predictions.parquet" \
+              --text-column "{{workflow.parameters.eval-text-column}}" \
+              --top-k {{workflow.parameters.top-k}}
+
+            CATEGORY=""
+            if [ -n "{{workflow.parameters.eval-category-column}}" ]; then
+              CATEGORY="--category-column {{workflow.parameters.eval-category-column}}"
+            fi
+
+            # Le rapport texte part sur stdout : il est dans la log de l'étape.
+            uv run --locked --no-dev main.py evaluate-predictions "$PREFIX/predictions.parquet" \
+              --code-column "{{workflow.parameters.eval-code-column}}" \
+              --text-column "{{workflow.parameters.eval-text-column}}" \
+              --max-k {{workflow.parameters.max-k}} \
+              $CATEGORY \
+              --output "$PREFIX/evaluation_report.txt" \
+              --html-output "$PREFIX/evaluation_report.html" \
+              --report-meta "Modèle={{inputs.parameters.model-uri}}" \
+              --report-meta "Jeu d'entraînement={{workflow.parameters.train-data}}" \
+              --report-meta "Cible={{workflow.parameters.code-column}}" \
+              --report-meta "Workflow Argo={{workflow.name}}"
+
+            echo "[predict-evaluate] modèle      : {{inputs.parameters.model-uri}}"
+            echo "[predict-evaluate] prédictions : $PREFIX/predictions.parquet"
+            echo "[predict-evaluate] rapport     : $PREFIX/evaluation_report.html"
+        env:
+          - name: MLFLOW_TRACKING_URI
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: MLFLOW_TRACKING_URI
+          - name: MLFLOW_TRACKING_USERNAME
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: MLFLOW_TRACKING_USERNAME
+          - name: MLFLOW_TRACKING_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: MLFLOW_TRACKING_PASSWORD
+          - name: AWS_ACCESS_KEY_ID
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_ACCESS_KEY_ID
+          - name: AWS_SECRET_ACCESS_KEY
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_SECRET_ACCESS_KEY
+          - name: AWS_SESSION_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_SESSION_TOKEN
+          - name: AWS_S3_ENDPOINT
+            value: minio.lab.sspcloud.fr
+        resources:
+          requests:
+            memory: 2Gi
+            cpu: 1000m
+          limits:
+            memory: 20Gi
+            cpu: 8000m

@@ -3,10 +3,13 @@
 
 from __future__ import annotations
 
+import html
 import io
 import logging
 import os
+from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlparse
 
 import duckdb
 import pandas as pd
@@ -192,6 +195,168 @@ def format_report(results: dict, prediction_path: str | None = None) -> str:
     return "\n".join(lines)
 
 
+# ── HTML report ───────────────────────────────────────
+
+_HTML_STYLE = """
+body { font-family: system-ui, sans-serif; margin: 2rem auto; max-width: 1100px;
+       padding: 0 1rem; color: #1f2328; background: #fff; }
+h1 { font-size: 1.5rem; } h2 { font-size: 1.15rem; margin-top: 2rem; }
+table { border-collapse: collapse; margin: .5rem 0 1rem; font-size: .9rem; }
+th, td { border: 1px solid #d0d7de; padding: .3rem .6rem; text-align: right; }
+th { background: #f6f8fa; }
+td:first-child, th:first-child { text-align: left; }
+.meta td { text-align: left; }
+.note { color: #59636e; font-size: .85rem; }
+"""
+
+
+def _pct(x) -> str:
+    return f"{x:.2%}" if pd.notna(x) else "-"
+
+
+def _level_table_html(level_results: dict[int, dict]) -> str:
+    ks = sorted({
+        int(key.split("-")[1])
+        for lvl in level_results.values()
+        for key in lvl
+        if key.startswith("top-")
+    })
+    head = "".join(f"<th>top-{k}</th>" for k in ks)
+    rows = []
+    for level in sorted(level_results):
+        res = level_results[level]
+        cells = "".join(f"<td>{_pct(res.get(f'top-{k}'))}</td>" for k in ks)
+        rows.append(
+            f"<tr><td>level{level}</td>{cells}<td>{int(res.get('N', 0)):,}</td></tr>"
+        )
+    return (
+        f"<table><tr><th>Niveau</th>{head}<th>N</th></tr>"
+        + "".join(rows)
+        + "</table>"
+    )
+
+
+def _finest_level(results: dict) -> int | None:
+    """Deepest COICOP level that has at least one evaluable row."""
+    levels = [lvl for lvl, res in results["levels"].items() if res.get("N", 0) > 0]
+    return max(levels) if levels else None
+
+
+def format_html_report(
+    results: dict,
+    df: pd.DataFrame,
+    code_column: str = "code",
+    meta: dict[str, str] | None = None,
+    n_confusions: int = 30,
+) -> str:
+    """Render the evaluation as a standalone HTML page.
+
+    Same top-K tables as the text report, plus, at the finest evaluable level,
+    the top-1 accuracy per true code and the most frequent confusions.
+    """
+    df = ensure_predicted_levels(ensure_true_labels(df, code_column=code_column))
+    esc = html.escape
+    parts = [
+        "<!doctype html><html lang='fr'><head><meta charset='utf-8'>",
+        "<meta name='viewport' content='width=device-width, initial-scale=1'>",
+        "<title>Rapport d'évaluation TTC</title>",
+        f"<style>{_HTML_STYLE}</style></head><body>",
+        "<h1>Rapport d'évaluation TTC</h1>",
+    ]
+
+    meta_rows = {
+        "Fichier évalué": results.get("prediction_path", ""),
+        "N": f"{results['n_samples']:,}",
+        "Généré le": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+        **(meta or {}),
+    }
+    parts.append("<table class='meta'>")
+    parts += [
+        f"<tr><th>{esc(str(k))}</th><td>{esc(str(v))}</td></tr>"
+        for k, v in meta_rows.items()
+    ]
+    parts.append("</table>")
+
+    parts.append("<h2>Accuracy par niveau COICOP</h2>")
+    parts.append(_level_table_html(results["levels"]))
+
+    if "by_category" in results:
+        cat_col = results.get("categorical_column", "category")
+        parts.append(f"<h2>Par {esc(cat_col)}</h2>")
+        for cat_val, cat_levels in results["by_category"].items():
+            n_cat = next(iter(cat_levels.values()), {}).get("N", 0)
+            parts.append(f"<h3>{esc(cat_val)} (N={n_cat:,})</h3>")
+            parts.append(_level_table_html(cat_levels))
+
+    level = _finest_level(results)
+    if level is not None:
+        true_col, pred_col = f"level{level}", f"predicted_level{level}"
+        sub = df[df[true_col].notna() & df[pred_col].notna()]
+        sub = sub.assign(_hit=sub[true_col].astype(str) == sub[pred_col].astype(str))
+
+        per_code = (
+            sub.groupby(true_col)["_hit"]
+            .agg(N="size", accuracy="mean")
+            .sort_values(["accuracy", "N"], ascending=[True, False])
+        )
+        parts.append(f"<h2>Accuracy top-1 par code (level{level})</h2>")
+        parts.append(
+            "<p class='note'>Triée de la plus faible à la plus forte. Les lignes "
+            f"dont le code vrai ou prédit n'atteint pas le niveau {level} "
+            "(codes techniques courts, par ex. 98.4) n'y figurent pas.</p>"
+        )
+        parts.append("<table><tr><th>Code</th><th>N</th><th>Top-1</th></tr>")
+        parts += [
+            f"<tr><td>{esc(str(code))}</td><td>{int(r.N):,}</td>"
+            f"<td>{_pct(r.accuracy)}</td></tr>"
+            for code, r in per_code.iterrows()
+        ]
+        parts.append("</table>")
+
+        confusions = (
+            sub[~sub["_hit"]]
+            .groupby([true_col, pred_col])
+            .size()
+            .sort_values(ascending=False)
+            .head(n_confusions)
+        )
+        parts.append(f"<h2>Confusions les plus fréquentes (level{level})</h2>")
+        parts.append("<table><tr><th>Code vrai</th><th>Code prédit</th><th>N</th></tr>")
+        parts += [
+            f"<tr><td>{esc(str(t))}</td><td>{esc(str(p))}</td><td>{int(n):,}</td></tr>"
+            for (t, p), n in confusions.items()
+        ]
+        parts.append("</table>")
+
+    parts.append("</body></html>")
+    return "\n".join(parts)
+
+
+def write_text_output(text: str, path: str | Path, content_type: str = "text/plain") -> None:
+    """Write a text file locally or to S3 (``s3://bucket/key``, via boto3)."""
+    path_str = str(path)
+    if path_str.startswith("s3://"):
+        import boto3
+
+        endpoint = os.environ.get("AWS_S3_ENDPOINT") or os.environ.get("AWS_ENDPOINT_URL")
+        kwargs: dict = {}
+        if endpoint:
+            if not endpoint.startswith("http"):
+                endpoint = f"https://{endpoint}"
+            kwargs["endpoint_url"] = endpoint
+        parsed = urlparse(path_str)
+        boto3.client("s3", **kwargs).put_object(
+            Bucket=parsed.netloc,
+            Key=parsed.path.lstrip("/"),
+            Body=text.encode("utf-8"),
+            ContentType=f"{content_type}; charset=utf-8",
+        )
+    else:
+        Path(path_str).parent.mkdir(parents=True, exist_ok=True)
+        Path(path_str).write_text(text, encoding="utf-8")
+    logger.info("Saved %s", path_str)
+
+
 # ── High-level entry point ────────────────────────────
 
 
@@ -201,6 +366,8 @@ def run_evaluate_predictions(
     text_column: str = "product",
     categorical_column: str | None = None,
     max_k: int = 5,
+    html_output: str | Path | None = None,
+    report_meta: dict[str, str] | None = None,
 ) -> tuple[dict, str]:
     """Read a prediction file, evaluate it, and return (results, report).
 
@@ -210,6 +377,8 @@ def run_evaluate_predictions(
         text_column: Column holding the product text (used for logging only).
         categorical_column: Optional column to group results by.
         max_k: Maximum K for top-K accuracy.
+        html_output: If set, also write an HTML report there (local or S3).
+        report_meta: Extra key/value pairs shown in the HTML report header.
 
     Returns:
         Tuple of (results dict, formatted report string).
@@ -227,4 +396,9 @@ def run_evaluate_predictions(
     results["prediction_path"] = str(prediction_path)
 
     report = format_report(results, prediction_path=str(prediction_path))
+
+    if html_output:
+        page = format_html_report(results, df, code_column=code_column, meta=report_meta)
+        write_text_output(page, html_output, content_type="text/html")
+
     return results, report

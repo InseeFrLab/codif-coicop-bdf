@@ -447,7 +447,18 @@ def cmd_evaluate_report(args: argparse.Namespace) -> None:
 
 def cmd_evaluate_predictions(args: argparse.Namespace) -> None:
     """Evaluate a prediction file by COICOP level."""
-    from src.evaluation.evaluate_predictions import run_evaluate_predictions
+    from src.evaluation.evaluate_predictions import (
+        run_evaluate_predictions,
+        write_text_output,
+    )
+
+    report_meta = {}
+    for item in args.report_meta or []:
+        key, sep, value = item.partition("=")
+        if not sep:
+            logger.error("--report-meta expects KEY=VALUE, got %r", item)
+            sys.exit(1)
+        report_meta[key] = value
 
     _, report = run_evaluate_predictions(
         prediction_path=args.predictions,
@@ -455,13 +466,13 @@ def cmd_evaluate_predictions(args: argparse.Namespace) -> None:
         text_column=args.text_column,
         categorical_column=args.category_column,
         max_k=args.max_k,
+        html_output=args.html_output,
+        report_meta=report_meta,
     )
     print(report)
 
     if args.output:
-        Path(args.output).parent.mkdir(parents=True, exist_ok=True)
-        Path(args.output).write_text(report, encoding="utf-8")
-        logger.info(f"Report saved to {args.output}")
+        write_text_output(report, args.output)
 
 
 def main() -> int:
@@ -1554,7 +1565,19 @@ def main() -> int:
         "--output",
         type=str,
         default=None,
-        help="Save text report to file",
+        help="Save text report to file (local path or s3:// URI)",
+    )
+    eval_pred_parser.add_argument(
+        "--html-output",
+        type=str,
+        default=None,
+        help="Also write an HTML report (local path or s3:// URI)",
+    )
+    eval_pred_parser.add_argument(
+        "--report-meta",
+        action="append",
+        metavar="KEY=VALUE",
+        help="Extra line in the HTML report header (repeatable, e.g. model=runs:/...)",
     )
     eval_pred_parser.set_defaults(func=cmd_evaluate_predictions)
 

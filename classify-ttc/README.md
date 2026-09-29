@@ -430,6 +430,57 @@ uv run python main.py evaluate-report \
 | `--mlflow-experiment` | `None` | Experience MLflow (cree un nouveau run) |
 | `--amount-threshold` | `200` | Seuil de depense en euros |
 
+### Evaluation d'un fichier de predictions (`evaluate-predictions`)
+
+Top-k accuracy par niveau COICOP sur la sortie d'une commande `predict-*`
+(parquet/CSV, local ou S3), avec ventilation optionnelle par une colonne.
+
+```bash
+uv run python main.py evaluate-predictions s3://.../predictions.parquet \
+    --code-column code --max-k 5 \
+    --output s3://.../evaluation_report.txt \
+    --html-output s3://.../evaluation_report.html \
+    --report-meta "Modele=runs:/<run_id>/model"
+```
+
+| Argument | Defaut | Description |
+|----------|--------|-------------|
+| `--code-column` | `code` | Colonne du code COICOP vrai |
+| `--category-column` | — | Colonne de ventilation (ex. `source`) |
+| `--max-k` | `5` | K maximal du top-k |
+| `--output` | — | Rapport texte (local ou `s3://`) ; il est aussi affiche sur la sortie standard |
+| `--html-output` | — | Rapport HTML autonome (local ou `s3://`) : tableaux par niveau et par categorie, accuracy par code et confusions les plus frequentes au niveau le plus fin evalue |
+| `--report-meta` | — | Ligne `CLE=VALEUR` ajoutee en tete du HTML (repetable) |
+
+Un modele de niveau 4 evalue contre des codes a 5 niveaux n'a pas de ligne
+evaluable au niveau 5 (`N = 0`) : c'est attendu.
+
+### Entrainement et evaluation via Argo (`argo/train-ttc-pipeline.yaml`)
+
+Workflow en deux etapes, hors pipeline de codification :
+
+1. **`train`** (GPU) : `train-basic` sur `train-data` ; tous les parametres de la
+   commande sont exposes comme parametres du workflow (`batch-size` vaut 256 par
+   defaut, adapte a la GPU). Le run MLflow est cree par l'etape elle-meme, nomme
+   d'apres le workflow, et repris par `train-basic` via `MLFLOW_RUN_ID`.
+2. **`predict-evaluate`** : `predict-basic` avec le modele de ce run
+   (`runs:/<run_id>/model`) sur `eval-file`, puis `evaluate-predictions`. Le
+   rapport texte est dans la log ; `predictions.parquet`, `evaluation_report.txt`
+   et `evaluation_report.html` sont ecrits sous `output-prefix`
+   (par defaut `s3://projet-budget-famille/data/workflow_outputs/train-ttc/<workflow>`).
+
+```bash
+argo submit argo/train-ttc-pipeline.yaml --watch
+# Branche non fusionnee, run court de validation
+argo submit argo/train-ttc-pipeline.yaml -p git-branch=ma-branche -p num-epochs=1 --watch
+# Autre jeu d'entrainement / d'evaluation
+argo submit argo/train-ttc-pipeline.yaml \
+    -p train-data=s3://.../data-train.parquet \
+    -p eval-file=s3://.../test.parquet -p eval-text-column=product -p eval-code-column=code
+```
+
+Le modele retenu se recopie ensuite dans `classify-ttc-model-uri` (`argo/params.yaml`).
+
 ### Top-k accuracy (`topk_accuracy.py`)
 
 Script autonome pour calculer la top-k accuracy a partir d'un parquet de predictions :
