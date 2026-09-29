@@ -374,6 +374,46 @@ def cmd_build_training_data(args: argparse.Namespace) -> None:
     )
 
 
+def cmd_generate_synthetic(args: argparse.Namespace) -> None:
+    """Generate synthetic COICOP product labels with an LLM."""
+    from src.data.synthetic_generator import dry_run, generate_and_save
+
+    try:
+        if args.dry_run:
+            dry_run(
+                coicop_path=args.coicop,
+                examples_per_category=args.examples,
+                level=args.level,
+                max_categories=args.max_categories,
+                only_codes=args.codes,
+                technical=args.technical,
+                reference_path=args.reference,
+            )
+            return
+        generate_and_save(
+            coicop_path=args.coicop,
+            examples_per_category=args.examples,
+            output_csv=args.output,
+            raw_dir=args.raw_dir,
+            manifest_path=args.manifest,
+            level=args.level,
+            verify=args.verify,
+            retries=args.retries,
+            force=args.force,
+            max_categories=args.max_categories,
+            only_codes=args.codes,
+            technical=args.technical,
+            reference_path=args.reference,
+            max_workers=args.max_workers,
+            ddc_path=args.ddc,
+            temperature=args.temperature,
+            max_tokens=args.max_tokens,
+        )
+    except ValueError as exc:
+        logger.error("%s", exc)
+        sys.exit(1)
+
+
 def cmd_evaluate_report(args: argparse.Namespace) -> None:
     """Generate a comprehensive evaluation report on annotated data."""
     from src.evaluation.evaluation_report import (
@@ -1551,7 +1591,8 @@ def main() -> int:
         "--synthetic",
         type=str,
         default="data/synthetic_data.csv",
-        help="Path to synthetic data CSV (default: data/synthetic_data.csv)",
+        help="Synthetic data, local or S3: CSV (';', product;code;...) or parquet "
+        "(columns product, code) (default: data/synthetic_data.csv)",
     )
     build_data_parser.add_argument(
         "--max-per-code",
@@ -1578,6 +1619,106 @@ def main() -> int:
         help="Apply text preprocessing (default: True)",
     )
     build_data_parser.set_defaults(func=cmd_build_training_data)
+
+    # Generate-synthetic command
+    gen_syn_parser = subparsers.add_parser(
+        "generate-synthetic",
+        help="Generate synthetic COICOP product labels with an LLM (extra `synth`)",
+    )
+    gen_syn_parser.add_argument(
+        "--output",
+        type=str,
+        default="data/synthetic_data.csv",
+        help="Output CSV product;code;libelle (default: data/synthetic_data.csv)",
+    )
+    gen_syn_parser.add_argument(
+        "--coicop",
+        type=str,
+        default="data/coicop-2018_envoi_rmes_20251022.csv",
+        help="RMES nomenclature (.csv ';' or .parquet)",
+    )
+    gen_syn_parser.add_argument(
+        "--examples",
+        type=int,
+        default=300,
+        help="Examples per category when no --ddc allocation applies (default: 300)",
+    )
+    gen_syn_parser.add_argument(
+        "--level", type=int, default=4, help="COICOP level to generate (default: 4)"
+    )
+    gen_syn_parser.add_argument(
+        "--ddc",
+        type=str,
+        default=None,
+        help="DDC parquet (local or S3): per-code example count from DDC row bands",
+    )
+    gen_syn_parser.add_argument(
+        "--max-categories",
+        type=int,
+        default=None,
+        help="Max categories to process (dry-run: number of prompts shown, default 3)",
+    )
+    gen_syn_parser.add_argument(
+        "--codes",
+        type=lambda s: [c.strip() for c in s.split(",") if c.strip()],
+        default=None,
+        help="Comma-separated codes to generate (e.g. 01.1.2.1,05.3.1.9)",
+    )
+    gen_syn_parser.add_argument(
+        "--technical",
+        choices=["none", "add", "only"],
+        default="none",
+        help="Technical codes 98/99: none (default), add (on top of the level), only",
+    )
+    gen_syn_parser.add_argument(
+        "--reference",
+        "--technical-file",
+        dest="reference",
+        type=str,
+        default="data/20260130-coicop_et_codes_techniques.csv",
+        help='Reference code list "Libelle";"Code": 98/99 codes, and level codes '
+        "missing from --coicop (e.g. pruned X.0 codes)",
+    )
+    gen_syn_parser.add_argument(
+        "--max-workers", type=int, default=1, help="Parallel categories (default: 1)"
+    )
+    gen_syn_parser.add_argument(
+        "--verify",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="LLM check of category membership for each item (default: True)",
+    )
+    gen_syn_parser.add_argument(
+        "--retries",
+        type=int,
+        default=3,
+        help="Re-prompts per category to fill a shortfall (default: 3)",
+    )
+    gen_syn_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Regenerate codes already recorded in the manifest",
+    )
+    gen_syn_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print the prompts only, no LLM call",
+    )
+    gen_syn_parser.add_argument("--temperature", type=float, default=0.8)
+    gen_syn_parser.add_argument("--max-tokens", type=int, default=8192)
+    gen_syn_parser.add_argument(
+        "--raw-dir",
+        type=str,
+        default="data/synthetic_raw",
+        help="Per-code JSONL of accepted items (resume + provenance)",
+    )
+    gen_syn_parser.add_argument(
+        "--manifest",
+        type=str,
+        default="data/synthetic_manifest.json",
+        help="Run manifest JSON (resume + provenance)",
+    )
+    gen_syn_parser.set_defaults(func=cmd_generate_synthetic)
 
     # Extract-ddc command
     extract_ddc_parser = subparsers.add_parser(

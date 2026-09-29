@@ -25,7 +25,8 @@ que les dépendances de ce module (voir « Environnement Python » dans le READM
 ```mermaid
 flowchart LR
     S3[(S3 DDC)] -->|extract-ddc| DDC[Parquet DDC]
-    SYN[Donnees synthetiques] --> BUILD
+    LLM[(LLM)] -->|generate-synthetic| SYN[Donnees synthetiques]
+    SYN --> BUILD
     DDC -->|build-training-data| BUILD[Jeu d'entrainement]
     BUILD --> TRAIN_B[train-basic]
     BUILD --> TRAIN_H[train-hierarchical]
@@ -87,9 +88,72 @@ Le mode `--dry-run` affiche l'integralite du SQL qui serait execute sans se conn
 uv run python main.py extract-ddc --annee 2024 --dry-run
 ```
 
+## Generation des donnees synthetiques (`generate-synthetic`)
+
+La commande `generate-synthetic` (`src/data/synthetic_generator.py`) produit le CSV
+`data/synthetic_data.csv` consomme par `build-training-data` : des libelles de produits
+au style ticket de caisse (majuscules, sans accents, sans prix), generes par un LLM
+compatible OpenAI pour chaque code COICOP du niveau choisi, a partir des notes RMES
+(`comprend` / `ne comprend pas`).
+
+Dependances et configuration :
+
+```bash
+uv sync --locked --extra synth
+export OPENAI_API_KEY=...            # obligatoire (sauf --dry-run)
+export OPENAI_BASE_URL=...           # endpoint compatible OpenAI
+export OPENAI_MODEL=gemma4-26b-moe   # defaut
+```
+
+```bash
+# Voir les prompts sans appeler le LLM
+uv run python main.py generate-synthetic --dry-run --max-categories 3
+
+# Generation complete, nombre d'exemples par code module par le volume DDC
+uv run python main.py generate-synthetic --ddc data/raw/ddc.parquet --max-workers 4
+
+# Codes techniques 98/99 seulement, dans un fichier separe
+uv run python main.py generate-synthetic --technical only --output data/synthetic_technical.csv \
+    --raw-dir data/synthetic_raw_technical --manifest data/synthetic_manifest_technical.json
+```
+
+Pour chaque categorie :
+
+1. **Sortie LLM en trois paliers** : sortie structuree (pydantic) → tableau JSON strict → parseur ligne a ligne.
+2. **Validation** : chaque libelle doit survivre a la chaine `preprocess_text` (copie scalaire `clean_product`, dont l'equivalence est testee) et mesurer au plus 80 caracteres nettoye ; dedoublonnage sur le texte nettoye.
+3. **Verification** (`--verify`, defaut) : un appel LLM par lot confirme l'appartenance de chaque libelle a la categorie (desactivee pour les codes 98/99).
+4. **Relances** (`--retries`) tant que le nombre demande n'est pas atteint.
+
+Puis une curation globale supprime les doublons entre codes (le premier code dans l'ordre trie est garde ; les conflits sont listes dans le manifeste).
+
+**Allocation** : sans `--ddc`, `--examples` libelles par code. Avec `--ddc`, selon le nombre de lignes DDC du code de niveau 4 : ≥ 1000 → 0, 500–999 → 100, 100–499 → 200, 1–99 → 300, absent → 400.
+
+**Reprise** : chaque code termine est enregistre dans le manifeste (`--manifest`) et ses libelles acceptes dans `--raw-dir/<code>.jsonl`. Une relance saute les codes deja faits ; `--force` les regenere.
+
+**Nomenclature** : `--coicop` (CSV RMES `;` ou parquet elague). Les codes du niveau presents dans `--reference` mais absents de `--coicop` (ex. codes `X.0` elagues) sont ajoutes avec les notes RMES de leur propre ligne ou de leur plus proche ancetre.
+
+| Argument | Defaut | Description |
+|----------|--------|-------------|
+| `--output` | `data/synthetic_data.csv` | CSV `product;code;libelle` |
+| `--coicop` | `data/coicop-2018_envoi_rmes_20251022.csv` | Nomenclature RMES |
+| `--reference` | `data/20260130-coicop_et_codes_techniques.csv` | Liste `"Libelle";"Code"` : codes 98/99 et codes manquants |
+| `--level` | `4` | Niveau COICOP genere |
+| `--examples` | `300` | Libelles par code (hors allocation DDC) |
+| `--ddc` | — | Parquet DDC (local ou S3) pour l'allocation |
+| `--codes` | — | Liste de codes separes par des virgules |
+| `--technical` | `none` | Codes 98/99 : `none`, `add` ou `only` |
+| `--max-categories` | — | Limite le nombre de codes (en `--dry-run` : prompts affiches, 3 par defaut) |
+| `--max-workers` | `1` | Codes traites en parallele |
+| `--verify` / `--no-verify` | active | Verification LLM de l'appartenance |
+| `--retries` | `3` | Relances pour combler un deficit |
+| `--force` | — | Regenerer les codes deja dans le manifeste |
+| `--dry-run` | — | Affiche les prompts, aucun appel LLM |
+| `--temperature`, `--max-tokens` | `0.8`, `8192` | Parametres du LLM |
+| `--raw-dir`, `--manifest` | `data/synthetic_raw`, `data/synthetic_manifest.json` | Artefacts de reprise et de provenance |
+
 ## Construction du jeu d'entrainement (`build-training-data`)
 
-La commande `build-training-data` construit un jeu de donnees equilibre pret pour l'entrainement a partir des donnees de caisse (DDC) et de donnees synthetiques.
+La commande `build-training-data` construit un jeu de donnees equilibre pret pour l'entrainement a partir des donnees de caisse (DDC) et de donnees synthetiques (produites par `generate-synthetic`).
 
 ### Pipeline de pretraitement textuel
 
@@ -157,7 +221,7 @@ uv run python main.py build-training-data \
 |----------|:-----------:|--------|-------------|
 | `--ddc` | oui | — | Chemin vers le parquet DDC (local, S3 ou HTTP) |
 | `--output` | oui | — | Chemin du fichier parquet de sortie |
-| `--synthetic` | non | `data/synthetic_data.csv` | Chemin vers le CSV de donnees synthetiques (separateur `;`) |
+| `--synthetic` | non | `data/synthetic_data.csv` | Donnees synthetiques, en local ou sur S3 : CSV (separateur `;`, deux premieres colonnes `product;code`) ou parquet (colonnes `product` et `code`, glob accepte) |
 | `--max-per-code` | non | `1000` | Nombre max de lignes DDC par code de niveau 4 |
 | `--seed` | non | `42` | Graine aleatoire pour la reproductibilite |
 | `--encryption-key` | non | `None` | Cle de chiffrement parquet (hex, 32 chars) pour lire/ecrire des fichiers chiffres |
@@ -189,7 +253,7 @@ uv run python main.py train-basic \
 
 | Argument | Defaut | Description |
 |----------|--------|-------------|
-| `--data` | (obligatoire) | Parquet d'entrainement (issu de `build-training-data`) |
+| `--data` | (obligatoire) | Parquet d'entrainement (issu de `build-training-data`), local ou `s3://` (avec `--encryption-key` s'il est chiffre) |
 | `--output` | `checkpoints/basic` | Repertoire de sortie du modele |
 | `--ngram-min` | `3` | Taille minimale des n-grammes |
 | `--ngram-max` | `6` | Taille maximale des n-grammes |
@@ -244,7 +308,7 @@ uv run python main.py train-hierarchical \
 
 | Argument | Defaut | Description |
 |----------|--------|-------------|
-| `--data` | `data/data-train.parquet` | Donnees d'entrainement (parquet ou csv) |
+| `--data` | `data/data-train.parquet` | Parquet d'entrainement, local ou `s3://` (avec `--encryption-key` s'il est chiffre) |
 | `--output` | `checkpoints/hierarchical` | Repertoire de sortie |
 | `--ngram-min` | `3` | Taille minimale des n-grammes |
 | `--ngram-max` | `6` | Taille maximale des n-grammes |
@@ -279,7 +343,7 @@ uv run python main.py fine-tune-hierarchical \
 | Argument | Defaut | Description |
 |----------|--------|-------------|
 | `--model` | (obligatoire) | Chemin du modele pre-entraine |
-| `--data` | (obligatoire) | Nouvelles donnees d'entrainement |
+| `--data` | (obligatoire) | Nouvelles donnees d'entrainement (parquet, local ou `s3://`) |
 | `--output` | (obligatoire) | Repertoire de sortie |
 | `--levels` | tous | Niveaux a affiner (ex: `level3,level4`) |
 | `--max-level` | config du modele | Profondeur maximale de la hierarchie COICOP (1-5) |
@@ -442,13 +506,14 @@ coicop_bdf_classifier/
 │   ├── hierarchical_classifier.py # Classifieur hierarchique 5 niveaux
 │   ├── mlflow_utils.py            # Utilitaires MLflow (pyfunc wrapper)
 │   ├── predict.py                 # Modules de prediction
+│   ├── synthetic_generator.py     # Generation de donnees synthetiques (LLM)
 │   ├── train.py                   # Orchestration de l'entrainement
 │   └── static/
 │       └── index.html             # Interface web
 ├── data/
 │   ├── annotated/                 # Donnees annotees pour l'evaluation
 │   ├── famille_circana.csv        # Mapping famille Circana → COICOP
-│   ├── synthetic_data.csv         # Donnees synthetiques
+│   ├── synthetic_data.csv         # Donnees synthetiques (generate-synthetic)
 │   └── text/
 │       └── stopwords.json         # Stopwords pour le pretraitement
 └── docs/

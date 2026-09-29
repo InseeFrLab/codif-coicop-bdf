@@ -4,49 +4,19 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 
 import duckdb
 import pandas as pd
 
-from ..preprocessing.data_preparation import preprocess_text
+from ..preprocessing.data_preparation import (
+    configure_s3 as _configure_s3,
+    preprocess_text,
+    read_parquet as _read_parquet,
+)
 
 logger = logging.getLogger(__name__)
 
 STOPWORDS_PATH = "data/text/stopwords.json"
-
-
-def _configure_s3(con: duckdb.DuckDBPyConnection) -> None:
-    """Configure DuckDB S3 secret for the work bucket."""
-    con.execute(f"""
-        CREATE SECRET secret_ls3 (
-            TYPE S3,
-            KEY_ID '{os.environ["AWS_ACCESS_KEY_ID"]}',
-            SECRET '{os.environ["AWS_SECRET_ACCESS_KEY"]}',
-            ENDPOINT '{os.environ["AWS_S3_ENDPOINT"]}',
-            SESSION_TOKEN '{os.environ["AWS_SESSION_TOKEN"]}',
-            REGION 'us-east-1',
-            URL_STYLE 'path',
-            SCOPE 's3://'
-        );
-    """)
-
-
-def _read_parquet(path: str, encryption_key: str | None = None) -> pd.DataFrame:
-    """Read parquet from local path or S3 URL (with glob support)."""
-    if path.startswith("s3://") or encryption_key:
-        con = duckdb.connect()
-        if path.startswith("s3://"):
-            _configure_s3(con)
-        if encryption_key:
-            con.execute(
-                f"PRAGMA add_parquet_key('encryption_key', '{encryption_key}');"
-            )
-            return con.execute(
-                f"SELECT * FROM read_parquet('{path}', encryption_config={{footer_key: 'encryption_key'}})"
-            ).df()
-        return con.execute(f"SELECT * FROM '{path}'").df()
-    return pd.read_parquet(path)
 
 
 def _write_parquet(
@@ -80,6 +50,44 @@ def _extract_level4(code: pd.Series) -> pd.Series:
     return code.apply(lambda c: ".".join(str(c).split(".")[:4]))
 
 
+def _read_synthetic(path: str) -> pd.DataFrame:
+    """Read synthetic data (columns ``product``, ``code``), local or S3.
+
+    - Parquet (``*.parquet``, globs included): must carry ``product`` and ``code``.
+    - CSV ``;`` with a header line (``product;code;libelle`` as written by
+      ``generate-synthetic``): the first two columns, whatever their names.
+
+    The encryption key is not applied: it only concerns DDC and output files.
+    """
+    if path.endswith(".parquet"):
+        df = _read_parquet(path)
+        missing = {"product", "code"} - set(df.columns)
+        if missing:
+            raise ValueError(
+                f"Synthetic parquet {path} lacks columns {sorted(missing)}; "
+                f"got {list(df.columns)}"
+            )
+    elif path.startswith("s3://"):
+        con = duckdb.connect()
+        _configure_s3(con)
+        df = con.execute(
+            f"SELECT * FROM read_csv('{path}', delim=';', header=true, all_varchar=true)"
+        ).df()
+        df = df.iloc[:, :2].set_axis(["product", "code"], axis=1)
+    else:
+        df = pd.read_csv(
+            path,
+            sep=";",
+            skiprows=1,
+            header=None,
+            usecols=[0, 1],
+            names=["product", "code"],
+        )
+    df = df[["product", "code"]].copy()
+    df["code"] = df["code"].astype(str)
+    return df
+
+
 def build_training_data(
     ddc_path: str,
     output_path: str,
@@ -96,7 +104,8 @@ def build_training_data(
     Args:
         ddc_path: Path to DDC parquet (local, S3, or HTTP).
         output_path: Output parquet file path.
-        synthetic_path: Path to synthetic data CSV (semicolon-separated).
+        synthetic_path: Synthetic data, local or S3: CSV (semicolon-separated,
+            first two columns product;code) or parquet (columns product, code).
         max_per_code: Max DDC rows per level-4 code before sampling.
         seed: Random seed for reproducible sampling.
     """
@@ -117,15 +126,7 @@ def build_training_data(
 
     # --- Synthetic data ---
     logger.info("Reading synthetic data from %s", synthetic_path)
-    synthetic = pd.read_csv(
-        synthetic_path,
-        sep=";",
-        skiprows=1,
-        header=None,
-        usecols=[0, 1],
-        names=["product", "code"],
-    )
-    synthetic = synthetic[["product", "code"]].copy()
+    synthetic = _read_synthetic(synthetic_path)
     synthetic["source"] = "synthetic"
 
     logger.info("Synthetic rows before preprocessing: %d", len(synthetic))

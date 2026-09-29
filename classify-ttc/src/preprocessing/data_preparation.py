@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, List, Union
 
 import duckdb
 import json
+import os
 import numpy as np
 import pandas as pd
 import unidecode
@@ -18,14 +19,37 @@ if TYPE_CHECKING:
 COICOP_LEVELS = ["level1", "level2", "level3", "level4", "level5"]
 
 
+def configure_s3(con: duckdb.DuckDBPyConnection) -> None:
+    """Configure DuckDB S3 secret from the AWS_* environment variables."""
+    con.execute(f"""
+        CREATE SECRET secret_ls3 (
+            TYPE S3,
+            KEY_ID '{os.environ["AWS_ACCESS_KEY_ID"]}',
+            SECRET '{os.environ["AWS_SECRET_ACCESS_KEY"]}',
+            ENDPOINT '{os.environ["AWS_S3_ENDPOINT"]}',
+            SESSION_TOKEN '{os.environ["AWS_SESSION_TOKEN"]}',
+            REGION 'us-east-1',
+            URL_STYLE 'path',
+            SCOPE 's3://'
+        );
+    """)
+
+
 def read_parquet(path: str | Path, encryption_key: str | None = None) -> pd.DataFrame:
-    """Read parquet file, with optional DuckDB decryption."""
-    if encryption_key:
+    """Read parquet from a local path or S3 URL (glob supported), optionally encrypted."""
+    path = str(path)
+    if path.startswith("s3://") or encryption_key:
         con = duckdb.connect()
-        con.execute(f"PRAGMA add_parquet_key('encryption_key', '{encryption_key}');")
-        return con.execute(
-            f"SELECT * FROM read_parquet('{path}', encryption_config={{footer_key: 'encryption_key'}})"
-        ).df()
+        if path.startswith("s3://"):
+            configure_s3(con)
+        if encryption_key:
+            con.execute(
+                f"PRAGMA add_parquet_key('encryption_key', '{encryption_key}');"
+            )
+            return con.execute(
+                f"SELECT * FROM read_parquet('{path}', encryption_config={{footer_key: 'encryption_key'}})"
+            ).df()
+        return con.execute(f"SELECT * FROM '{path}'").df()
     return pd.read_parquet(path)
 
 

@@ -27,9 +27,7 @@ dependencies = [
 
 [project.optional-dependencies]
 synth = [
-    "langchain>=1.2.8",
-    "langchain-experimental>=0.4.1",
-    "langchain-openai>=0.3.0",
+    "langchain-openai>=1.1.7",
 ]
 
 # `tests/` existe : pytest est déclaré ici pour que

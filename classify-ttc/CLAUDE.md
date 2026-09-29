@@ -39,6 +39,10 @@ uv run python main.py predict-basic --model checkpoints/basic/basic_model "pain 
 # Generate evaluation report on annotated data
 uv run python main.py evaluate-report --model checkpoints/basic/basic_model --data-dir data/annotated
 
+# Generate synthetic training labels with an LLM (needs `uv sync --extra synth` + OPENAI_API_KEY)
+uv run python main.py generate-synthetic --dry-run --max-categories 3
+uv run python main.py generate-synthetic --ddc data/raw/ddc.parquet --max-workers 4
+
 # Start FastAPI server
 uv run python main.py serve --model checkpoints/hierarchical/hierarchical_model
 ```
@@ -65,7 +69,7 @@ uv run python main.py serve --model checkpoints/hierarchical/hierarchical_model
 
 ### CLI Structure
 
-`main.py` uses argparse with subcommands: `train-hierarchical`, `fine-tune-hierarchical`, `train-multihead`, `train-basic`, `predict-hierarchical`, `predict-multihead`, `predict-basic`, `evaluate-report`, `build-training-data`, `extract-ddc`, `serve`. Each subcommand has a `cmd_*` handler that imports the relevant module lazily.
+`main.py` uses argparse with subcommands: `train-hierarchical`, `fine-tune-hierarchical`, `train-multihead`, `train-basic`, `predict-hierarchical`, `predict-multihead`, `predict-basic`, `evaluate-report`, `generate-synthetic`, `build-training-data`, `extract-ddc`, `serve`. Each subcommand has a `cmd_*` handler that imports the relevant module lazily.
 
 ### Project Structure
 
@@ -79,7 +83,8 @@ uv run python main.py serve --model checkpoints/hierarchical/hierarchical_model
 - No package index is configured in the repo — uv resolves against PyPI directly,
   PyTorch included (`uv.lock` records `torch` from `https://pypi.org/simple`, i.e. the
   default build with CUDA wheels, not a CPU-only index)
-- Langchain dependencies are optional: install with `uv sync --extra synth`
+- Langchain dependencies are optional: install with `uv sync --extra synth` (only `generate-synthetic` needs them; `langchain_openai` is imported lazily in `src/data/synthetic_generator.py:get_llm`)
+- `src/data/synthetic_generator.py:clean_product` is a scalar copy of `preprocess_text`: any change to the preprocessing must be mirrored there (`tests/test_synthetic_generator.py` pins the equivalence)
 - Training data format: parquet with columns `product` (text), `code` (COICOP code), `coicop` (description)
 - COICOP codes are dot-separated hierarchical strings (e.g., "01.1.2.3.4")
 - Text preprocessing always applies `preprocess_text()` before training/prediction

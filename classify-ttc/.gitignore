@@ -26,3 +26,6 @@ models/
 # Quarto
 index_files/
 .html
+# Artefacts de run de generate-synthetic (reprise + provenance)
+data/synthetic_raw/
+data/synthetic_manifest.json
