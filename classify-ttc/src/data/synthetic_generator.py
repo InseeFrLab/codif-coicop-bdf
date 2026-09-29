@@ -21,6 +21,7 @@ import os
 import re
 import threading
 import time
+import unicodedata
 import warnings
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -28,7 +29,6 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
-import unidecode
 from pydantic import BaseModel, Field, field_validator
 
 # langchain-openai's structured-output path triggers a harmless pydantic
@@ -73,13 +73,15 @@ ALLOCATION_ZERO_BAND = 400
 # ---------------------------------------------------------------------------
 # Cleaning chain (scalar copy of src/preprocessing/data_preparation.py:preprocess_text)
 #
-# Scalar equivalent of: unidecode -> lower -> remove_noise ->
+# Scalar equivalent of: normalize_text -> remove_noise ->
 # tokenize_and_clean -> remove_empty_and_strip -> remove_stopwords.
 # A row the pipeline drops (empty/whitespace) is returned as None.
 # Kept scalar for speed (called per item, several times); equivalence with
 # preprocess_text is pinned by tests/test_synthetic_generator.py.
 # ---------------------------------------------------------------------------
 
+_SPACES_RE = re.compile(r"\s+")
+_LIGATURES = {"œ": "oe", "Œ": "Oe", "æ": "ae", "Æ": "Ae"}
 _RIEN_RE = re.compile(r"\brien\b|\rien du tout\b")
 _PUNCT_RE = re.compile(r"[^\w\s]+")
 _DIGIT_PLUS_RE = re.compile(r"[\d+]")
@@ -92,8 +94,8 @@ def clean_product(text: str, stopwords: list[str]) -> str | None:
     Retourne la chaîne nettoyée, ou ``None`` si la chaîne devient vide
     (ligne supprimée par le pipeline de training).
 
-    Steps (ordre strict, identique à ``src.data_preparation.preprocess_text``):
-        1. unidecode
+    Steps (ordre strict, identique à ``src.preprocessing.data_preparation.preprocess_text``):
+        1. normalize_text : espaces, ligatures, NFKD, suppression du non-ASCII
         2. lower
         3. re.sub "\\brien\\b|\\rien du tout\\b" (regex copié tel quel)
         4. re.sub "[^\\w\\s]+" -> " " (ponctuation)
@@ -105,7 +107,10 @@ def clean_product(text: str, stopwords: list[str]) -> str | None:
        10. strip; vide/blanc -> None (check AVANT suppression des stop-words)
        11. drop des tokens présents dans ``stopwords``
     """
-    t = unidecode.unidecode(text)
+    t = _SPACES_RE.sub(" ", text)
+    for lig, repl in _LIGATURES.items():
+        t = t.replace(lig, repl)
+    t = unicodedata.normalize("NFKD", t).encode("ascii", "ignore").decode("ascii")
     t = t.lower()
     t = _RIEN_RE.sub("", t)
     t = _PUNCT_RE.sub(" ", t)

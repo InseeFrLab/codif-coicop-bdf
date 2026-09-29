@@ -59,7 +59,7 @@ uv run python main.py serve --model checkpoints/hierarchical/hierarchical_model
 
 ### Key Data Flow
 
-1. **Data loading** (`src/data_preparation.py`): Reads parquet, applies text preprocessing (unidecode → lowercase → noise/punctuation/digit removal → dedup tokens → remove stopwords from `data/text/stopwords.json`), extracts 5 hierarchical levels from dotted COICOP codes (e.g., "01.1.2.3.4" → level1="01", level2="01.1", etc.), filters out technical codes 98.x/99.x.
+1. **Data loading** (`src/data_preparation.py`): Reads parquet, applies text preprocessing (`normalize_text`, a copy of build-datasets' — ligatures, NFKD, non-ASCII dropped, lowercase — → noise/punctuation/digit removal → dedup tokens → remove stopwords from `data/text/stopwords.json`), extracts 5 hierarchical levels from dotted COICOP codes (e.g., "01.1.2.3.4" → level1="01", level2="01.1", etc.), filters out technical codes 98.x/99.x.
 
 2. **Training** (`src/train.py`): Orchestrates training for all classifier types, handles MLflow experiment tracking, runs optional post-training top-k evaluation.
 

@@ -35,6 +35,10 @@ TRICKY = [
     "!!! ???",
     "Pâté de campagne, 2 x 125 g",
     "OEUFS X12 ST JACQUES",
+    "PROSECCO RICCADONNA 11° 75CL 2 X 7.99€",
+    "Œufs frais bœuf ÆTHER",
+    "CAPSULES N°10 – INTENSE",
+    "Straße ½ baguette",
 ]
 
 

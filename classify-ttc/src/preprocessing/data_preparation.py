@@ -10,7 +10,6 @@ import json
 import os
 import numpy as np
 import pandas as pd
-import unidecode
 
 
 if TYPE_CHECKING:
@@ -104,7 +103,7 @@ def load_annotations(
         path: Path to annotations.parquet file
         exclude_technical: Whether to exclude 98.x and 99.x technical codes
         encryption_key: Parquet encryption key for reading encrypted files
-        preprocess: Whether to apply text preprocessing (unidecode, stopword removal, etc.)
+        preprocess: Whether to apply text preprocessing (normalization, stopword removal, etc.)
         code_column: Name of the column containing COICOP codes
 
     Returns:
@@ -153,6 +152,27 @@ def get_class_weights(labels: Sequence[str]) -> dict[str, float]:
 
 
 
+def normalize_text(series: pd.Series) -> pd.Series:
+    """Normalisation légère : copie de ``normalize_text`` de build-datasets.
+
+    Copie de ``build-datasets/src/data/string_cleaning.py:normalize_text``, qui
+    produit ``l_pr_product``, le texte que classify-ttc reçoit en production.
+    L'appliquer aussi ici garantit que l'entraînement (texte brut) et la
+    production (``l_pr_product``) donnent le même texte : ``unidecode``, utilisé
+    auparavant, transcrivait ``€`` en ``eur`` et ``°`` en ``deg``, que
+    ``normalize_text`` supprime. Toute modification doit être faite des deux côtés.
+    """
+    # Supprimer les multiples espaces
+    series = series.str.replace(r"\s+", " ", regex=True)
+    # Remplacer explicitement toutes les ligatures (NFKD ne les décompose pas)
+    for lig, repl in {"œ": "oe", "Œ": "Oe", "æ": "ae", "Æ": "Ae"}.items():
+        series = series.str.replace(lig, repl, regex=False)
+    # Décomposer les accents, puis supprimer tout caractère non ASCII
+    series = series.str.normalize("NFKD")
+    series = series.str.encode("ascii", errors="ignore").str.decode("ascii")
+    return series.str.lower()
+
+
 def preprocess_text(
     df: pd.DataFrame, text_feature: str, stopwords: Union[List[str], set[str]]
 ) -> pd.DataFrame:
@@ -168,8 +188,7 @@ def preprocess_text(
         DataFrame prétraitée.
     """
     df[text_feature + "_orig"] = df[text_feature].copy()
-    df[text_feature] = df[text_feature].fillna("").map(unidecode.unidecode)
-    df[text_feature] = df[text_feature].str.lower()
+    df[text_feature] = normalize_text(df[text_feature].fillna("").astype(str))
     df = remove_noise(df, text_feature)
     df = tokenize_and_clean(df, text_feature)
     df = remove_empty_and_strip(df, text_feature)

@@ -157,13 +157,12 @@ La commande `build-training-data` construit un jeu de donnees equilibre pret pou
 
 ### Pipeline de pretraitement textuel
 
-Chaque texte passe par la fonction `preprocess_text` (definie dans `src/data_preparation.py`) :
+Chaque texte passe par la fonction `preprocess_text` (definie dans `src/preprocessing/data_preparation.py`) :
 
 ```mermaid
 flowchart LR
-    A[Texte brut] --> B[unidecode]
-    B --> C[minuscules]
-    C --> D[suppression bruit]
+    A[Texte brut] --> B[normalize_text]
+    B --> D[suppression bruit]
     D --> E[dedup tokens]
     E --> F[suppression vides]
     F --> G[suppression stopwords]
@@ -172,12 +171,11 @@ flowchart LR
 
 Detail des etapes :
 
-1. **Translitteration Unicode** (`unidecode`) — `"Creme brulee BIO"` → `"Creme brulee BIO"`
-2. **Passage en minuscules** — `"Creme brulee BIO"` → `"creme brulee bio"`
-3. **Suppression du bruit** (`remove_noise`) — ponctuation, chiffres, mots d'une seule lettre, expressions vides (`"rien"`, `"rien du tout"`)
-4. **Deduplication des tokens** (`tokenize_and_clean`) — `"lait lait entier lait"` → `"lait entier"`
-5. **Suppression des lignes vides** (`remove_empty_and_strip`)
-6. **Suppression des stopwords** — mots courants definis dans `data/text/stopwords.json`
+1. **Normalisation** (`normalize_text`, copie de celle de `build-datasets` qui produit `l_pr_product`) — ligatures (`œ` → `oe`), accents retires (NFKD), tout caractere non ASCII supprime (`€`, `°`…), minuscules : `"Crème brûlée BIO 11°"` → `"creme brulee bio 11"`. Le texte d'entrainement (brut) et celui de production (`l_pr_product`) donnent ainsi le meme resultat.
+2. **Suppression du bruit** (`remove_noise`) — ponctuation, chiffres, mots d'une seule lettre, expressions vides (`"rien"`, `"rien du tout"`)
+3. **Deduplication des tokens** (`tokenize_and_clean`) — `"lait lait entier lait"` → `"lait entier"`
+4. **Suppression des lignes vides** (`remove_empty_and_strip`)
+5. **Suppression des stopwords** — mots courants definis dans `data/text/stopwords.json`
 
 ### Logique d'equilibrage
 
