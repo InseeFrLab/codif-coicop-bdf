@@ -13,6 +13,11 @@ dependencies = [
     "codif-common",
 ]
 
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+]
+
 [tool.uv.sources]
 codif-common = { workspace = true }
 prune-codes = { workspace = true }

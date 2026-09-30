@@ -94,6 +94,8 @@ Tous ces codes sont **tronqués au niveau 4 et élagués** par `reconcile-llm` q
 | `llm_error` | `reconcile-llm` | Raison de l'échec quand `llm_code` est NA (`RateLimitError`, JSON invalide…). |
 | `predicted_code` | `export-results` | Code livré : `llm_code` s'il existe, sinon `predict_code` (regex), sinon vide. |
 | `prediction_source` | `export-results` | Origine du code : `consensus` > `regex` > `llm` > *(vide)* — un indicateur de fiabilité. |
+| `reconciliation_type` | `export-results` | Chemin suivi par la conciliation : `candidat_unique`, `choix_sirus`, `consensus`, `choix_llm`, `regex`, `aucun_code`. Sépare un vrai choix d'un court-circuit. |
+| `n_classifiers_agreeing` | `export-results` | Nombre de classifieurs (0-4) ayant proposé le code livré ; détail par classifieur dans `proposed_by_{lcs,rag,ragann,ttc}`. |
 | `code_parent_equivalent` | `prune-codes` | Code canonique d'un code replié, dans `mapping_lvl4.parquet`. |
 | `code_lvl4` | `reconcile-llm` | Vérité terrain **canonique** : `code` tronqué au niveau 4 puis élagué. C'est la colonne que l'étape [`evaluate`](11-evaluate.qmd) score — son absence la fait **échouer**. |
 | `llm_comment` | `export-results` | Copie de `llm_explication` dans le fichier livré. |
