@@ -1097,6 +1097,96 @@ def end_to_end(
     }
 
 
+def _division(code: pd.Series) -> pd.Series:
+    """Premier segment d'un code COICOP ; la valeur telle quelle si ce n'en est
+    pas un (« Reprise manuelle » renvoyé par la regex), NA si vide."""
+    code = code.astype("string").str.strip()
+    head = code.str.split(".").str[0]
+    return head.where(head.str.fullmatch(r"\d{2}").fillna(False), code)
+
+
+def spending_by_division(
+    con,
+    deliverable_path: Optional[str],
+    observations_path: Optional[str],
+    threshold: float = 50.0,
+) -> Optional[Dict]:
+    """Dépense totale par division COICOP, selon le code labellisé et le code livré.
+
+    La question d'un agrégat budgétaire : combien d'euros chaque division
+    reçoit-elle si l'on code avec la chaîne plutôt qu'à la main ? Deux
+    périmètres — tous les produits, et ceux de moins de ``threshold`` € —, parce
+    que quelques gros montants mal classés suffisent à déplacer un total.
+
+    Même périmètre et même vérité que `end_to_end` : les lignes du livrable que
+    ce run a codées, regex comprise, jointes à `observations` pour le code
+    labellisé et le `budget`. L'élagage niveau 4 ne fait jamais changer de
+    division, il est donc inutile ici. Les lignes sans budget sont exclues et
+    comptées.
+    """
+    if not (deliverable_path and observations_path):
+        return None
+    deliverable = _read(con, deliverable_path)
+    observations = _read(con, observations_path)
+    if deliverable is None or observations is None:
+        return None
+    if not {"id", "predicted_code"} <= set(deliverable.columns):
+        return None
+    if not {"id", "code", "budget"} <= set(observations.columns):
+        return None
+
+    livre = deliverable[["id", "predicted_code"] + (
+        ["prediction_source"] if "prediction_source" in deliverable.columns else []
+    )]
+    decided = (
+        livre[livre["prediction_source"].notna()]
+        if "prediction_source" in livre.columns
+        else livre[livre["predicted_code"].notna()]
+    )
+    truth = observations[["id", "code", "budget"]]
+    truth = truth[truth["code"].notna() & (truth["code"].astype(str).str.len() > 0)]
+    merged = decided.merge(truth, how="inner", on="id")
+    if not len(merged):
+        return None
+    merged = merged.assign(
+        budget=pd.to_numeric(merged["budget"], errors="coerce"),
+        div_label=_division(merged["code"]),
+        div_predit=_division(merged["predicted_code"]),
+    )
+    n_no_budget = int(merged["budget"].isna().sum())
+    merged = merged[merged["budget"].notna()]
+
+    def _table(frame: pd.DataFrame) -> pd.DataFrame:
+        label = frame.groupby("div_label")["budget"].agg(["size", "sum"])
+        predit = frame.groupby("div_predit")["budget"].agg(["size", "sum"])
+        t = pd.DataFrame({
+            "n labellisé": label["size"],
+            "dépense labellisée": label["sum"],
+            "n prédit": predit["size"],
+            "dépense prédite": predit["sum"],
+        }).fillna(0)
+        t[["n labellisé", "n prédit"]] = t[["n labellisé", "n prédit"]].astype(int)
+        t["écart"] = t["dépense prédite"] - t["dépense labellisée"]
+        # Rapporté à la dépense labellisée : sans objet pour une division que
+        # seule la prédiction fait exister.
+        t["écart %"] = (t["écart"] / t["dépense labellisée"]).where(t["dépense labellisée"] > 0)
+        total = frame["budget"].sum()
+        t["écart de part (pts)"] = 100 * t["écart"] / total if total else None
+        t.index.name = "division"
+        return t.sort_index()
+
+    return {
+        "all": _table(merged),
+        "below": _table(merged[merged["budget"] < threshold]),
+        "threshold": threshold,
+        "n": len(merged),
+        "n_below": int((merged["budget"] < threshold).sum()),
+        "n_no_budget": n_no_budget,
+        "total": float(merged["budget"].sum()),
+        "total_below": float(merged.loc[merged["budget"] < threshold, "budget"].sum()),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Vers MLflow
 # ---------------------------------------------------------------------------

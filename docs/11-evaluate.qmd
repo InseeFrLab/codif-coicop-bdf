@@ -116,7 +116,12 @@ comptée fausse.
   brutes, la **distance en variation totale** — la part des produits qu'il faudrait
   déplacer pour retrouver la vraie répartition —, et le **taux de compensation**, la part
   des erreurs qui s'annulent entre elles. La divergence de Kullback-Leibler est donnée en
-  complément, à comparer entre runs et non dans l'absolu ;
+  complément, à comparer entre runs et non dans l'absolu. Il se termine par la **dépense
+  totale par division** : la somme des `budget` rangée selon le code labellisé puis selon le
+  code livré, regex comprise, sur tous les produits puis sur ceux de moins de 50 €. Un
+  agrégat budgétaire compte des euros, pas des produits, et quelques gros montants mal
+  classés suffisent à déplacer un total ; la comparaison des deux tableaux dit si un écart
+  vient des petits achats ou des gros ;
 - **Accuracy par régime de décision** : une part des lignes est décidée sans que la
   conciliation choisisse quoi que ce soit — court-circuit consensus pour le juge LLM,
   candidat unique pour SIRUS (quand les classifieurs s'accordent, il ne reste qu'un

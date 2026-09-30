@@ -976,6 +976,63 @@ Ces chiffres portent sur les {_n(n)} observations étiquetées passées par la c
 Markdown(md)
 ```
 
+### Dépense totale par division : code labellisé contre code livré
+
+Le tableau précédent compte des produits. Un agrégat budgétaire compte des **euros** : quelques gros montants mal classés déplacent un total bien plus qu'une centaine de petits achats. On somme donc le `budget` de chaque produit dans la division de son code labellisé, puis dans celle de son code livré. Le périmètre est celui du fichier livré, regex comprise, comme au chapitre « Accuracy du fichier livré ».
+
+```{python}
+# | label: tbl-spending-division
+_spend = I.spending_by_division(con, DELIVERABLE_PATH, OBSERVATIONS_PATH)
+# Les codes spéciaux BdF (98, 99) ne sont pas dans la nomenclature COICOP : on
+# les nomme ici plutôt que de les laisser nus dans un tableau de montants.
+_spend_labels = {
+    "98": "Codes spéciaux BdF (courses non ventilées, illisible…)",
+    "99": "Hors champ COICOP",
+    **DIVISION_LABELS,
+}
+
+
+_eur = lambda v: f"{v:,.0f}".replace(",", " ")  # noqa: E731
+
+
+def _spend_view(t: pd.DataFrame) -> pd.DataFrame:
+    view = pd.DataFrame({
+        "division": [I.label_division(c, _spend_labels) for c in t.index],
+        "n labellisé": t["n labellisé"].values,
+        "n prédit": t["n prédit"].values,
+        "dépense labellisée (€)": t["dépense labellisée"].map(_eur).values,
+        "dépense prédite (€)": t["dépense prédite"].map(_eur).values,
+        "écart (€)": t["écart"].map(lambda v: f"{v:+,.0f}".replace(",", " ")).values,
+        "écart %": t["écart %"].map(lambda v: "—" if pd.isna(v) else f"{v:+.1%}").values,
+        "écart de part": t["écart de part (pts)"].map(lambda v: f"{v:+.1f} pts").values,
+    })
+    return view
+
+
+if _spend is None:
+    md = "_Non calculable : le livrable ou les observations (avec `budget`) manquent._"
+else:
+    _seuil = f"{_spend['threshold']:.0f} €"
+    _exclus = (
+        f" {_spend['n_no_budget']} produits sans budget sont exclus."
+        if _spend["n_no_budget"] else ""
+    )
+    md = (
+        f"**Tous les produits** — {_eur(_spend['n'])} produits, "
+        f"{_eur(_spend['total'])} € au total.{_exclus} "
+        "Un écart positif : la chaîne attribue à la division plus d'euros que "
+        "le codage manuel.\n\n"
+        + _spend_view(_spend["all"]).to_markdown(index=False, disable_numparse=True)
+        + f"\n\n**Produits de moins de {_seuil}** — "
+        + f"{_eur(_spend['n_below'])} produits, "
+        f"{_eur(_spend['total_below'])} € au total. Comparer aux tableaux "
+        "ci-dessus dit si un écart vient des petits achats ou de quelques gros "
+        "montants.\n\n"
+        + _spend_view(_spend["below"]).to_markdown(index=False, disable_numparse=True)
+    )
+Markdown(md)
+```
+
 ## Décomposition interne des classifieurs
 
 Les tableaux précédents disent **combien** chaque brique se trompe, pas **où**. Un RAG à 70 % peut être un retriever qui ne ramène jamais la bonne réponse — aucun prompt ne le sauvera — ou un générateur qui la voit et choisit autre chose. Les corrections sont opposées, et le chiffre agrégé ne permet pas de trancher.
