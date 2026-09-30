@@ -9,7 +9,7 @@ subtitle: "Liens utiles, outils et contacts du projet"
 - **Dépôt GitHub du pipeline** : <https://github.com/InseeFrLab/codif-coicop-bdf>
 - **Présentation du projet à ISI 2026** : <https://github.com/Lagaims/prez-coicop-isi>
 - **Guide opérationnel Argo** : `argo/argo_helper.md` dans le dépôt (installation de la CLI,
-  `argo submit` / `logs` / `retry`, table des paramètres)
+  vérifications, `argo submit`, vector DBs, commandes de débogage)
 - **Paramétrage d'un run** : `argo/params.yaml` (fichier à codifier, colonne d'étiquettes,
   échantillonnage, branche git…)
 
