@@ -34,6 +34,27 @@ def split_by_product(table: pd.DataFrame, *, frac: float, seed: int) -> pd.DataF
     return out
 
 
+def keep_multi_candidates(table: pd.DataFrame) -> pd.DataFrame:
+    """Ne garde que les produits à au moins deux candidats.
+
+    **Non appliqué par défaut** (`build-table --multi-candidates-only`). L'idée :
+    les produits à candidat unique étant routés sans modèle en production
+    (`scorer.split_single_candidates`), les retirer de l'entraînement éviterait
+    d'apprendre sur un cas facile — presque toujours correct — qui tire le taux
+    de base vers le haut. Mesuré sur les produits à plusieurs candidats, le
+    résultat se contredit d'un run à l'autre : −1,6 point sur le test 20 % de
+    codif-c9vjm (p ≈ 0,02), +1,2 point sur codif-x98xl hors échantillon
+    (p ≈ 0,004). Faute de gain robuste, le défaut reste l'entraînement sur toutes
+    les lignes (cf. `notebooks/sirus_multi_candidats.ipynb`).
+
+    À appliquer **après** `split_by_product` : le test 20 % porte alors sur les
+    mêmes produits qu'un entraînement sans filtre, ce qui rend les deux
+    comparables.
+    """
+    n_cand = table.groupby("id")["id"].transform("size")
+    return table[n_cand >= 2].reset_index(drop=True)
+
+
 def verify_scorer_against_r(
     rules: Rules, test: pd.DataFrame, proba_r_path: str | Path
 ) -> bool:

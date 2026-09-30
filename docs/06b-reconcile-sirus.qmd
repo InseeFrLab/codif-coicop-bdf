@@ -68,8 +68,9 @@ sans apparaître ni dans les résultats ni dans le décompte des produits sans c
 | Colonne | Sens |
 |---|---|
 | `sirus_code` | Code retenu (argmax du score), `NA` si aucun candidat exploitable |
-| `sirus_proba` | Score du candidat retenu |
+| `sirus_proba` | Score du candidat retenu ; NaN pour un produit routé (candidat unique) |
 | `sirus_n_candidats` | Nombre de candidats scorés pour ce produit |
+| `sirus_route` | `modele` (argmax SIRUS), `candidat_unique` (code retenu sans modèle), `aucun_candidat` |
 | `sirus_model_uri`, `sirus_timestamp` | Traçabilité |
 
 Les colonnes portent des noms honnêtes (`sirus_code`, pas `llm_code`) :
@@ -151,27 +152,21 @@ l'étape échoue en cas de divergence.
   l'essentiel du modèle, en silence. `reconcile-sirus` compare les distributions du run à
   celles de l'entraînement et avertit, mais la seule vraie réponse est de réentraîner
   (`./train.sh` sur un run récent).
-- **SIRUS ne court-circuite pas l'unanimité — mais le résultat y ressemble.** Contrairement
-  au juge LLM, qui saute son appel quand les 4 classifieurs s'accordent et que la confiance
-  TTC dépasse 0,90 (`try_consensus_decision`), `reconcile-sirus` score toutes les lignes : il
-  n'a aucun appel à économiser. Seulement, les candidats sont les codes **distincts** proposés
-  par les 4 classifieurs (`VOTERS`, `src/candidates.py` — `ttc_code_1` seul, pas les top-2/3),
-  donc l'unanimité n'en laisse qu'un et l'argmax ne peut que le retenir. Deux différences
-  subsistent, que le rapport d'évaluation chiffre désormais : le score est calculé quand même
-  (un `sirus_proba` bas sur un produit unanime n'est pas une hésitation, il n'y avait rien à
-  comparer), et si ce candidat unique est écarté par `scorable_mask`, le produit ressort
-  **sans code** là où un court-circuit l'aurait codé.
-- **L'accuracy de SIRUS est mécaniquement gonflée par ces produits**, et son entraînement
-  les inclut aussi. Un produit à candidat unique compte comme une réussite du modèle alors
-  qu'il n'a rien choisi — ce sont les cas faciles, donc majoritairement corrects. Deux
-  conséquences : le rapport d'évaluation ventile désormais l'accuracy par **régime de
-  décision** (`sirus_n_candidats` : aucun candidat / candidat unique / choix réel) et ne
-  retient que la dernière colonne comme mesure du modèle ; et `build_calibration` logue
-  `accuracy_product_multi` à côté d'`accuracy_product`. Rien ne filtre l'entraînement
-  lui-même : la table candidat-level part telle quelle vers `fit_sirus.R`. C'est une piste
-  à instruire — la sélection de règles de SIRUS se fait par stabilité, et une masse de
-  lignes faciles à `nb_votants = 4` pousse vers des règles sur les votes, ce qui pourrait
-  expliquer que `code_candidat_n1` n'apparaisse dans aucune des 20 règles.
+- **Les produits à candidat unique sont routés sans modèle.** Les candidats sont les codes
+  **distincts** proposés par les 4 classifieurs (`VOTERS`, `src/candidates.py` — `ttc_code_1`
+  seul, pas les top-2/3) : une unanimité, ou une proposition isolée quand les autres se sont
+  abstenus, n'en laisse qu'un, et l'argmax ne pourrait que le retenir.
+  `split_single_candidates` (`src/scorer.py`) leur attribue donc ce code directement, avec
+  `sirus_proba` à NaN et `sirus_route = "candidat_unique"`. Contrairement au court-circuit du
+  juge LLM (`try_consensus_decision`), aucune confiance TTC minimale n'est exigée. Ces
+  produits restent en revanche **dans l'entraînement** : l'option
+  `build-table --multi-candidates-only` les écarte, mais son effet sur les produits à
+  plusieurs candidats se contredit d'un run à l'autre : 67,2 → 65,6 % sur le test 20 % de
+  codif-c9vjm (p ≈ 0,02), 68,8 → 70,0 % sur codif-x98xl hors échantillon (p ≈ 0,004). Faute
+  de gain robuste, le défaut reste inchangé
+  (`reconcile-sirus/notebooks/sirus_multi_candidats.ipynb`).
+  Le rapport d'évaluation ventile l'accuracy par **régime de décision** (`sirus_n_candidats` : aucun candidat /
+  candidat unique / choix réel) ; seule la dernière colonne mesure le modèle.
 - **SIRUS ne crée pas de candidat.** Si le bon code n'est proposé par aucun classifieur,
   aucun réglage ne le retrouvera : c'est la métrique `upper_bound`.
 - Le [rapport de production](08-report.qmd) saute ses sections d'accord avec le juge en

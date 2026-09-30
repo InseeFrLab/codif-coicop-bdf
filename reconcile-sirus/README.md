@@ -25,7 +25,7 @@ sans relecture est une question métier, qui s'instruit sur la section
   DANS LE PIPELINE — étape reconcile-sirus, quand `reconciliation: sirus`
   4 classifieurs ──→ reconcile-sirus (Python pur) ──→ reconcile-sirus/predictions.parquet
                           charge rules.json,              sirus_code, sirus_proba,
-                          moyenne des règles              sirus_n_candidats
+                          moyenne des règles              sirus_n_candidats, sirus_route
 ```
 
 **L'entraînement n'est pas une étape du pipeline, et c'est délibéré.** Il produit
@@ -132,9 +132,20 @@ argo submit argo/codif-pipeline.yaml --parameter-file argo/params.yaml \
 
 | Colonne | Sens |
 |---|---|
-| `sirus_code` | Code retenu — l'argmax du score parmi les candidats. `NA` si aucun candidat |
-| `sirus_proba` | Score du candidat retenu |
+| `sirus_code` | Code retenu — l'argmax du score parmi les candidats, ou l'unique candidat. `NA` si aucun candidat |
+| `sirus_proba` | Score du candidat retenu. **NaN pour un produit routé** : le modèle n'a pas été appelé |
 | `sirus_n_candidats` | Nombre de candidats scorés — un `0` explique un `NA` |
+| `sirus_route` | `modele` (argmax SIRUS), `candidat_unique` (routé sans modèle), `aucun_candidat` |
+
+**Routage amont.** Un produit à candidat unique — unanimité des classifieurs, ou
+proposition isolée quand les autres se sont abstenus — reçoit ce code sans passer
+par le modèle (`split_single_candidates`, `src/scorer.py`). Le modèle reste, lui,
+entraîné sur **toutes** les lignes : l'option `build-table --multi-candidates-only`
+écarte les candidats uniques, mais son effet sur les produits à plusieurs
+candidats se contredit d'un run à l'autre (−1,6 pt sur le test de codif-c9vjm,
++1,2 pt sur codif-x98xl, cf. `notebooks/sirus_multi_candidats.ipynb`). Un seuil d'exploitation
+appliqué en aval doit donc traiter `sirus_route = "candidat_unique"` explicitement,
+puisque `sirus_proba` y est NaN.
 
 Ce n'est pas un oubli : un verdict calculé ici serait entièrement déduit du
 score, donc sans information propre, tout en figeant dans le parquet un réglage
