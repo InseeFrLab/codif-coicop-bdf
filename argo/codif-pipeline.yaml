@@ -56,6 +56,11 @@ spec:
         value: ""
       - name: classify-rag-model
         value: "gemma4-26b-moe"
+      # Modèle d'embedding des deux RAG. Doit être celui qui a bâti les deux
+      # collections : chaque étape le vérifie contre le manifeste avant tout
+      # travail. Le choisir se fait à l'indexation (index-*-pipeline.yaml).
+      - name: embedding-model
+        value: "qwen3-embedding-8b"
 
       # --- Vector DB : OBLIGATOIRES ------------------------------------------
       # Collections Qdrant produites hors de ce pipeline (index-*-pipeline.yaml,
@@ -278,6 +283,8 @@ spec:
                   value: "{{workflow.parameters.classify-rag-model}}"
                 - name: collection-name
                   value: "{{workflow.parameters.classify-rag-notices-collection}}"
+                - name: embedding-model
+                  value: "{{workflow.parameters.embedding-model}}"
                 - name: mlflow-experiment
                   value: "{{inputs.parameters.rag-experiment}}"
                 - name: run_id
@@ -294,6 +301,8 @@ spec:
                   value: "{{workflow.parameters.classify-rag-model}}"
                 - name: collection-name
                   value: "{{workflow.parameters.classify-rag-annotations-collection}}"
+                - name: embedding-model
+                  value: "{{workflow.parameters.embedding-model}}"
                 - name: mlflow-experiment
                   value: "{{inputs.parameters.rag-experiment}}"
                 - name: run_id
@@ -715,6 +724,7 @@ spec:
           - name: config
             value: config/config.yaml
           - name: classify-rag-model
+          - name: embedding-model
           - name: collection-name
           # Expérience MLflow. Vide = celle de la config du module. La passe
           # smoke y met une expérience dédiée : sans ça, ses métriques calculées
@@ -761,6 +771,8 @@ spec:
             # le smoke run le renseigne toujours. Sans suffixe, ils logueraient
             # dans une seule expérience MLflow.
             [ -n "{{inputs.parameters.mlflow-experiment}}" ] && ARGS="$ARGS --experiment_name {{inputs.parameters.mlflow-experiment}}-notices"
+            # Vide = celui de la config ; vérifié contre le manifeste de la collection.
+            [ -n "{{inputs.parameters.embedding-model}}" ] && ARGS="$ARGS --embedding-model {{inputs.parameters.embedding-model}}"
             uv run --locked --no-dev scripts/2_run_rag.py $ARGS
         env:
           - name: LANGFUSE_BASE_URL
@@ -851,6 +863,7 @@ spec:
           - name: config
             value: config/config.yaml
           - name: classify-rag-model
+          - name: embedding-model
           - name: collection-name
           # Expérience MLflow. Vide = celle de la config du module. La passe
           # smoke y met une expérience dédiée : sans ça, ses métriques calculées
@@ -895,6 +908,8 @@ spec:
             # le smoke run le renseigne toujours. Sans suffixe, ils logueraient
             # dans une seule expérience MLflow.
             [ -n "{{inputs.parameters.mlflow-experiment}}" ] && ARGS="$ARGS --experiment_name {{inputs.parameters.mlflow-experiment}}-annotations"
+            # Vide = celui de la config ; vérifié contre le manifeste de la collection.
+            [ -n "{{inputs.parameters.embedding-model}}" ] && ARGS="$ARGS --embedding-model {{inputs.parameters.embedding-model}}"
             uv run --locked --no-dev scripts/1_run_rag.py $ARGS
         env:
           - name: LANGFUSE_BASE_URL

@@ -43,10 +43,17 @@ def main():
             "À ne renseigner que pour rejouer un nom précis."
         ),
     )
+    parser.add_argument(
+        "--embedding-model",
+        default=None,
+        help="Modèle d'embedding (écrase `embedding.model_name` de la config).",
+    )
     args = parser.parse_args()
 
     with open(args.config, "r") as f:
         config = yaml.safe_load(f)
+    if args.embedding_model:
+        config["embedding"]["model_name"] = args.embedding_model
     config = expand_paths(config, run_id=args.run_id, run_date=args.run_date)
 
     logger.info("=" * 80)
@@ -157,7 +164,7 @@ def main():
     # -----------------------------------------------------------------------
 
     logger.info("=" * 80)
-    logger.info("STEP 4: CREATING QDRANT COLLECTION")
+    logger.info("STEP 4: NAMING QDRANT COLLECTION")
     logger.info("=" * 80)
 
     # `collection_base`, pas `collection_name` : la clé est délibérément
@@ -172,20 +179,8 @@ def main():
     )
     logger.info(f"  Collection cible : {collection_name}")
 
-    # Les noms étant uniques, ce cas ne se produit plus qu'en cas de `argo retry`
-    # sur le même run_id — où recréer est le comportement voulu.
-    if client_qdrant.collection_exists(collection_name):
-        client_qdrant.delete_collection(collection_name)
-        logger.info(f"  → Existing collection deleted: {collection_name}")
-
-    client_qdrant.create_collection(
-        collection_name=collection_name,
-        vectors_config=VectorParams(
-            size=config["embedding"]["model_len"],
-            distance=Distance.COSINE
-        )
-    )
-    logger.info(f"✓ Collection created: {collection_name}")
+    # Créée à l'étape 6, une fois les embeddings calculés : sa dimension est
+    # celle des vecteurs réellement produits par `embedding-model`.
 
     # -----------------------------------------------------------------------
     # Generate embeddings
@@ -231,8 +226,27 @@ def main():
     # -----------------------------------------------------------------------
 
     logger.info("=" * 80)
-    logger.info("STEP 6: UPLOADING TO QDRANT")
+    logger.info("STEP 6: CREATING COLLECTION AND UPLOADING TO QDRANT")
     logger.info("=" * 80)
+
+    # Dimension déduite des vecteurs, pas lue en config : changer de modèle
+    # d'embedding (paramètre `embedding-model`) n'oblige à rien tenir à jour.
+    embedding_dim = len(embeddings[0])
+
+    # Les noms étant uniques, ce cas ne se produit plus qu'en cas de `argo retry`
+    # sur le même run_id — où recréer est le comportement voulu.
+    if client_qdrant.collection_exists(collection_name):
+        client_qdrant.delete_collection(collection_name)
+        logger.info(f"  → Existing collection deleted: {collection_name}")
+
+    client_qdrant.create_collection(
+        collection_name=collection_name,
+        vectors_config=VectorParams(
+            size=embedding_dim,
+            distance=Distance.COSINE
+        )
+    )
+    logger.info(f"✓ Collection created: {collection_name} (dimension {embedding_dim})")
 
     points = [
         PointStruct(
@@ -278,7 +292,7 @@ def main():
         "run_id": args.run_id,
         "run_date": args.run_date,
         "embedding_model": model_name,
-        "embedding_dim": config["embedding"]["model_len"],
+        "embedding_dim": embedding_dim,
         "strategy": strategy,
         "sample_size": None,
         "point_count": point_count,

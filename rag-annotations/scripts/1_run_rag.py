@@ -62,6 +62,10 @@ def setup_argument_parser():
         ),
     )
     parser.add_argument("--model_name", type=str, help="LLM model name (overrides config)")
+    parser.add_argument(
+        "--embedding-model", default=None,
+        help="Modèle d'embedding (écrase `embedding.model_name`). Doit être celui de la collection.",
+    )
     parser.add_argument("--experiment_name", type=str, help="MLflow experiment (overrides config)")
     return parser
 
@@ -81,6 +85,8 @@ def main():
         config = yaml.safe_load(f)
     if args.model_name:
         config["llm"]["model_name"] = args.model_name
+    if args.embedding_model:
+        config["embedding"]["model_name"] = args.embedding_model
     if args.experiment_name:
         config["mlflow"]["experiment_name"] = args.experiment_name
     config = expand_paths(config, run_id=args.run_id, run_date=args.run_date)
@@ -107,7 +113,6 @@ def main():
         client_qdrant=_client_validate,
         collection_name=config["qdrant"]["collection_name"],
         manifests_root=config["qdrant"]["manifests_root"],
-        expected_dim=config["embedding"]["model_len"],
         expected_embedding_model=config["embedding"]["model_name"],
         param_name="classify-rag-annotations-collection",
         index_pipeline="argo/index-annotations-pipeline.yaml",

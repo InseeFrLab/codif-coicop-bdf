@@ -305,6 +305,7 @@ Voir aussi la fiche [`argo/argo_helper.md`](./argo/argo_helper.md) et le fichier
 | `classify-rag-notices-collection` | *(vide)* | **Obligatoire.** Collection Qdrant produite par `index-notices-pipeline.yaml`. |
 | `classify-rag-annotations-collection` | *(vide)* | **Obligatoire.** Collection Qdrant produite par `index-annotations-pipeline.yaml`. |
 | `classify-rag-model` | `gemma4-26b-moe` | Modèle LLM pour `classify-rag-notices` / `classify-rag-annotations` |
+| `embedding-model` | `qwen3-embedding-8b` | Modèle d'embedding des deux RAG. Doit être celui qui a bâti les deux collections (vérifié via leur manifeste) ; il se choisit à l'indexation, où le même paramètre existe. |
 | `reconcile-llm-model` | `gemma4-26b-moe` | Modèle LLM utilisé par `reconcile-llm` |
 | `reconcile-llm-concurrency` | `5` | Nombre d'appels LLM parallèles de `reconcile-llm` |
 | `skip-report` | `false` | Si `false`, génère le rapport de production après `export-results` |

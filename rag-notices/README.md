@@ -54,7 +54,7 @@ Encode les notices COICOP **prunées** dans une base vectorielle Qdrant.
 
 Classifie les annotations via le pipeline RAG.
 
-1. **Validation de la collection** : avant tout travail coûteux — et **avant MLflow**, pour ne pas laisser un run FAILED dans l'expérience — le script relit le manifeste de la collection passée en argument et vérifie qu'elle existe, que sa dimension, son modèle d'embedding et sa stratégie correspondent à ce que ce run attend, et qu'elle n'est pas vide.
+1. **Validation de la collection** : avant tout travail coûteux — et **avant MLflow**, pour ne pas laisser un run FAILED dans l'expérience — le script relit le manifeste de la collection passée en argument et vérifie qu'elle existe, que son modèle d'embedding et sa stratégie correspondent à ce que ce run attend, que sa dimension est celle qu'annonce le manifeste, et qu'elle n'est pas vide.
 2. **Gestion des prompts** : les templates sont stockés dans Langfuse (`LANGFUSE_BASE_URL`, `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`)
 3. **Retrieval et génération** :
    - Les contextes pertinents sont récupérés depuis Qdrant
@@ -143,6 +143,13 @@ attend `--collection-name` (tirets), `2_run_rag.py` attend `--collection_name`
 `qdrant.collection_base` et l'identité du run) et **obligatoire côté classification** :
 il n'y a plus de nom par défaut en config, précisément pour qu'un oubli échoue en
 quelques secondes au lieu de retomber en silence sur l'index d'un autre run.
+
+`--embedding-model` (même orthographe dans les deux scripts) écrase `embedding.model_name`
+de la config ; les workflows Argo le renseignent par le paramètre `embedding-model`. La
+dimension n'est plus en config : l'indexation la déduit des vecteurs produits et l'écrit
+dans le manifeste, la classification la relit dans le manifeste après avoir vérifié que
+son modèle est bien celui de l'index. Changer de modèle, c'est donc réindexer avec
+`-p embedding-model=…`, puis passer le même modèle au pipeline de classification.
 
 ### Pré-requis
 
