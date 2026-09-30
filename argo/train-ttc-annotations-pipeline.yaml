@@ -9,7 +9,8 @@
 # - Évaluation : IDENTIQUE à train-ttc-pipeline, pour une comparaison directe —
 #   même `input_file` (vague 1 2026), même tirage (classify-regex, seed 42) si
 #   `sample-observations` est le même, même vérité canonique code_lvl4 et même
-#   règle que l'étape `evaluate`. Rapports sous output-prefix/annotations/.
+#   règle que l'étape `evaluate`. Rapports sous output-prefix/annotations/, ou
+#   annotations-2024/ avec `pilot-2024-only=true` (sans bdf_2017 ni suggester).
 # - Même architecture et mêmes hyperparamètres par défaut que train-ttc.
 #
 # build-datasets, classify-regex, prune-codes (de codif-pipeline.yaml) et
@@ -18,6 +19,7 @@
 # paramètres `ft-*` désignent annotations_full, qui sert de jeu d'ENTRAÎNEMENT.
 #
 #   argo submit argo/train-ttc-annotations-pipeline.yaml --watch
+#   argo submit argo/train-ttc-annotations-pipeline.yaml -p pilot-2024-only=true --watch   # pilote 2024 seul
 #
 # `git -c http.version=HTTP/1.1` sur tous les clones : NE PAS RETIRER (voir
 # codif-pipeline.yaml : le git de l'image échoue sur la réponse HTTP/2 de GitHub).
@@ -79,7 +81,13 @@ spec:
         value: l_pr_product
       - name: ft-code-column
         value: code
+      # "true" : entraînement sur les seules annotations du pilote 2024
+      # (annotations_full sans bdf_2017 ni suggester). Rapport sous annotations-2024/.
+      - name: pilot-2024-only
+        value: "false"
+        enum: ["true", "false"]
       # Affichés dans l'en-tête du rapport (predict-evaluate) ; non lus par train.
+      # Le filtrage éventuel se lit dans la variante (annotations / annotations-2024).
       - name: train-data
         value: "build-datasets/annotations_full (anciennes annotations : BdF 2017, suggester, BdF 2024)"
       - name: code-column
@@ -187,7 +195,7 @@ spec:
                 - name: model-uri
                   value: "{{tasks.train.outputs.parameters.model-uri}}"
                 - name: variant
-                  value: annotations
+                  value: "{{tasks.train.outputs.parameters.variant}}"
                 - name: eval-file
                   value: "{{tasks.resolve-inputs.outputs.parameters.eval-file}}"
                 - name: mapping-file
@@ -207,6 +215,10 @@ spec:
           - name: model-uri
             valueFrom:
               path: /tmp/model_uri
+          # Variante réellement entraînée, reprise par evaluate.
+          - name: variant
+            valueFrom:
+              path: /tmp/variant
       container:
         image: inseefrlab/onyxia-python-pytorch:py3.13.12-gpu
         command: [sh, -c]
@@ -219,6 +231,13 @@ spec:
 
             uv run --locked --no-dev python -c "import torch; print('[train] CUDA disponible :', torch.cuda.is_available())"
 
+            if [ "{{workflow.parameters.pilot-2024-only}}" = "true" ]; then
+              TRAIN_SOURCE=annotations_pilote_2024; VARIANT=annotations-2024
+            else
+              TRAIN_SOURCE=annotations_full; VARIANT=annotations
+            fi
+            echo "$VARIANT" > /tmp/variant
+
             # Run MLflow créé ici, repris par train-basic via MLFLOW_RUN_ID.
             # L'expérience doit être la même des deux côtés, sinon MLflow refuse la reprise.
             RUN_ID=$(uv run --locked --no-dev python -c "
@@ -228,7 +247,7 @@ spec:
             run = MlflowClient().create_run(
                 exp.experiment_id,
                 run_name='{{workflow.name}}',
-                tags={'argo_workflow': '{{workflow.name}}', 'train_source': 'annotations_full'},
+                tags={'argo_workflow': '{{workflow.name}}', 'train_source': '$TRAIN_SOURCE'},
             )
             print(run.info.run_id)
             " | tail -n 1)
@@ -262,6 +281,7 @@ spec:
                   --patience {{workflow.parameters.patience}} \
                   --mlflow-experiment {{workflow.parameters.mlflow-experiment}}"
             if [ -n "{{workflow.parameters.tokenizer}}" ]; then ARGS="$ARGS --tokenizer {{workflow.parameters.tokenizer}}"; fi
+            if [ "{{workflow.parameters.pilot-2024-only}}" = "true" ]; then ARGS="$ARGS --exclude-sources bdf_2017 suggester"; fi
 
             MLFLOW_RUN_ID="$RUN_ID" uv run --locked --no-dev main.py train-basic $ARGS
 
@@ -666,9 +686,9 @@ spec:
 
             # Ligne d'en-tête propre au modèle fine-tuné (positionnels : garde les espaces).
             set --
-            if [ "{{inputs.parameters.variant}}" = "fine-tuned" ]; then
-              set -- --report-meta "Données de fine-tuning={{inputs.parameters.ft-data}}"
-            fi
+            case "{{inputs.parameters.variant}}" in
+              fine-tuned*) set -- --report-meta "Données de fine-tuning={{inputs.parameters.ft-data}}" ;;
+            esac
 
             uv run --locked --no-dev main.py predict-basic \
               --model "{{inputs.parameters.model-uri}}" \

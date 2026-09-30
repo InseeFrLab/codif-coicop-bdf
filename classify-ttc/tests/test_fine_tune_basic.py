@@ -93,3 +93,38 @@ def test_fine_tune_drops_single_sample_classes():
     assert metrics["dropped_samples"] == 2  # unknown label + singleton class
     assert metrics["total_samples"] == 10
     clf.classifier.train.assert_called_once()
+
+
+def test_train_basic_exclude_sources(tmp_path, monkeypatch):
+    monkeypatch.chdir(MODULE_DIR)
+    df = pd.DataFrame({
+        "l_pr_product": ["riz", "pates", "sucre", "sel"],
+        "code": ["01.1.1.1.1", "01.1.1.3.1", "01.1.8.1.1", "01.1.9.1.1"],
+        "source": ["receipts_from_app", "bdf_2017", "suggester", "manual_from_book"],
+    })
+    with (
+        patch.object(train, "BasicCOICOPClassifier") as cls,
+        patch("src.preprocessing.data_preparation.read_parquet", return_value=df),
+    ):
+        cls.return_value.train.return_value = {"num_classes": 2}
+        train.train_basic_classifier(
+            data_path="annotations_full.parquet", output_dir=str(tmp_path),
+            text_column="l_pr_product", code_column="code", code_level=4,
+            exclude_sources=["bdf_2017", "suggester"],
+        )
+    trained = cls.return_value.train.call_args.kwargs["df"]
+    assert trained["source"].tolist() == ["receipts_from_app", "manual_from_book"]
+
+
+def test_fine_tune_exclude_sources(tmp_path, monkeypatch):
+    df = pd.DataFrame({
+        "product": ["riz", "pates", "sucre"],
+        "code": ["01.1.1.1.1", "01.1.1.3.1", "01.1.8.1.1"],
+        "source": ["manual_from_app", "bdf_2017", "suggester"],
+    })
+    tuned, _, _ = _run(
+        tmp_path, monkeypatch, df, model_path="runs:/abc/model",
+        code_column="code", code_level=4, exclude_sources=["bdf_2017", "suggester"],
+    )
+    assert tuned["source"].tolist() == ["manual_from_app"]
+    assert tuned["code"].tolist() == ["01.1.1.1"]

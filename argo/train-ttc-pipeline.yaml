@@ -27,7 +27,8 @@
 #   sous `output-prefix/base/`.
 # - `fine-tune` (si `fine-tune=true`) fine-tune ce modèle sur les annotations,
 #   en parallèle de `evaluate-base`, dans une expérience MLflow distincte ;
-#   `evaluate-fine-tuned` l'évalue sur le même jeu, sous `output-prefix/fine-tuned/`.
+#   `evaluate-fine-tuned` l'évalue sur le même jeu, sous `output-prefix/fine-tuned/`
+#   (`fine-tuned-2024/` avec `ft-pilot-2024-only=true` : pilote 2024 seul).
 #
 # Passage du modèle d'un pod à l'autre : par MLflow. L'étape `train` crée elle-même
 # le run MLflow (nommé d'après le workflow) et le passe à train-basic par
@@ -173,16 +174,21 @@ spec:
         value: "false"
         enum: ["true", "false"]
       # Vides = défauts de fine-tune-basic : lr d'origine / 10, 5 epochs,
-      # batch d'origine, patience 3.
+      # batch d'origine, patience 10.
       - name: ft-lr
         value: ""
       - name: ft-num-epochs
-        value: ""
+        value: "500"
       - name: ft-batch-size
         value: ""
       - name: ft-patience
-        value: ""
+        value: "10"
       # Expérience distincte de mlflow-experiment (vérifié au lancement).
+      # "true" : fine-tuning sur les seules annotations du pilote 2024
+      # (annotations_full sans bdf_2017 ni suggester). Rapport sous fine-tuned-2024/.
+      - name: ft-pilot-2024-only
+        value: "false"
+        enum: ["true", "false"]
       - name: ft-mlflow-experiment
         value: codif-coicop-ttc-finetune
 
@@ -292,7 +298,7 @@ spec:
                 - name: model-uri
                   value: "{{tasks.fine-tune.outputs.parameters.model-uri}}"
                 - name: variant
-                  value: fine-tuned
+                  value: "{{tasks.fine-tune.outputs.parameters.variant}}"
                 - name: eval-file
                   value: "{{tasks.resolve-inputs.outputs.parameters.eval-file}}"
                 - name: mapping-file
@@ -317,7 +323,7 @@ spec:
           - name: budget_column
           - name: annee_column
           - name: source_column
-      retryStrategy:          # cf. « Reprise sur échec » en tête de fichier
+      retryStrategy: # cf. « Reprise sur échec » en tête de fichier
         limit: "2"
         retryPolicy: OnFailure
         backoff:
@@ -384,7 +390,7 @@ spec:
           - name: sample-observations
           - name: run_id
           - name: run_date
-      retryStrategy:          # cf. « Reprise sur échec » en tête de fichier
+      retryStrategy: # cf. « Reprise sur échec » en tête de fichier
         limit: "2"
         retryPolicy: OnFailure
         backoff:
@@ -448,7 +454,7 @@ spec:
             value: config/config.yaml
           - name: run_id
           - name: run_date
-      retryStrategy:          # cf. « Reprise sur échec » en tête de fichier
+      retryStrategy: # cf. « Reprise sur échec » en tête de fichier
         limit: "2"
         retryPolicy: OnFailure
         backoff:
@@ -777,6 +783,10 @@ spec:
           - name: model-uri
             valueFrom:
               path: /tmp/model_uri
+          # Variante réellement fine-tunée, reprise par evaluate-fine-tuned.
+          - name: variant
+            valueFrom:
+              path: /tmp/variant
       container:
         image: inseefrlab/onyxia-python-pytorch:py3.13.12-gpu
         command: [sh, -c]
@@ -794,6 +804,13 @@ spec:
 
             uv run --locked --no-dev python -c "import torch; print('[fine-tune] CUDA disponible :', torch.cuda.is_available())"
 
+            if [ "{{workflow.parameters.ft-pilot-2024-only}}" = "true" ]; then
+              FT_SOURCE=annotations_pilote_2024; VARIANT=fine-tuned-2024
+            else
+              FT_SOURCE=annotations_full; VARIANT=fine-tuned
+            fi
+            echo "$VARIANT" > /tmp/variant
+
             RUN_ID=$(uv run --locked --no-dev python -c "
             import mlflow
             from mlflow import MlflowClient
@@ -804,6 +821,7 @@ spec:
                 tags={
                     'argo_workflow': '{{workflow.name}}',
                     'base_model_uri': '{{inputs.parameters.base-model-uri}}',
+                    'ft_source': '$FT_SOURCE',
                 },
             )
             print(run.info.run_id)
@@ -825,6 +843,7 @@ spec:
                   --mlflow-experiment {{workflow.parameters.ft-mlflow-experiment}}"
             if [ -n "{{workflow.parameters.ft-code-level}}" ]; then ARGS="$ARGS --code-level {{workflow.parameters.ft-code-level}}"; fi
             if [ "{{workflow.parameters.ft-preprocess}}" = "true" ]; then ARGS="$ARGS --preprocess"; fi
+            if [ "{{workflow.parameters.ft-pilot-2024-only}}" = "true" ]; then ARGS="$ARGS --exclude-sources bdf_2017 suggester"; fi
             if [ -n "{{workflow.parameters.ft-lr}}" ]; then ARGS="$ARGS --lr {{workflow.parameters.ft-lr}}"; fi
             if [ -n "{{workflow.parameters.ft-num-epochs}}" ]; then ARGS="$ARGS --num-epochs {{workflow.parameters.ft-num-epochs}}"; fi
             if [ -n "{{workflow.parameters.ft-batch-size}}" ]; then ARGS="$ARGS --batch-size {{workflow.parameters.ft-batch-size}}"; fi
@@ -924,9 +943,9 @@ spec:
 
             # Ligne d'en-tête propre au modèle fine-tuné (positionnels : garde les espaces).
             set --
-            if [ "{{inputs.parameters.variant}}" = "fine-tuned" ]; then
-              set -- --report-meta "Données de fine-tuning={{inputs.parameters.ft-data}}"
-            fi
+            case "{{inputs.parameters.variant}}" in
+              fine-tuned*) set -- --report-meta "Données de fine-tuning={{inputs.parameters.ft-data}}" ;;
+            esac
 
             uv run --locked --no-dev main.py predict-basic \
               --model "{{inputs.parameters.model-uri}}" \

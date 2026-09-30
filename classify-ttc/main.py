@@ -119,6 +119,8 @@ def cmd_train_basic(args: argparse.Namespace) -> None:
         encryption_key=args.encryption_key,
         tokenizer_name=args.tokenizer,
         code_level=args.code_level,
+        exclude_sources=args.exclude_sources,
+        source_column=args.source_column,
     )
 
 
@@ -145,6 +147,8 @@ def cmd_fine_tune_basic(args: argparse.Namespace) -> None:
         preprocess=args.preprocess,
         encryption_key=args.encryption_key,
         code_level=args.code_level,
+        exclude_sources=args.exclude_sources,
+        source_column=args.source_column,
     )
 
 
@@ -987,6 +991,21 @@ def main() -> int:
         help="Truncate codes of --code-column to this COICOP level first (e.g. 4 to "
         "train a level-4 model on 5-level annotations)",
     )
+    train_basic_parser.add_argument(
+        "--exclude-sources",
+        type=str,
+        nargs="+",
+        metavar="SOURCE",
+        default=None,
+        help="Drop rows whose --source-column is one of these values before training "
+        "(e.g. bdf_2017 suggester to keep only the 2024 pilot annotations)",
+    )
+    train_basic_parser.add_argument(
+        "--source-column",
+        type=str,
+        default="source",
+        help="Column holding the source of each row (default: source)",
+    )
     train_basic_parser.set_defaults(func=cmd_train_basic)
 
     # Fine-tune-basic command
@@ -1106,6 +1125,21 @@ def main() -> int:
         default=None,
         help="Truncate codes of --code-column to this COICOP level first (e.g. 4 to "
         "fine-tune a level-4 model on 5-level annotations)",
+    )
+    ft_basic_parser.add_argument(
+        "--exclude-sources",
+        type=str,
+        nargs="+",
+        metavar="SOURCE",
+        default=None,
+        help="Drop rows whose --source-column is one of these values before fine-tuning "
+        "(e.g. bdf_2017 suggester to keep only the 2024 pilot annotations)",
+    )
+    ft_basic_parser.add_argument(
+        "--source-column",
+        type=str,
+        default="source",
+        help="Column holding the source of each row (default: source)",
     )
     ft_basic_parser.set_defaults(func=cmd_fine_tune_basic)
 

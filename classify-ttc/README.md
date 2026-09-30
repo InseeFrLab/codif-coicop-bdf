@@ -518,11 +518,14 @@ Parametres de fine-tuning : `fine-tune`, `ft-text-column` (`l_pr_product`),
 `ft-code-column` (`code`), `ft-code-level` (`4`), `ft-preprocess` (`true`),
 `ft-encrypted` (`false`), `ft-lr` / `ft-num-epochs` / `ft-batch-size` / `ft-patience`
 (vides = defauts de `fine-tune-basic` : lr d'origine / 10, 5 epochs, batch d'origine,
-patience 3), `ft-mlflow-experiment`.
+patience 3), `ft-pilot-2024-only` (`false` ; `true` = annotations du pilote 2024
+seules, rapport sous `fine-tuned-2024/`), `ft-mlflow-experiment`.
 
 `fine-tune-basic` accepte en `--model` un dossier local ou une URI MLflow
 (`runs:/…`, `models:/…`, `mlflow-artifacts:/…`), et `--code-level N` tronque les codes
-de `--code-column` au niveau N avant le fine-tuning.
+de `--code-column` au niveau N avant le fine-tuning. `train-basic` et `fine-tune-basic`
+acceptent `--code-level N` et `--exclude-sources SOURCE…` (lignes retirees selon
+`--source-column`, `source` par defaut).
 
 Le modele retenu se recopie ensuite dans `classify-ttc-model-uri` (`argo/params.yaml`).
 
@@ -548,10 +551,21 @@ Les rapports se comparent donc directement :
 | DDC + synthetique | `…/workflow_outputs/train-ttc/<workflow>/base/evaluation_report.html` |
 | DDC + synthetique, fine-tune sur les annotations | `…/workflow_outputs/train-ttc/<workflow>/fine-tuned/evaluation_report.html` |
 | Annotations seules | `…/workflow_outputs/train-ttc-annotations/<workflow>/annotations/evaluation_report.html` |
+| Annotations du pilote 2024 seules (`pilot-2024-only=true`) | `…/workflow_outputs/train-ttc-annotations/<workflow>/annotations-2024/evaluation_report.html` |
+| DDC + synthetique, fine-tune sur le pilote 2024 seul (`ft-pilot-2024-only=true`) | `…/workflow_outputs/train-ttc/<workflow>/fine-tuned-2024/evaluation_report.html` |
 
 ```bash
 argo submit argo/train-ttc-annotations-pipeline.yaml --watch
+# Annotations du pilote 2024 seules (sans bdf_2017 ni suggester)
+argo submit argo/train-ttc-annotations-pipeline.yaml -p pilot-2024-only=true --watch
 ```
+
+`pilot-2024-only=true` (et `ft-pilot-2024-only=true` pour le fine-tuning de
+`train-ttc`) passe `--exclude-sources bdf_2017 suggester` : ne restent que
+`receipts_from_app`, `manual_from_book` et `manual_from_app` (sur le run du
+2026-09-08 : 12 767 lignes, 313 codes de niveau 4 dont 46 a une seule ligne, ecartes
+par le decoupage stratifie). Le tag MLflow `train_source` / `ft_source` vaut alors
+`annotations_pilote_2024`.
 
 Ses templates `build-datasets`, `classify-regex`, `prune-codes`, `resolve-inputs` et
 `predict-evaluate` sont des copies conformes (verifiees par `scripts/check_pipeline.py`).

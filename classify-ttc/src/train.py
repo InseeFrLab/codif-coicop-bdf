@@ -569,6 +569,24 @@ def fine_tune_hierarchical_classifier(
     return classifier
 
 
+def _exclude_sources(
+    df, exclude_sources: list[str] | None, source_column: str = "source"
+):
+    """Drop rows whose ``source_column`` is in ``exclude_sources`` (no-op if empty)."""
+    if not exclude_sources:
+        return df
+    if source_column not in df.columns:
+        raise ValueError(
+            f"--exclude-sources needs a '{source_column}' column; got {list(df.columns)}"
+        )
+    excluded = df[source_column].isin(exclude_sources)
+    logger.info(
+        f"Excluding {int(excluded.sum())} rows with {source_column} in {exclude_sources}; "
+        f"{int((~excluded).sum())} kept"
+    )
+    return df[~excluded].copy()
+
+
 def train_basic_classifier(
     data_path: str,
     output_dir: str,
@@ -593,6 +611,8 @@ def train_basic_classifier(
     encryption_key: str | None = None,
     tokenizer_name: str | None = None,
     code_level: int | None = None,
+    exclude_sources: list[str] | None = None,
+    source_column: str = "source",
 ) -> BasicCOICOPClassifier:
     """Train the basic flat COICOP classifier.
 
@@ -617,6 +637,10 @@ def train_basic_classifier(
         eval_text_column: Text column name in evaluation data.
         code_level: If set, truncate the codes of ``code_column`` to this COICOP
             level first (e.g. 4 to train a level-4 model on 5-level annotations).
+        exclude_sources: Rows whose ``source_column`` is one of these values are
+            dropped before training (e.g. ``["bdf_2017", "suggester"]`` to keep
+            only the 2024 pilot annotations).
+        source_column: Column holding the source of each row.
 
     Returns:
         Trained BasicCOICOPClassifier.
@@ -639,6 +663,8 @@ def train_basic_classifier(
             stopwords = json.load(f)
         df = preprocess_text(df, text_column, stopwords)
     logger.info(f"Loaded {len(df)} samples")
+
+    df = _exclude_sources(df, exclude_sources, source_column)
 
     if code_level is not None:
         df[code_column] = (
@@ -920,6 +946,8 @@ def fine_tune_basic_classifier(
     preprocess: bool = False,
     encryption_key: str | None = None,
     code_level: int | None = None,
+    exclude_sources: list[str] | None = None,
+    source_column: str = "source",
 ) -> BasicCOICOPClassifier:
     """Fine-tune a pre-trained basic classifier on new data.
 
@@ -942,6 +970,9 @@ def fine_tune_basic_classifier(
         code_level: If set, truncate the codes of ``code_column`` to this COICOP
             level first (e.g. 4 for 5-level annotations fine-tuning a level-4
             model: only labels the model already knows are kept).
+        exclude_sources: Rows whose ``source_column`` is one of these values are
+            dropped first (e.g. ``["bdf_2017", "suggester"]`` for 2024 pilot only).
+        source_column: Column holding the source of each row.
 
     Returns:
         Fine-tuned BasicCOICOPClassifier.
@@ -969,6 +1000,8 @@ def fine_tune_basic_classifier(
             stopwords = json.load(f)
         df = preprocess_text(df, text_column, stopwords)
     logger.info(f"Loaded {len(df)} samples")
+
+    df = _exclude_sources(df, exclude_sources, source_column)
 
     if code_level is not None:
         df[code_column] = (
