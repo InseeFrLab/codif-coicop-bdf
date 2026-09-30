@@ -245,6 +245,19 @@ class BasicCOICOPClassifier:
             logger.warning(f"Dropping {n_dropped} samples with unknown labels")
         df = df[mask].copy()
 
+        # Same rule as train(): the stratified split needs at least 2 samples per
+        # class. Rare classes are left out of fine-tuning; the model keeps them.
+        counts = df[code_column].value_counts()
+        rare = counts[counts < self.config.min_samples_per_class].index
+        if len(rare) > 0:
+            n_rare = int(df[code_column].isin(rare).sum())
+            logger.warning(
+                f"Dropping {n_rare} samples from {len(rare)} classes with "
+                f"< {self.config.min_samples_per_class} samples"
+            )
+            df = df[~df[code_column].isin(rare)].copy()
+            n_dropped += n_rare
+
         if len(df) == 0:
             raise ValueError("No samples with known labels remain after filtering.")
 

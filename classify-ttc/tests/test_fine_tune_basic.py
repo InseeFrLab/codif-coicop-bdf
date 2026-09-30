@@ -74,3 +74,22 @@ def test_train_basic_code_level_truncates_codes(tmp_path, monkeypatch):
         )
     trained = cls.return_value.train.call_args.kwargs["df"]
     assert trained["code"].tolist() == ["01.1.1.1", "01.1.1.3", "98.3"]
+
+
+def test_fine_tune_drops_single_sample_classes():
+    """Stratified split needs 2 samples per class: singletons are left out."""
+    from src.classifiers.basic_classifier import BasicCOICOPClassifier
+
+    clf = BasicCOICOPClassifier()
+    clf._is_trained = True
+    clf.label_to_idx = {"01.1.1.1": 0, "01.1.1.3": 1, "01.1.8.1": 2}
+    clf.classifier = MagicMock()
+    df = pd.DataFrame({
+        "product": [f"riz {i}" for i in range(5)] + [f"pates {i}" for i in range(5)]
+        + ["sucre", "inconnu"],
+        "code8": ["01.1.1.1"] * 5 + ["01.1.1.3"] * 5 + ["01.1.8.1", "99.9.9.9"],
+    })
+    metrics = clf.fine_tune(df)
+    assert metrics["dropped_samples"] == 2  # unknown label + singleton class
+    assert metrics["total_samples"] == 10
+    clf.classifier.train.assert_called_once()
