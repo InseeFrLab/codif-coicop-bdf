@@ -910,11 +910,13 @@ def fine_tune_basic_classifier(
     eval_code_column: str = "code",
     preprocess: bool = False,
     encryption_key: str | None = None,
+    code_level: int | None = None,
 ) -> BasicCOICOPClassifier:
     """Fine-tune a pre-trained basic classifier on new data.
 
     Args:
-        model_path: Path to the pre-trained basic model directory.
+        model_path: Pre-trained basic model: local directory or MLflow URI
+            (``runs:/…``, ``models:/…``, ``mlflow-artifacts:/…``).
         data_path: Path to new training data (parquet).
         output_dir: Directory to save the fine-tuned model.
         lr: Learning rate override (default: original lr / 10).
@@ -928,12 +930,16 @@ def fine_tune_basic_classifier(
         eval_text_column: Text column name in evaluation data.
         eval_filter_columns: Boolean columns to compute separate metrics for.
         encryption_key: Parquet encryption key.
+        code_level: If set, truncate the codes of ``code_column`` to this COICOP
+            level first (e.g. 4 for 5-level annotations fine-tuning a level-4
+            model: only labels the model already knows are kept).
 
     Returns:
         Fine-tuned BasicCOICOPClassifier.
     """
     _all_args = dict(locals())
 
+    from .predict import _resolve_mlflow_path
     from .preprocessing.data_preparation import read_parquet
 
     output_path = Path(output_dir)
@@ -941,7 +947,7 @@ def fine_tune_basic_classifier(
 
     # Load pre-trained model
     logger.info(f"Loading pre-trained basic model from {model_path}...")
-    classifier = BasicCOICOPClassifier.load(model_path)
+    classifier = BasicCOICOPClassifier.load(_resolve_mlflow_path(model_path))
 
     # Load new data
     logger.info(f"Loading training data from {data_path}...")
@@ -952,8 +958,14 @@ def fine_tune_basic_classifier(
 
         with open("data/text/stopwords.json", "r", encoding="utf-8") as f:
             stopwords = json.load(f)
-        df = preprocess_text(df, "product", stopwords)
+        df = preprocess_text(df, text_column, stopwords)
     logger.info(f"Loaded {len(df)} samples")
+
+    if code_level is not None:
+        df[code_column] = (
+            df[code_column].astype(str).str.split(".").str[:code_level].str.join(".")
+        )
+        logger.info(f"Codes truncated to level {code_level}")
 
     unique_codes = df[code_column].nunique()
     logger.info(f"Unique codes: {unique_codes}")

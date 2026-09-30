@@ -143,6 +143,7 @@ def cmd_fine_tune_basic(args: argparse.Namespace) -> None:
         eval_code_column=args.eval_code_column,
         preprocess=args.preprocess,
         encryption_key=args.encryption_key,
+        code_level=args.code_level,
     )
 
 
@@ -988,7 +989,7 @@ def main() -> int:
         "--model",
         type=str,
         required=True,
-        help="Path to the pre-trained basic model",
+        help="Pre-trained basic model: local directory or MLflow URI (runs:/..., models:/..., mlflow-artifacts:/...)",
     )
     ft_basic_parser.add_argument(
         "--data",
@@ -1089,6 +1090,13 @@ def main() -> int:
         type=str,
         default=None,
         help="Parquet encryption key (hex, 32 chars) for reading encrypted files",
+    )
+    ft_basic_parser.add_argument(
+        "--code-level",
+        type=int,
+        default=None,
+        help="Truncate codes of --code-column to this COICOP level first (e.g. 4 to "
+        "fine-tune a level-4 model on 5-level annotations)",
     )
     ft_basic_parser.set_defaults(func=cmd_fine_tune_basic)
 
