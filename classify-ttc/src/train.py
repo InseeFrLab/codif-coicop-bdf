@@ -592,6 +592,7 @@ def train_basic_classifier(
     preprocess: bool = False,
     encryption_key: str | None = None,
     tokenizer_name: str | None = None,
+    code_level: int | None = None,
 ) -> BasicCOICOPClassifier:
     """Train the basic flat COICOP classifier.
 
@@ -614,6 +615,8 @@ def train_basic_classifier(
         eval_data_path: Path to evaluation data for post-training metrics.
         eval_top_k: Maximum K for top-k accuracy evaluation.
         eval_text_column: Text column name in evaluation data.
+        code_level: If set, truncate the codes of ``code_column`` to this COICOP
+            level first (e.g. 4 to train a level-4 model on 5-level annotations).
 
     Returns:
         Trained BasicCOICOPClassifier.
@@ -636,6 +639,12 @@ def train_basic_classifier(
             stopwords = json.load(f)
         df = preprocess_text(df, text_column, stopwords)
     logger.info(f"Loaded {len(df)} samples")
+
+    if code_level is not None:
+        df[code_column] = (
+            df[code_column].astype(str).str.split(".").str[:code_level].str.join(".")
+        )
+        logger.info(f"Codes truncated to level {code_level}")
 
     unique_codes = df[code_column].nunique()
     logger.info(f"Unique codes: {unique_codes}")

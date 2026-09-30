@@ -207,3 +207,12 @@ steps:
       - build-datasets.annotations_full     # jeu de fine-tuning : source de la KB rag-annotations
       - prune-codes.mapping_lvl4            # vérité canonique code_lvl4, comme `evaluate`
     outputs: {}
+
+  # Même construction que `train-ttc` ; le modèle y est entraîné sur
+  # annotations_full seul, pour comparaison (argo/train-ttc-annotations-pipeline.yaml).
+  train-ttc-annotations:
+    inputs:
+      - classify-regex.test_without_regex   # jeu d'évaluation, identique à train-ttc
+      - build-datasets.annotations_full     # jeu d'ENTRAÎNEMENT (anciennes annotations)
+      - prune-codes.mapping_lvl4            # vérité canonique code_lvl4
+    outputs: {}

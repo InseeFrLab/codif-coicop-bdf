@@ -526,6 +526,38 @@ de `--code-column` au niveau N avant le fine-tuning.
 
 Le modele retenu se recopie ensuite dans `classify-ttc-model-uri` (`argo/params.yaml`).
 
+#### Comparaison : modele entraine sur les seules annotations (`argo/train-ttc-annotations-pipeline.yaml`)
+
+```
+build-datasets -> classify-regex -> prune-codes -> resolve-inputs -> train (GPU) -> evaluate
+```
+
+Meme construction des entrees que `train-ttc-pipeline.yaml`, mais le modele est
+entraine uniquement sur `build-datasets/annotations_full.parquet` (anciennes
+annotations : BdF 2017, suggester, BdF 2024), avec `train-basic --code-level 4
+--preprocess`, dans l'experience MLflow `codif-coicop-ttc-annotations` (tag
+`train_source=annotations_full`). Architecture et hyperparametres par defaut
+identiques a `train-ttc`.
+
+L'evaluation est **la meme** : meme `input_file`, meme tirage (`sample-observations`,
+seed 42 de classify-regex), meme verite `code_lvl4` et meme regle que l'etape `evaluate`.
+Les rapports se comparent donc directement :
+
+| Modele | Rapport |
+|---|---|
+| DDC + synthetique | `…/workflow_outputs/train-ttc/<workflow>/base/evaluation_report.html` |
+| DDC + synthetique, fine-tune sur les annotations | `…/workflow_outputs/train-ttc/<workflow>/fine-tuned/evaluation_report.html` |
+| Annotations seules | `…/workflow_outputs/train-ttc-annotations/<workflow>/annotations/evaluation_report.html` |
+
+```bash
+argo submit argo/train-ttc-annotations-pipeline.yaml --watch
+```
+
+Ses templates `build-datasets`, `classify-regex`, `prune-codes`, `resolve-inputs` et
+`predict-evaluate` sont des copies conformes (verifiees par `scripts/check_pipeline.py`).
+Pour comparer, garder les memes `input_file`, `label-column` et `sample-observations`
+dans les deux workflows.
+
 ### Top-k accuracy (`topk_accuracy.py`)
 
 Script autonome pour calculer la top-k accuracy a partir d'un parquet de predictions :

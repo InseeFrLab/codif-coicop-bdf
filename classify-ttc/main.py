@@ -118,6 +118,7 @@ def cmd_train_basic(args: argparse.Namespace) -> None:
         preprocess=args.preprocess,
         encryption_key=args.encryption_key,
         tokenizer_name=args.tokenizer,
+        code_level=args.code_level,
     )
 
 
@@ -978,6 +979,13 @@ def main() -> int:
         type=str,
         default=None,
         help="Parquet encryption key (hex, 32 chars) for reading/writing encrypted files",
+    )
+    train_basic_parser.add_argument(
+        "--code-level",
+        type=int,
+        default=None,
+        help="Truncate codes of --code-column to this COICOP level first (e.g. 4 to "
+        "train a level-4 model on 5-level annotations)",
     )
     train_basic_parser.set_defaults(func=cmd_train_basic)
 

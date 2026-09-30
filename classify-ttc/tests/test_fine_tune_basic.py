@@ -56,3 +56,21 @@ def test_mlflow_uri_is_resolved(tmp_path, monkeypatch):
     _, load, resolve = _run(tmp_path, monkeypatch, df, model_path="runs:/abc/model")
     resolve.assert_called_once_with("runs:/abc/model")
     load.assert_called_once_with(Path("/resolved"))
+
+
+def test_train_basic_code_level_truncates_codes(tmp_path, monkeypatch):
+    monkeypatch.chdir(MODULE_DIR)
+    df = pd.DataFrame(
+        {"l_pr_product": ["riz", "pates", "carte"], "code": ["01.1.1.1.3", "01.1.1.3.1", "98.3"]}
+    )
+    with (
+        patch.object(train, "BasicCOICOPClassifier") as cls,
+        patch("src.preprocessing.data_preparation.read_parquet", return_value=df),
+    ):
+        cls.return_value.train.return_value = {"num_classes": 3}
+        train.train_basic_classifier(
+            data_path="annotations_full.parquet", output_dir=str(tmp_path),
+            text_column="l_pr_product", code_column="code", code_level=4,
+        )
+    trained = cls.return_value.train.call_args.kwargs["df"]
+    assert trained["code"].tolist() == ["01.1.1.1", "01.1.1.3", "98.3"]

@@ -33,12 +33,17 @@ PARAM_FILES = {"argo/params.yaml": "argo/codif-pipeline.yaml"}
 # Templates recopiés d'un workflow à l'autre : Argo ne sait pas référencer un
 # template d'un autre `Workflow`. La copie doit rester conforme à l'original,
 # sinon train-ttc construirait ses entrées autrement que codif-pipeline.
-TEMPLATE_COPIES = {
-    "argo/train-ttc-pipeline.yaml": (
-        "argo/codif-pipeline.yaml",
-        ["build-datasets", "classify-regex", "prune-codes"],
+INPUT_TEMPLATES = ["build-datasets", "classify-regex", "prune-codes"]
+TEMPLATE_COPIES = [
+    # (copie, source, templates)
+    ("argo/train-ttc-pipeline.yaml", "argo/codif-pipeline.yaml", INPUT_TEMPLATES),
+    ("argo/train-ttc-annotations-pipeline.yaml", "argo/codif-pipeline.yaml", INPUT_TEMPLATES),
+    (
+        "argo/train-ttc-annotations-pipeline.yaml",
+        "argo/train-ttc-pipeline.yaml",
+        ["resolve-inputs", "predict-evaluate"],
     ),
-}
+]
 
 
 def check_workflow(path: Path) -> tuple[list[str], list[str]]:
@@ -146,7 +151,7 @@ def main(root: Path) -> int:
             print("  ✓ cohérent")
         failed |= bool(errors)
 
-    for cp, (src, names) in TEMPLATE_COPIES.items():
+    for cp, src, names in TEMPLATE_COPIES:
         cp_path, src_path = root / cp, root / src
         if not cp_path.exists():
             continue
