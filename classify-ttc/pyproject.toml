@@ -24,7 +24,15 @@ dependencies = [
     "openai>=2.16.0",
     # Écriture du rapport HTML d'évaluation sur S3 (evaluate-predictions).
     "boto3>=1.35",
+    # Registre des chemins de run (contracts.yaml) et vérité canonique
+    # (mapping_lvl4) : train-ttc reprend les fichiers de codif-pipeline.
+    "codif-common",
+    "prune-codes",
 ]
+
+[tool.uv.sources]
+codif-common = { workspace = true }
+prune-codes = { workspace = true }
 
 [project.optional-dependencies]
 synth = [

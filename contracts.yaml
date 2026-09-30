@@ -194,3 +194,16 @@ steps:
       - prune-codes.annotations_train
       - prune-codes.suggester
     outputs: {}
+
+  # --- Workflow d'entraînement TTC (argo/train-ttc-pipeline.yaml) ------------
+  # Hors pipeline de codification. Il reconstruit lui-même ces fichiers avec des
+  # copies conformes des templates build-datasets / classify-regex / prune-codes,
+  # sous son propre run_id, puis les lit ici : ses chiffres sont ainsi comparables
+  # à ceux de l'étape `evaluate`. Ses propres sorties vont sous
+  # data/workflow_outputs/train-ttc/, pas dans le run : aucune sortie déclarée.
+  train-ttc:
+    inputs:
+      - classify-regex.test_without_regex   # jeu d'évaluation : ce que classify-ttc code
+      - build-datasets.annotations_full     # jeu de fine-tuning : source de la KB rag-annotations
+      - prune-codes.mapping_lvl4            # vérité canonique code_lvl4, comme `evaluate`
+    outputs: {}

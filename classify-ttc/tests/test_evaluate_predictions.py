@@ -6,6 +6,7 @@ import pandas as pd
 
 from src.evaluation.evaluate_predictions import (
     evaluate_predictions,
+    evaluate_truncation,
     format_html_report,
     run_evaluate_predictions,
     write_text_output,
@@ -67,3 +68,42 @@ def test_write_text_output_local(tmp_path):
     path = tmp_path / "a" / "b.txt"
     write_text_output("bonjour", path)
     assert path.read_text(encoding="utf-8") == "bonjour"
+
+
+def test_canonical_truth_with_mapping(tmp_path):
+    # Linear hierarchy: 01.1.1.3 is pruned to its parent 01.1.1.
+    mapping = pd.DataFrame({"code": ["01.1.1.3"], "code_parent_equivalent": ["01.1.1"]})
+    mapping_path = tmp_path / "mapping_lvl4.parquet"
+    mapping.to_parquet(mapping_path)
+    preds = pd.DataFrame(
+        {
+            "product": ["pates", "riz", "inconnu"],
+            "code": ["01.1.1.3.1", "01.1.1.1.1", None],
+            # Raw level 4 differs from the truth's level 4, but both prune to 01.1.1.
+            "predicted_code": ["01.1.1", "01.1.1.1", "01.1.8.1"],
+            "predicted_level4": ["stale", "stale", "stale"],
+        }
+    )
+    pred_path = tmp_path / "predictions.parquet"
+    preds.to_parquet(pred_path)
+
+    results, report = run_evaluate_predictions(pred_path, max_k=1, mapping_path=mapping_path)
+
+    assert results["n_samples"] == 2  # row without truth excluded
+    assert results["rule"] == "truncate"
+    assert set(results["levels"]) == {1, 2, 3, 4}
+    # Same N at every level; the pruned 01.1.1 is still judged at level 4.
+    assert all(r["N"] == 2 for r in results["levels"].values())
+    assert results["levels"][4]["top-1"] == 1.0
+    assert "code_lvl4" in report
+
+
+def test_truncation_rule_matches_codif_common():
+    """A prediction finer than the truth is not credited beyond the truth's depth."""
+    df = pd.DataFrame({
+        "code_lvl4": ["01.4", "01.1.1.1"],
+        "predicted_code": ["01.4.3.1", "01.1.1.1"],
+    })
+    results = evaluate_truncation(df, max_k=1)
+    assert results["levels"][2]["top-1"] == 1.0
+    assert results["levels"][4]["top-1"] == 0.5

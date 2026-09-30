@@ -30,6 +30,16 @@ IN_PARAM = re.compile(r"\{\{inputs\.parameters\.([A-Za-z0-9_-]+)\}\}")
 # conciliation LLM alors qu'on demandait SIRUS.
 PARAM_FILES = {"argo/params.yaml": "argo/codif-pipeline.yaml"}
 
+# Templates recopiés d'un workflow à l'autre : Argo ne sait pas référencer un
+# template d'un autre `Workflow`. La copie doit rester conforme à l'original,
+# sinon train-ttc construirait ses entrées autrement que codif-pipeline.
+TEMPLATE_COPIES = {
+    "argo/train-ttc-pipeline.yaml": (
+        "argo/codif-pipeline.yaml",
+        ["build-datasets", "classify-regex", "prune-codes"],
+    ),
+}
+
 
 def check_workflow(path: Path) -> tuple[list[str], list[str]]:
     """Renvoie (erreurs, avertissements) pour un manifeste de workflow."""
@@ -93,6 +103,23 @@ def check_param_file(param_path: Path, wf_path: Path) -> list[str]:
     ]
 
 
+def check_template_copies(copy_path: Path, source_path: Path, names: list[str]) -> list[str]:
+    """Les templates listés doivent être identiques (même dict YAML) dans les deux fichiers."""
+    def templates(path: Path) -> dict:
+        return {t["name"]: t for t in yaml.safe_load(path.read_text())["spec"]["templates"]}
+
+    copy, source = templates(copy_path), templates(source_path)
+    errors = []
+    for name in names:
+        if name not in copy or name not in source:
+            errors.append(f"template « {name} » absent de {copy_path.name} ou de {source_path.name}")
+        elif copy[name] != source[name]:
+            errors.append(
+                f"template « {name} » diverge de {source_path.name} : recopier l'original"
+            )
+    return errors
+
+
 def main(root: Path) -> int:
     failed = False
 
@@ -117,6 +144,18 @@ def main(root: Path) -> int:
             print(f"  ✗ {e}")
         if not errors:
             print("  ✓ cohérent")
+        failed |= bool(errors)
+
+    for cp, (src, names) in TEMPLATE_COPIES.items():
+        cp_path, src_path = root / cp, root / src
+        if not cp_path.exists():
+            continue
+        errors = check_template_copies(cp_path, src_path, names)
+        print(f"=== copies conformes {cp_path.name} ← {src_path.name} ===")
+        for e in errors:
+            print(f"  ✗ {e}")
+        if not errors:
+            print(f"  ✓ {', '.join(names)}")
         failed |= bool(errors)
 
     return 1 if failed else 0

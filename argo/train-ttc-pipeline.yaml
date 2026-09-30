@@ -1,13 +1,33 @@
 # Entraînement du classifieur TTC basique, puis évaluation du modèle obtenu.
 #
-#   train (GPU) ──→ predict-evaluate (CPU)
+#   build-datasets → classify-regex → prune-codes → resolve-inputs ─┐
+#   train (GPU, en parallèle dès le départ) ────────────────────────┴─→ evaluate-base
+#                                                                   └─→ fine-tune (GPU) → evaluate-fine-tuned
+#
+# Les entrées de l'évaluation et du fine-tuning sont RECONSTRUITES par les mêmes
+# étapes que codif-pipeline, sur `input_file` (fichier étiqueté, `label-column`) :
+# build-datasets, classify-regex et prune-codes sont des copies conformes de leurs
+# templates dans codif-pipeline.yaml (vérifié par scripts/check_pipeline.py) et
+# écrivent sous workflow_runs/{run_date}/{run_id}/ comme un run de codification.
+# `resolve-inputs` y lit ensuite, par contracts.yaml (entrée `train-ttc`) :
+#   - évaluation  : classify-regex/raw_test_without_regex.parquet — le fichier
+#                   d'entrée (ex. annotations vague 1 2026) moins ce que la regex a
+#                   codé : exactement ce que classify-ttc code dans le pipeline ;
+#   - fine-tuning : build-datasets/annotations_full.parquet — les anciennes
+#                   annotations (BdF 2017, suggester, BdF 2024), la KB de
+#                   rag-annotations ; construit sans `input_file` ;
+#   - vérité      : prune-codes/mapping_lvl4.parquet — vérité et prédictions
+#                   tronquées au niveau 4 puis élaguées (code_lvl4), comme `evaluate`.
 #
 # - `train` lance `classify-ttc/main.py train-basic` sur un jeu d'entraînement
 #   paramétrable (sortie de `build-training-data`), tous les paramètres de la
 #   commande étant exposés ci-dessous.
 # - `predict-evaluate` prédit avec CE modèle sur un parquet S3 étiqueté, puis
 #   produit le rapport d'évaluation : en texte dans la log, en texte et en HTML
-#   sous `output-prefix`.
+#   sous `output-prefix/base/`.
+# - `fine-tune` (si `fine-tune=true`) fine-tune ce modèle sur les annotations,
+#   en parallèle de `evaluate-base`, dans une expérience MLflow distincte ;
+#   `evaluate-fine-tuned` l'évalue sur le même jeu, sous `output-prefix/fine-tuned/`.
 #
 # Passage du modèle d'un pod à l'autre : par MLflow. L'étape `train` crée elle-même
 # le run MLflow (nommé d'après le workflow) et le passe à train-basic par
@@ -21,7 +41,8 @@
 # (argo/params.yaml).
 #
 #   argo submit argo/train-ttc-pipeline.yaml --watch
-#   argo submit argo/train-ttc-pipeline.yaml -p git-branch=ma-branche -p num-epochs=1 --watch
+#   argo submit argo/train-ttc-pipeline.yaml -p git-branch=ma-branche -p num-epochs=1 \
+#     -p fine-tune=false -p sample-observations=1000 --watch
 #
 # `git -c http.version=HTTP/1.1` sur tous les clones : NE PAS RETIRER (voir
 # codif-pipeline.yaml : le git de l'image échoue sur la réponse HTTP/2 de GitHub).
@@ -44,11 +65,41 @@ spec:
     parameters:
       # Chaque étape clone le dépôt à cette branche : pousser avant de lancer.
       - name: git-branch
-        value: main
+        value: ttc-new-train
+
+      # --- Fichier étiqueté et construction des entrées ------------------------
+      # Mêmes noms que dans codif-pipeline.yaml : les templates copiés
+      # (build-datasets, classify-regex, prune-codes) les lisent tels quels.
+      # Défauts : la configuration étiquetée de argo/params.yaml.
+      - name: input_file
+        value: s3://projet-budget-famille/data/annotations_vague1_2026/as_new_input/annotations_vague1_2026_a_codif.parquet
+      # Colonne de vérité du fichier d'entrée, recopiée dans `code`. Obligatoire.
+      - name: label-column
+        value: code_previous
+      - name: text_column
+        value: NAT_DEP
+      - name: shop_column
+        value: MAG_DEP
+      - name: budget_column
+        value: MONT_DEP
+      - name: annee_column
+        value: ""
+      - name: source_column
+        value: ""
+      # Échantillon du jeu à évaluer, tiré par classify-regex. Vide = tout.
+      - name: sample-observations
+        value: ""
+      # Racine des fichiers construits : workflow_runs/{run_date}/{run_id}/.
+      - name: run_id
+        value: "{{workflow.name}}"
+      - name: run_date
+        value:
+          "{{workflow.creationTimestamp.Y}}-{{workflow.creationTimestamp.m}}-{{wor\
+          kflow.creationTimestamp.d}}"
 
       # --- Entraînement (train-basic) ---------------------------------------
       - name: train-data
-        value: s3://projet-budget-famille/data/ddc_raw/ddc_train_20260929.parquet
+        value: s3://projet-budget-famille/data/ddc_raw/ddc_train_20260930-full.parquet
       # "true" : le jeu est chiffré avec DDC_ENCRYPTION_KEY (cas de build-training-data
       # lancé avec --encryption-key).
       - name: encrypted
@@ -79,7 +130,7 @@ spec:
       - name: lr
         value: "0.1"
       - name: num-epochs
-        value: "20"
+        value: "200"
       - name: patience
         value: "5"
       # Vide = tokenizer n-grammes ; sinon nom HuggingFace (ex. camembert-base).
@@ -101,9 +152,41 @@ spec:
       - name: train-eval-filter-columns
         value: ""
 
+      # --- Fine-tuning (fine-tune-basic) ------------------------------------------
+      # "false" : fine-tune et evaluate-fine-tuned sont sautées.
+      - name: fine-tune
+        value: "true"
+        enum: ["true", "false"]
+      - name: ft-text-column
+        value: l_pr_product
+      - name: ft-code-column
+        value: code
+      # Troncature des codes avant fine-tuning : 4 = niveau de code8, la cible du
+      # modèle. Seuls les codes déjà connus du modèle sont gardés.
+      - name: ft-code-level
+        value: "4"
+      # Données annotées brutes : prétraitement à appliquer.
+      - name: ft-preprocess
+        value: "true"
+        enum: ["true", "false"]
+      - name: ft-encrypted
+        value: "false"
+        enum: ["true", "false"]
+      # Vides = défauts de fine-tune-basic : lr d'origine / 10, 5 epochs,
+      # batch d'origine, patience 3.
+      - name: ft-lr
+        value: ""
+      - name: ft-num-epochs
+        value: ""
+      - name: ft-batch-size
+        value: ""
+      - name: ft-patience
+        value: ""
+      # Expérience distincte de mlflow-experiment (vérifié au lancement).
+      - name: ft-mlflow-experiment
+        value: codif-coicop-ttc-finetune
+
       # --- Prédiction et évaluation ---------------------------------------------
-      - name: eval-file
-        value: s3://projet-budget-famille/data/output-annotation-consolidated/annotations-consolidated-2026-04-15/raw_test.parquet
       - name: eval-text-column
         value: l_pr_product
       - name: eval-code-column
@@ -115,7 +198,8 @@ spec:
         value: "10"
       - name: max-k
         value: "5"
-      # Reçoit predictions.parquet, evaluation_report.txt et evaluation_report.html.
+      # Reçoit base/ et fine-tuned/, chacun avec predictions.parquet,
+      # evaluation_report.txt et evaluation_report.html.
       - name: output-prefix
         value: "s3://projet-budget-famille/data/workflow_outputs/train-ttc/{{workflow.name}}"
 
@@ -123,15 +207,422 @@ spec:
     - name: pipeline
       dag:
         tasks:
+          # Construction des entrées, comme dans codif-pipeline.
+          - name: build-datasets
+            template: build-datasets
+            arguments:
+              parameters:
+                - name: run_id
+                  value: "{{workflow.parameters.run_id}}"
+                - name: run_date
+                  value: "{{workflow.parameters.run_date}}"
+                - name: input_file
+                  value: "{{workflow.parameters.input_file}}"
+                - name: label-column
+                  value: "{{workflow.parameters.label-column}}"
+                - name: text_column
+                  value: "{{workflow.parameters.text_column}}"
+                - name: shop_column
+                  value: "{{workflow.parameters.shop_column}}"
+                - name: budget_column
+                  value: "{{workflow.parameters.budget_column}}"
+                - name: annee_column
+                  value: "{{workflow.parameters.annee_column}}"
+                - name: source_column
+                  value: "{{workflow.parameters.source_column}}"
+          - name: classify-regex
+            dependencies: [build-datasets]
+            template: classify-regex
+            arguments:
+              parameters:
+                - name: sample-observations
+                  value: "{{workflow.parameters.sample-observations}}"
+                - name: run_id
+                  value: "{{workflow.parameters.run_id}}"
+                - name: run_date
+                  value: "{{workflow.parameters.run_date}}"
+          - name: prune-codes
+            dependencies: [classify-regex]
+            template: prune-codes
+            arguments:
+              parameters:
+                - name: run_id
+                  value: "{{workflow.parameters.run_id}}"
+                - name: run_date
+                  value: "{{workflow.parameters.run_date}}"
+          - name: resolve-inputs
+            dependencies: [prune-codes]
+            template: resolve-inputs
+          # L'entraînement ne dépend pas de ces fichiers : il démarre tout de suite.
           - name: train
             template: train
-          - name: predict-evaluate
-            dependencies: [train]
+          - name: evaluate-base
+            dependencies: [train, resolve-inputs]
             template: predict-evaluate
             arguments:
               parameters:
                 - name: model-uri
                   value: "{{tasks.train.outputs.parameters.model-uri}}"
+                - name: variant
+                  value: base
+                - name: eval-file
+                  value: "{{tasks.resolve-inputs.outputs.parameters.eval-file}}"
+                - name: mapping-file
+                  value: "{{tasks.resolve-inputs.outputs.parameters.mapping-file}}"
+                - name: ft-data
+                  value: "{{tasks.resolve-inputs.outputs.parameters.ft-data}}"
+          - name: fine-tune
+            dependencies: [train, resolve-inputs]
+            template: fine-tune
+            when: '"{{workflow.parameters.fine-tune}}" == "true"'
+            arguments:
+              parameters:
+                - name: base-model-uri
+                  value: "{{tasks.train.outputs.parameters.model-uri}}"
+                - name: ft-data
+                  value: "{{tasks.resolve-inputs.outputs.parameters.ft-data}}"
+          # Même `when` que fine-tune : `dependencies:` accepte une tâche Skipped,
+          # et cette étape partirait alors sans modèle.
+          - name: evaluate-fine-tuned
+            dependencies: [fine-tune]
+            template: predict-evaluate
+            when: '"{{workflow.parameters.fine-tune}}" == "true"'
+            arguments:
+              parameters:
+                - name: model-uri
+                  value: "{{tasks.fine-tune.outputs.parameters.model-uri}}"
+                - name: variant
+                  value: fine-tuned
+                - name: eval-file
+                  value: "{{tasks.resolve-inputs.outputs.parameters.eval-file}}"
+                - name: mapping-file
+                  value: "{{tasks.resolve-inputs.outputs.parameters.mapping-file}}"
+                - name: ft-data
+                  value: "{{tasks.resolve-inputs.outputs.parameters.ft-data}}"
+
+    # -------------------------------------------------------------------------
+    # build-datasets, classify-regex, prune-codes — COPIES CONFORMES des templates
+    # de codif-pipeline.yaml : ne pas modifier ici. scripts/check_pipeline.py
+    # échoue si elles divergent ; modifier l'original puis recopier.
+    # -------------------------------------------------------------------------
+    - name: build-datasets
+      inputs:
+        parameters:
+          - name: run_id
+          - name: run_date
+          - name: input_file
+          - name: label-column
+          - name: text_column
+          - name: shop_column
+          - name: budget_column
+          - name: annee_column
+          - name: source_column
+      retryStrategy:          # cf. « Reprise sur échec » en tête de fichier
+        limit: "2"
+        retryPolicy: OnFailure
+        backoff:
+          duration: "30s"
+          factor: "2"
+          maxDuration: "5m"
+      container:
+        image: inseefrlab/onyxia-vscode-python:py3.13.12
+        command: [sh, -c]
+        args:
+          - |
+            set -e
+            git -c http.version=HTTP/1.1 clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo
+            cd repo/build-datasets
+            uv sync --locked --no-dev
+            ARGS="--run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}"
+            ARGS="$ARGS --input-file {{inputs.parameters.input_file}} --text-column {{inputs.parameters.text_column}}"
+            [ -n "{{inputs.parameters.shop_column}}" ]   && ARGS="$ARGS --shop-column {{inputs.parameters.shop_column}}"
+            [ -n "{{inputs.parameters.budget_column}}" ] && ARGS="$ARGS --budget-column {{inputs.parameters.budget_column}}"
+            [ -n "{{inputs.parameters.annee_column}}" ]  && ARGS="$ARGS --annee-column {{inputs.parameters.annee_column}}"
+            [ -n "{{inputs.parameters.source_column}}" ] && ARGS="$ARGS --source-column {{inputs.parameters.source_column}}"
+            # Étiquettes du fichier d'entrée : ce sont elles qui rendent le run évaluable.
+            [ -n "{{inputs.parameters.label-column}}" ]  && ARGS="$ARGS --label-column {{inputs.parameters.label-column}}"
+            uv run --locked --no-dev main.py $ARGS
+        env:
+          - name: AWS_ACCESS_KEY_ID
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_ACCESS_KEY_ID
+          - name: AWS_SECRET_ACCESS_KEY
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_SECRET_ACCESS_KEY
+          - name: AWS_SESSION_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_SESSION_TOKEN
+          - name: AWS_S3_ENDPOINT
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_S3_ENDPOINT
+          - name: AWS_ENDPOINT_URL
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_ENDPOINT_URL
+        resources:
+          requests:
+            memory: 2Gi
+            cpu: 100m
+          limits:
+            memory: 50Gi
+            cpu: 15000m
+
+    - name: classify-regex
+      inputs:
+        parameters:
+          # Passé par le DAG et non lu en portée workflow : c'est ce qui permet
+          # à la passe smoke de coder 100 lignes et à la passe réelle de tout coder.
+          - name: sample-observations
+          - name: run_id
+          - name: run_date
+      retryStrategy:          # cf. « Reprise sur échec » en tête de fichier
+        limit: "2"
+        retryPolicy: OnFailure
+        backoff:
+          duration: "30s"
+          factor: "2"
+          maxDuration: "5m"
+      container:
+        image: inseefrlab/onyxia-vscode-python:py3.13.12
+        command: [sh, -c]
+        args:
+          - |
+            set -e
+            git -c http.version=HTTP/1.1 clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo
+            cd repo/classify-regex
+            uv sync --locked --no-dev
+            ARGS="--run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}"
+            # input_file non vide => mode production (train=annotations_full, test=observations)
+            ARGS="$ARGS --input-file {{workflow.parameters.input_file}}"
+            # Sampling CENTRALISÉ du jeu à coder (unique point du pipeline) :
+            # tous les classifieurs aval héritent de ce tirage.
+            [ -n "{{inputs.parameters.sample-observations}}" ] && ARGS="$ARGS --sample-size {{inputs.parameters.sample-observations}}"
+            uv run --locked --no-dev src/main.py $ARGS
+        env:
+          - name: AWS_ACCESS_KEY_ID
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_ACCESS_KEY_ID
+          - name: AWS_SECRET_ACCESS_KEY
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_SECRET_ACCESS_KEY
+          - name: AWS_SESSION_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_SESSION_TOKEN
+          - name: AWS_S3_ENDPOINT
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_S3_ENDPOINT
+          - name: AWS_ENDPOINT_URL
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_ENDPOINT_URL
+        resources:
+          requests:
+            memory: 2Gi
+            cpu: 100m
+          limits:
+            memory: 50Gi
+            cpu: 15000m
+
+    - name: prune-codes
+      inputs:
+        parameters:
+          - name: config
+            value: config/config.yaml
+          - name: run_id
+          - name: run_date
+      retryStrategy:          # cf. « Reprise sur échec » en tête de fichier
+        limit: "2"
+        retryPolicy: OnFailure
+        backoff:
+          duration: "30s"
+          factor: "2"
+          maxDuration: "5m"
+      container:
+        image: inseefrlab/onyxia-vscode-python:py3.13.12
+        command: [sh, -c]
+        args:
+          - |
+            set -e
+            git -c http.version=HTTP/1.1 clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo
+            cd repo/prune-codes
+            uv sync --locked --no-dev
+            uv run --locked --no-dev scripts/main.py --config {{inputs.parameters.config}} --run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}
+        env:
+          - name: AWS_ACCESS_KEY_ID
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_ACCESS_KEY_ID
+          - name: AWS_SECRET_ACCESS_KEY
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_SECRET_ACCESS_KEY
+          - name: AWS_SESSION_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_SESSION_TOKEN
+          - name: DDC_ENCRYPTION_KEY
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: DDC_ENCRYPTION_KEY
+        resources:
+          requests:
+            memory: 2Gi
+            cpu: 100m
+          limits:
+            memory: 50Gi
+            cpu: 15000m
+    # Step 3: Run RAG pipeline
+
+    # -------------------------------------------------------------------------
+    # resolve-inputs — CPU, après prune-codes. Résout les fichiers construits par
+    # ce workflow via contracts.yaml (jamais de chemin reconstruit à la main) et
+    # vérifie qu'ils sont lisibles, portent les colonnes attendues et que le jeu
+    # d'évaluation a des étiquettes.
+    # -------------------------------------------------------------------------
+    - name: resolve-inputs
+      outputs:
+        parameters:
+          - name: eval-file
+            valueFrom:
+              path: /tmp/eval-file
+          - name: ft-data
+            valueFrom:
+              path: /tmp/ft-data
+          - name: mapping-file
+            valueFrom:
+              path: /tmp/mapping-file
+      container:
+        image: inseefrlab/onyxia-vscode-python:py3.13.12
+        command: [sh, -c]
+        args:
+          - |
+            set -e
+            # Sans étiquettes, rien à mesurer.
+            if [ -z "{{workflow.parameters.label-column}}" ]; then
+              echo "ERREUR : label-column est vide : input_file doit porter une colonne d'étiquettes."
+              exit 1
+            fi
+            git -c http.version=HTTP/1.1 clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo
+            cd repo/classify-ttc
+            uv sync --locked --no-dev
+
+            export RUN_DATE="{{workflow.parameters.run_date}}"
+            export RUN_ID="{{workflow.parameters.run_id}}"
+            export EVAL_TEXT="{{workflow.parameters.eval-text-column}}"
+            export EVAL_CODE="{{workflow.parameters.eval-code-column}}"
+            export FT_TEXT="{{workflow.parameters.ft-text-column}}"
+            export FT_CODE="{{workflow.parameters.ft-code-column}}"
+            export FINE_TUNE="{{workflow.parameters.fine-tune}}"
+            uv run --locked --no-dev python - <<'EOF'
+            import os
+            import sys
+
+            import duckdb
+            from codif_common.contracts import artifact
+            from src.preprocessing.data_preparation import configure_s3
+
+            run = {"run_date": os.environ["RUN_DATE"], "run_id": os.environ["RUN_ID"]}
+            paths = {
+                "eval-file": artifact("classify-regex", "test_without_regex", **run),
+                "ft-data": artifact("build-datasets", "annotations_full", **run),
+                "mapping-file": artifact("prune-codes", "mapping_lvl4", **run),
+            }
+            con = duckdb.connect()
+            configure_s3(con)
+
+            def check(name, columns):
+                path = paths[name]
+                try:
+                    found = set(con.execute(f"DESCRIBE SELECT * FROM '{path}'").df()["column_name"])
+                except Exception as exc:
+                    sys.exit(f"[resolve-inputs] {name} illisible : {path}\n  {exc}")
+                missing = [c for c in columns if c not in found]
+                if missing:
+                    sys.exit(f"[resolve-inputs] {name} ({path}) : colonnes absentes {missing}")
+                n = con.execute(f"SELECT count(*) FROM '{path}'").fetchone()[0]
+                print(f"[resolve-inputs] {name:12s} {n:>9,} lignes  {path}")
+                return path
+
+            eval_file = check("eval-file", [os.environ["EVAL_TEXT"], os.environ["EVAL_CODE"]])
+            code = os.environ["EVAL_CODE"]
+            n_labels = con.execute(
+                f"SELECT count(*) FROM '{eval_file}' WHERE nullif(trim(CAST(\"{code}\" AS VARCHAR)), '') IS NOT NULL"
+            ).fetchone()[0]
+            if n_labels == 0:
+                sys.exit(f"[resolve-inputs] aucune étiquette dans « {code} » : label-column désigne-t-il la bonne colonne de input_file ?")
+            print(f"[resolve-inputs] étiquettes {n_labels:>9,}")
+            check("mapping-file", ["code", "code_parent_equivalent"])
+            if os.environ["FINE_TUNE"] == "true":
+                check("ft-data", [os.environ["FT_TEXT"], os.environ["FT_CODE"]])
+                if paths["ft-data"] == eval_file:
+                    sys.exit("[resolve-inputs] ft-data = jeu d'évaluation : le modèle serait évalué sur ses données de fine-tuning")
+
+            for name, path in paths.items():
+                with open(f"/tmp/{name}", "w") as f:
+                    f.write(path)
+            EOF
+        env:
+          - name: MLFLOW_TRACKING_URI
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: MLFLOW_TRACKING_URI
+          - name: MLFLOW_TRACKING_USERNAME
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: MLFLOW_TRACKING_USERNAME
+          - name: MLFLOW_TRACKING_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: MLFLOW_TRACKING_PASSWORD
+          - name: AWS_ACCESS_KEY_ID
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_ACCESS_KEY_ID
+          - name: AWS_SECRET_ACCESS_KEY
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_SECRET_ACCESS_KEY
+          - name: AWS_SESSION_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_SESSION_TOKEN
+          - name: AWS_S3_ENDPOINT
+            value: minio.lab.sspcloud.fr
+        resources:
+          requests:
+            memory: 1Gi
+            cpu: 200m
+          limits:
+            memory: 4Gi
+            cpu: 2000m
 
     # -------------------------------------------------------------------------
     # train — GPU. torchTextClassifiers choisit cuda tout seul (accelerator="auto") ;
@@ -144,8 +635,8 @@ spec:
             valueFrom:
               path: /tmp/model_uri
       container:
-        image: inseefrlab/onyxia-vscode-python:py3.13.12
-        command: [ sh, -c ]
+        image: inseefrlab/onyxia-python-pytorch:py3.13.12-gpu
+        command: [sh, -c]
         args:
           - |
             set -e
@@ -257,12 +748,14 @@ spec:
             mountPath: /dev/shm
         resources:
           requests:
-            memory: 8Gi
-            cpu: 2000m
+            memory: 2Gi
+            cpu: 500m
           limits:
-            memory: 32Gi
+            memory: 16Gi
             cpu: 12000m
             nvidia.com/gpu: 1
+      nodeSelector:
+        gpu-vram: 16GB
       volumes:
         - name: dshm
           emptyDir:
@@ -270,16 +763,156 @@ spec:
             sizeLimit: 8Gi
 
     # -------------------------------------------------------------------------
-    # predict-evaluate — CPU. Prédit avec le modèle du run MLflow ci-dessus, puis
-    # évalue : rapport texte dans la log et sur S3, rapport HTML sur S3.
+    # fine-tune — GPU, mêmes réglages que train. Part du modèle de train et le
+    # fine-tune sur ft-data, dans ft-mlflow-experiment (même mécanisme de run
+    # MLflow créé ici puis repris via MLFLOW_RUN_ID).
+    # -------------------------------------------------------------------------
+    - name: fine-tune
+      inputs:
+        parameters:
+          - name: base-model-uri
+          - name: ft-data
+      outputs:
+        parameters:
+          - name: model-uri
+            valueFrom:
+              path: /tmp/model_uri
+      container:
+        image: inseefrlab/onyxia-python-pytorch:py3.13.12-gpu
+        command: [sh, -c]
+        args:
+          - |
+            set -e
+            if [ "{{workflow.parameters.ft-mlflow-experiment}}" = "{{workflow.parameters.mlflow-experiment}}" ]; then
+              echo "[fine-tune] ft-mlflow-experiment doit différer de mlflow-experiment" >&2
+              exit 1
+            fi
+
+            git -c http.version=HTTP/1.1 clone --branch {{workflow.parameters.git-branch}} https://github.com/InseeFrLab/codif-coicop-bdf.git repo
+            cd repo/classify-ttc
+            uv sync --locked --no-dev
+
+            uv run --locked --no-dev python -c "import torch; print('[fine-tune] CUDA disponible :', torch.cuda.is_available())"
+
+            RUN_ID=$(uv run --locked --no-dev python -c "
+            import mlflow
+            from mlflow import MlflowClient
+            exp = mlflow.set_experiment('{{workflow.parameters.ft-mlflow-experiment}}')
+            run = MlflowClient().create_run(
+                exp.experiment_id,
+                run_name='{{workflow.name}}',
+                tags={
+                    'argo_workflow': '{{workflow.name}}',
+                    'base_model_uri': '{{inputs.parameters.base-model-uri}}',
+                },
+            )
+            print(run.info.run_id)
+            " | tail -n 1)
+            # `set -e` ne voit que le statut de `tail` : on vérifie le résultat.
+            if [ -z "$RUN_ID" ]; then echo "[fine-tune] création du run MLflow impossible" >&2; exit 1; fi
+            echo "[fine-tune] run MLflow : $RUN_ID (modèle de départ : {{inputs.parameters.base-model-uri}})"
+
+            mark_failed() {
+              uv run --locked --no-dev python -c "from mlflow import MlflowClient; MlflowClient().set_terminated('$RUN_ID', 'FAILED')" || true
+            }
+            trap 'rc=$?; if [ "$rc" -ne 0 ]; then mark_failed; fi; exit $rc' EXIT
+
+            ARGS="--model {{inputs.parameters.base-model-uri}} \
+                  --data {{inputs.parameters.ft-data}} \
+                  --code-column {{workflow.parameters.ft-code-column}} \
+                  --text-column {{workflow.parameters.ft-text-column}} \
+                  --output /tmp/ttc-ft \
+                  --mlflow-experiment {{workflow.parameters.ft-mlflow-experiment}}"
+            if [ -n "{{workflow.parameters.ft-code-level}}" ]; then ARGS="$ARGS --code-level {{workflow.parameters.ft-code-level}}"; fi
+            if [ "{{workflow.parameters.ft-preprocess}}" = "true" ]; then ARGS="$ARGS --preprocess"; fi
+            if [ -n "{{workflow.parameters.ft-lr}}" ]; then ARGS="$ARGS --lr {{workflow.parameters.ft-lr}}"; fi
+            if [ -n "{{workflow.parameters.ft-num-epochs}}" ]; then ARGS="$ARGS --num-epochs {{workflow.parameters.ft-num-epochs}}"; fi
+            if [ -n "{{workflow.parameters.ft-batch-size}}" ]; then ARGS="$ARGS --batch-size {{workflow.parameters.ft-batch-size}}"; fi
+            if [ -n "{{workflow.parameters.ft-patience}}" ]; then ARGS="$ARGS --patience {{workflow.parameters.ft-patience}}"; fi
+            # La clé est ajoutée à part, et n'est jamais affichée.
+            if [ "{{workflow.parameters.ft-encrypted}}" = "true" ]; then
+              ARGS="$ARGS --encryption-key $DDC_ENCRYPTION_KEY"
+            fi
+
+            MLFLOW_RUN_ID="$RUN_ID" uv run --locked --no-dev main.py fine-tune-basic $ARGS
+
+            echo "runs:/$RUN_ID/model" > /tmp/model_uri
+            echo "[fine-tune] modèle : runs:/$RUN_ID/model"
+        env:
+          - name: MLFLOW_TRACKING_URI
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: MLFLOW_TRACKING_URI
+          - name: MLFLOW_TRACKING_USERNAME
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: MLFLOW_TRACKING_USERNAME
+          - name: MLFLOW_TRACKING_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: MLFLOW_TRACKING_PASSWORD
+          - name: AWS_ACCESS_KEY_ID
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_ACCESS_KEY_ID
+          - name: AWS_SECRET_ACCESS_KEY
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_SECRET_ACCESS_KEY
+          - name: AWS_SESSION_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: AWS_SESSION_TOKEN
+          - name: AWS_S3_ENDPOINT
+            value: minio.lab.sspcloud.fr
+          - name: DDC_ENCRYPTION_KEY
+            valueFrom:
+              secretKeyRef:
+                name: secret-codif-coicop-bdf
+                key: DDC_ENCRYPTION_KEY
+        # Les DataLoaders (num_workers=12) passent par /dev/shm, limité à 64 Mo
+        # par défaut dans un pod : sans ce volume, « bus error » au premier epoch.
+        volumeMounts:
+          - name: dshm
+            mountPath: /dev/shm
+        resources:
+          requests:
+            memory: 2Gi
+            cpu: 500m
+          limits:
+            memory: 16Gi
+            cpu: 12000m
+            nvidia.com/gpu: 1
+      nodeSelector:
+        gpu-vram: 16GB
+      volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 8Gi
+
+    # -------------------------------------------------------------------------
+    # predict-evaluate — CPU. Prédit avec le modèle reçu (base ou fine-tuné), puis
+    # évalue : rapport texte dans la log et sur S3, rapport HTML sur S3, sous
+    # output-prefix/<variant>/.
     # -------------------------------------------------------------------------
     - name: predict-evaluate
       inputs:
         parameters:
           - name: model-uri
+          - name: variant
+          - name: eval-file
+          - name: mapping-file
+          - name: ft-data
       container:
         image: inseefrlab/onyxia-vscode-python:py3.13.12
-        command: [ sh, -c ]
+        command: [sh, -c]
         args:
           - |
             set -e
@@ -287,11 +920,17 @@ spec:
             cd repo/classify-ttc
             uv sync --locked --no-dev
 
-            PREFIX="{{workflow.parameters.output-prefix}}"
+            PREFIX="{{workflow.parameters.output-prefix}}/{{inputs.parameters.variant}}"
+
+            # Ligne d'en-tête propre au modèle fine-tuné (positionnels : garde les espaces).
+            set --
+            if [ "{{inputs.parameters.variant}}" = "fine-tuned" ]; then
+              set -- --report-meta "Données de fine-tuning={{inputs.parameters.ft-data}}"
+            fi
 
             uv run --locked --no-dev main.py predict-basic \
               --model "{{inputs.parameters.model-uri}}" \
-              --file "{{workflow.parameters.eval-file}}" \
+              --file "{{inputs.parameters.eval-file}}" \
               --output "$PREFIX/predictions.parquet" \
               --text-column "{{workflow.parameters.eval-text-column}}" \
               --top-k {{workflow.parameters.top-k}}
@@ -309,10 +948,14 @@ spec:
               $CATEGORY \
               --output "$PREFIX/evaluation_report.txt" \
               --html-output "$PREFIX/evaluation_report.html" \
+              --mapping-file "{{inputs.parameters.mapping-file}}" \
+              --report-meta "Fichier évalué (input_file)={{workflow.parameters.input_file}}" \
+              --report-meta "Variante={{inputs.parameters.variant}}" \
               --report-meta "Modèle={{inputs.parameters.model-uri}}" \
               --report-meta "Jeu d'entraînement={{workflow.parameters.train-data}}" \
               --report-meta "Cible={{workflow.parameters.code-column}}" \
-              --report-meta "Workflow Argo={{workflow.name}}"
+              --report-meta "Workflow Argo={{workflow.name}}" \
+              "$@"
 
             echo "[predict-evaluate] modèle      : {{inputs.parameters.model-uri}}"
             echo "[predict-evaluate] prédictions : $PREFIX/predictions.parquet"

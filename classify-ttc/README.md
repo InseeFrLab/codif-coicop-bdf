@@ -449,33 +449,80 @@ uv run python main.py evaluate-predictions s3://.../predictions.parquet \
 | `--output` | — | Rapport texte (local ou `s3://`) ; il est aussi affiche sur la sortie standard |
 | `--html-output` | — | Rapport HTML autonome (local ou `s3://`) : tableaux par niveau et par categorie, accuracy par code et confusions les plus frequentes au niveau le plus fin evalue |
 | `--report-meta` | — | Ligne `CLE=VALEUR` ajoutee en tete du HTML (repetable) |
+| `--mapping-file` | — | `mapping_lvl4` de prune-codes (local ou `s3://`) : verite canonique `code_lvl4`, predictions elaguees, regle de l'etape `evaluate` (troncature puis egalite, N constant, niveaux 1 a 4) |
 
 Un modele de niveau 4 evalue contre des codes a 5 niveaux n'a pas de ligne
 evaluable au niveau 5 (`N = 0`) : c'est attendu.
 
 ### Entrainement et evaluation via Argo (`argo/train-ttc-pipeline.yaml`)
 
-Workflow en deux etapes, hors pipeline de codification :
+Workflow hors pipeline de codification. Il **reconstruit ses entrees avec les memes
+etapes que codif-pipeline**, sur un fichier etiquete, pour que ses chiffres soient
+comparables a ceux de l'etape `evaluate` :
 
-1. **`train`** (GPU) : `train-basic` sur `train-data` ; tous les parametres de la
-   commande sont exposes comme parametres du workflow (`batch-size` vaut 256 par
-   defaut, adapte a la GPU). Le run MLflow est cree par l'etape elle-meme, nomme
-   d'apres le workflow, et repris par `train-basic` via `MLFLOW_RUN_ID`.
-2. **`predict-evaluate`** : `predict-basic` avec le modele de ce run
-   (`runs:/<run_id>/model`) sur `eval-file`, puis `evaluate-predictions`. Le
-   rapport texte est dans la log ; `predictions.parquet`, `evaluation_report.txt`
-   et `evaluation_report.html` sont ecrits sous `output-prefix`
-   (par defaut `s3://projet-budget-famille/data/workflow_outputs/train-ttc/<workflow>`).
+```
+build-datasets -> classify-regex -> prune-codes -> resolve-inputs -+
+train (GPU, en parallele des le depart) ---------------------------+-> evaluate-base
+                                                                   +-> fine-tune (GPU) -> evaluate-fine-tuned
+```
+
+1. **`build-datasets`, `classify-regex`, `prune-codes`** : copies conformes des
+   templates de `codif-pipeline.yaml` (`scripts/check_pipeline.py` echoue si elles
+   divergent), lancees sur `input_file` avec `label-column`. Par defaut, la
+   configuration etiquetee de `argo/params.yaml` : les annotations vague 1 2026
+   (`annotations_vague1_2026_a_codif.parquet`, verite `code_previous`, texte
+   `NAT_DEP`). Elles ecrivent sous `workflow_runs/{run_date}/{run_id}/` (le run_id
+   est le nom du workflow). `sample-observations` limite le jeu evalue.
+   **`resolve-inputs`** lit ensuite, par `codif_common.contracts.artifact()` (entree
+   `train-ttc` de `contracts.yaml`) :
+   - jeu d'evaluation : `classify-regex/raw_test_without_regex.parquet`, le fichier
+     d'entree moins ce que la regex a code, c'est-a-dire ce que `classify-ttc` code
+     dans le pipeline ;
+   - jeu de fine-tuning : `build-datasets/annotations_full.parquet`, les **anciennes**
+     annotations (BdF 2017, suggester, BdF 2024) qui forment la KB de
+     `rag-annotations`. Il est construit sans `input_file`, donc vague 1 n'y entre pas ;
+   - mapping : `prune-codes/mapping_lvl4.parquet`.
+
+   Elle verifie qu'ils sont lisibles, portent les colonnes attendues et que le jeu
+   d'evaluation a des etiquettes.
+2. **`train`** (GPU) : `train-basic` sur `train-data` (par defaut
+   `ddc_train_20260930-full.parquet`) ; tous les parametres de la commande sont
+   exposes. Le run MLflow est cree par l'etape, nomme d'apres le workflow, et repris
+   par `train-basic` via `MLFLOW_RUN_ID`.
+3. **`evaluate-base`** : `predict-basic` avec ce modele sur le jeu d'evaluation, puis
+   `evaluate-predictions --mapping-file` : verite `code_lvl4` et predictions tronquees
+   au niveau 4 puis elaguees, regle de l'etape `evaluate` (troncature au niveau k puis
+   egalite, N constant). Sorties sous `output-prefix/base/` (par defaut
+   `s3://projet-budget-famille/data/workflow_outputs/train-ttc/<workflow>`).
+4. **`fine-tune`** (GPU, si `fine-tune=true`), en parallele de `evaluate-base` :
+   `fine-tune-basic` part du modele de `train`, sur les annotations, dans une
+   experience MLflow distincte (`ft-mlflow-experiment`, par defaut
+   `codif-coicop-ttc-finetune` ; tag `base_model_uri`). Codes tronques au niveau
+   `ft-code-level` (4) ; seuls les codes connus du modele sont gardes.
+5. **`evaluate-fine-tuned`** : meme evaluation, meme jeu, sous `output-prefix/fine-tuned/`.
+
+Sur la vague 1 2026, 22,6 % des libelles distincts evalues existent a l'identique
+dans les anciennes annotations : ce sont des libelles courants qui reviennent d'une
+vague a l'autre (pas les memes lignes), comme ils reviendront en production.
 
 ```bash
 argo submit argo/train-ttc-pipeline.yaml --watch
-# Branche non fusionnee, run court de validation
-argo submit argo/train-ttc-pipeline.yaml -p git-branch=ma-branche -p num-epochs=1 --watch
-# Autre jeu d'entrainement / d'evaluation
-argo submit argo/train-ttc-pipeline.yaml \
-    -p train-data=s3://.../data-train.parquet \
-    -p eval-file=s3://.../test.parquet -p eval-text-column=product -p eval-code-column=code
+# Run court de validation, sans fine-tuning, sur 1 000 lignes evaluees
+argo submit argo/train-ttc-pipeline.yaml -p git-branch=ma-branche -p num-epochs=1 \
+    -p fine-tune=false -p sample-observations=1000 --watch
+# Autre fichier etiquete
+argo submit argo/train-ttc-pipeline.yaml -p input_file=s3://.../fichier.parquet -p label-column=code --watch
 ```
+
+Parametres de fine-tuning : `fine-tune`, `ft-text-column` (`l_pr_product`),
+`ft-code-column` (`code`), `ft-code-level` (`4`), `ft-preprocess` (`true`),
+`ft-encrypted` (`false`), `ft-lr` / `ft-num-epochs` / `ft-batch-size` / `ft-patience`
+(vides = defauts de `fine-tune-basic` : lr d'origine / 10, 5 epochs, batch d'origine,
+patience 3), `ft-mlflow-experiment`.
+
+`fine-tune-basic` accepte en `--model` un dossier local ou une URI MLflow
+(`runs:/…`, `models:/…`, `mlflow-artifacts:/…`), et `--code-level N` tronque les codes
+de `--code-column` au niveau N avant le fine-tuning.
 
 Le modele retenu se recopie ensuite dans `classify-ttc-model-uri` (`argo/params.yaml`).
 

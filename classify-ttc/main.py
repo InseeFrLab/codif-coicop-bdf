@@ -469,6 +469,7 @@ def cmd_evaluate_predictions(args: argparse.Namespace) -> None:
         max_k=args.max_k,
         html_output=args.html_output,
         report_meta=report_meta,
+        mapping_path=args.mapping_file,
     )
     print(report)
 
@@ -1586,6 +1587,13 @@ def main() -> int:
         action="append",
         metavar="KEY=VALUE",
         help="Extra line in the HTML report header (repeatable, e.g. model=runs:/...)",
+    )
+    eval_pred_parser.add_argument(
+        "--mapping-file",
+        type=str,
+        default=None,
+        help="prune-codes mapping_lvl4 parquet (local or s3://): evaluate against the "
+        "canonical truth code_lvl4, as the evaluate step of codif-pipeline",
     )
     eval_pred_parser.set_defaults(func=cmd_evaluate_predictions)
 

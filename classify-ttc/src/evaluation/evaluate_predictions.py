@@ -7,6 +7,7 @@ import html
 import io
 import logging
 import os
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
@@ -55,6 +56,93 @@ def read_prediction_file(path: str | Path) -> pd.DataFrame:
     if path.suffix == ".parquet":
         return pd.read_parquet(path)
     return pd.read_csv(path, sep=";")
+
+
+# ── Canonical truth (as in codif-pipeline) ────────────
+
+CANONICAL_TRUTH_COL = "code_lvl4"
+
+
+def canonicalize(
+    df: pd.DataFrame, mapping: pd.DataFrame, code_column: str = "code"
+) -> pd.DataFrame:
+    """Truncate to level 4 and prune truth and predictions with ``mapping_lvl4``.
+
+    Same normalisation as ``reconcile-llm`` before the ``evaluate`` step of
+    codif-pipeline (``prune_codes.pruning.trunc_and_prune_lvl4``): the truth goes
+    to ``code_lvl4`` (the raw ``code_column`` is kept), predicted codes are
+    replaced in place. Per-level columns are dropped so that they are rebuilt
+    from the canonical codes.
+    """
+    from prune_codes.pruning import trunc_and_prune_lvl4
+
+    df = df.drop(
+        columns=[c for c in df.columns
+                 if re.fullmatch(r"(predicted_)?level\d+(_top\d+)?", c)]
+    )
+    pred_cols = [c for c in df.columns if re.fullmatch(r"predicted_code(_top\d+)?", c)]
+    for col in [code_column, *pred_cols]:
+        df = trunc_and_prune_lvl4(df, mapping, code_name=col)
+        target = CANONICAL_TRUTH_COL if col == code_column else col
+        df[target] = df[f"{col}_tpruned"]
+        df = df.drop(columns=[f"{col}_tpruned"])
+    for col in pred_cols:
+        df[col] = df[col].fillna("")
+    return df
+
+
+def _prediction_columns(df: pd.DataFrame) -> list[str]:
+    """``predicted_code`` then ``predicted_code_top2``, ``_top3``… in rank order."""
+    tops = sorted(
+        (c for c in df.columns if re.fullmatch(r"predicted_code_top\d+", c)),
+        key=lambda c: int(c.rsplit("top", 1)[1]),
+    )
+    return ["predicted_code", *tops]
+
+
+def evaluate_truncation(
+    df: pd.DataFrame,
+    code_column: str = CANONICAL_TRUTH_COL,
+    categorical_column: str | None = None,
+    max_k: int = 5,
+) -> dict:
+    """Top-K accuracy with the rule of codif-pipeline's ``evaluate`` step.
+
+    ``codif_common.metrics.level_result`` : truth and prediction truncated to
+    their first ``level`` segments, then strict equality. A truth shallower than
+    ``level`` stays measured (a pruned ``01.1.1`` is judged at level 4 too), so
+    ``N`` is the same at every level. Top-K: right if any of the K first
+    predictions is right. Levels 1 to 4, the depth of ``mapping_lvl4``.
+    """
+    from codif_common.metrics import REGIME_LEVEL, level_result
+
+    pred_cols = _prediction_columns(df)
+    ks = list(range(1, min(max_k, len(pred_cols)) + 1))
+    levels = list(range(1, REGIME_LEVEL + 1))
+
+    def _compute(sub: pd.DataFrame) -> dict[int, dict]:
+        truth = sub[code_column].tolist()
+        preds = [sub[c].tolist() for c in pred_cols]
+        out: dict[int, dict] = {}
+        for level in levels:
+            row: dict = {}
+            for k in ks:
+                hits = [
+                    any(level_result(t, p[i], level) is True for p in preds[:k])
+                    for i, t in enumerate(truth)
+                ]
+                row[f"top-{k}"] = sum(hits) / len(hits) if hits else float("nan")
+            row["N"] = len(truth)
+            out[level] = row
+        return out
+
+    results: dict = {"n_samples": len(df), "levels": _compute(df), "rule": "truncate"}
+    if categorical_column and categorical_column in df.columns:
+        results["categorical_column"] = categorical_column
+        results["by_category"] = {
+            str(val): _compute(grp) for val, grp in df.groupby(categorical_column, sort=True)
+        }
+    return results
 
 
 # ── Core evaluation ───────────────────────────────────
@@ -166,6 +254,8 @@ def format_report(results: dict, prediction_path: str | None = None) -> str:
     n = results["n_samples"]
     lines.append(f"Evaluation: {path_label}")
     lines.append(f"N: {n:,}")
+    if results.get("truth"):
+        lines.append(f"Truth: {results['truth']}")
 
     # Collect all K values present across any level.
     ks = sorted({
@@ -267,6 +357,7 @@ def format_html_report(
     meta_rows = {
         "Fichier évalué": results.get("prediction_path", ""),
         "N": f"{results['n_samples']:,}",
+        **({"Vérité": results["truth"]} if results.get("truth") else {}),
         "Généré le": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
         **(meta or {}),
     }
@@ -289,10 +380,19 @@ def format_html_report(
             parts.append(_level_table_html(cat_levels))
 
     level = _finest_level(results)
-    if level is not None:
+    if level is not None and results.get("rule") == "truncate":
+        # Même règle que les tableaux : codes canoniques complets, troncature + égalité.
+        from codif_common.metrics import level_result
+
+        true_col, pred_col = code_column, "predicted_code"
+        sub = df.assign(_hit=[
+            level_result(t, p, level) is True for t, p in zip(df[true_col], df[pred_col])
+        ])
+    elif level is not None:
         true_col, pred_col = f"level{level}", f"predicted_level{level}"
         sub = df[df[true_col].notna() & df[pred_col].notna()]
         sub = sub.assign(_hit=sub[true_col].astype(str) == sub[pred_col].astype(str))
+    if level is not None:
 
         per_code = (
             sub.groupby(true_col)["_hit"]
@@ -301,9 +401,12 @@ def format_html_report(
         )
         parts.append(f"<h2>Accuracy top-1 par code (level{level})</h2>")
         parts.append(
-            "<p class='note'>Triée de la plus faible à la plus forte. Les lignes "
-            f"dont le code vrai ou prédit n'atteint pas le niveau {level} "
-            "(codes techniques courts, par ex. 98.4) n'y figurent pas.</p>"
+            "<p class='note'>Triée de la plus faible à la plus forte. "
+            + ("Codes canoniques (mapping_lvl4), règle troncature + égalité de "
+               "l'étape evaluate : un code élagué plus court est jugé à sa profondeur.</p>"
+               if results.get("rule") == "truncate" else
+               f"Les lignes dont le code vrai ou prédit n'atteint pas le niveau {level} "
+               "(codes techniques courts, par ex. 98.4) n'y figurent pas.</p>")
         )
         parts.append("<table><tr><th>Code</th><th>N</th><th>Top-1</th></tr>")
         parts += [
@@ -368,6 +471,7 @@ def run_evaluate_predictions(
     max_k: int = 5,
     html_output: str | Path | None = None,
     report_meta: dict[str, str] | None = None,
+    mapping_path: str | Path | None = None,
 ) -> tuple[dict, str]:
     """Read a prediction file, evaluate it, and return (results, report).
 
@@ -379,6 +483,9 @@ def run_evaluate_predictions(
         max_k: Maximum K for top-K accuracy.
         html_output: If set, also write an HTML report there (local or S3).
         report_meta: Extra key/value pairs shown in the HTML report header.
+        mapping_path: ``mapping_lvl4`` parquet (local or S3). If set, truth and
+            predictions are canonicalized as in codif-pipeline (see
+            :func:`canonicalize`) and evaluated against ``code_lvl4``.
 
     Returns:
         Tuple of (results dict, formatted report string).
@@ -387,13 +494,28 @@ def run_evaluate_predictions(
     df = read_prediction_file(prediction_path)
     logger.info("Loaded %d rows", len(df))
 
-    results = evaluate_predictions(
+    truth = code_column
+    if mapping_path:
+        logger.info("Canonical truth from mapping: %s", mapping_path)
+        df = canonicalize(df, read_prediction_file(mapping_path), code_column)
+        code_column = CANONICAL_TRUTH_COL
+        truth = (f"{CANONICAL_TRUTH_COL} (mapping_lvl4 : {mapping_path}) ; "
+                 "règle de l'étape evaluate : troncature au niveau puis égalité, N constant")
+
+    missing = df[code_column].isna() | (df[code_column].astype(str).str.strip() == "")
+    if missing.any():
+        logger.warning("%d rows without truth in '%s' are not evaluated", missing.sum(), code_column)
+        df = df[~missing]
+
+    evaluate = evaluate_truncation if mapping_path else evaluate_predictions
+    results = evaluate(
         df,
         code_column=code_column,
         categorical_column=categorical_column,
         max_k=max_k,
     )
     results["prediction_path"] = str(prediction_path)
+    results["truth"] = truth
 
     report = format_report(results, prediction_path=str(prediction_path))
 
