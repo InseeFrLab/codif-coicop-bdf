@@ -83,6 +83,15 @@ comptée fausse.
   codification**, seule population sur laquelle portent les accuracies qui suivent. Un run
   échantillonné y voit apparaître la ligne correspondante, sans quoi l'entonnoir ne
   s'additionnerait pas ;
+- **Les annotations : répartition, doublons et incohérences** : avant de lire une accuracy,
+  sur quoi porte-t-elle ? La répartition de la vérité par division COICOP (niveau 1), puis
+  croisée avec la provenance du produit quand `source_column` et `eval-source-column` sont
+  renseignés ; enfin les **doublons** (un couple libellé × magasin annoté plusieurs fois) et
+  les **incohérences** (un couple annoté avec plusieurs codes **canoniques** — tronqués au
+  niveau 4 puis élagués, donc sans les écarts de niveau 5 que le pipeline ne voit pas),
+  ventilées en `désaccord` (codes qui ne se contiennent pas) et `profondeur` (un code est le
+  parent de l'autre), avec des exemples. Une vérité qui se contredit plafonne l'accuracy
+  mesurable ; le périmètre est celui du parquet de conciliation (sans les lignes regex) ;
 - **Accuracy globale par niveau** COICOP pour LCS, RAG notices, RAG annotations, TTC
   et la conciliation (tableau + graphique), et la profondeur de la vérité terrain, qui dit
   où une prédiction plus fine que l'annotation est comptée fausse ;
@@ -306,6 +315,8 @@ Sont enregistrés :
   `regime/<brique>/<régime>/accuracy_niv4` et `…/n`,
   `confidence/<brique>/auroc`, `…/accuracy_at_<seuil>`, `…/coverage_at_<seuil>`,
   `codable/<brique>/lift`, `distortion/<brique>/level_<k>/{tv_distance,kl_divergence}` ;
+- **Doublons et incohérences d'annotation** : `annot_n_dup_keys`, `annot_n_rows_in_dup_keys`,
+  `annot_n_removable`, `annot_n_conflict_keys`, `annot_n_desaccord`, `annot_n_profondeur` ;
 - **Volumétrie du fichier d'entrée** : `n_input_rows`, `n_dropped_empty_label`,
   `n_dropped_uncodable`, `n_observations`. Sans `n_input_rows`, comparer deux runs ne
   permet pas de distinguer un fichier plus petit d'un filtrage plus lourd ;

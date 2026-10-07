@@ -381,3 +381,110 @@ class TestArbitrationMerit:
         """Run LLM, ou run SIRUS antérieur à la colonne."""
         frame = self._frame().drop(columns=["sirus_n_candidats"])
         assert self._merit(frame) is None
+
+
+class TestAnnotationDistribution:
+    @staticmethod
+    def _frame():
+        return pd.DataFrame(
+            {
+                TRUTH: ["01.1.1.1", "01.2.1.1", "01.1.1.1", "07.1.1.1", None],
+                "source": ["tick_pap", "tick_pap", "carn_pap", "carn_pap", "carn_pap"],
+            }
+        )
+
+    def test_shares_sum_to_one_and_ignore_unlabelled_rows(self):
+        out = I.annotation_distribution(self._frame(), TRUTH, "source")
+        assert out["n"] == 4
+        assert out["by_division"]["part"].sum() == 1.0
+        assert out["by_division"].loc["01", "n"] == 3
+
+    def test_divisions_are_sorted_by_size(self):
+        out = I.annotation_distribution(self._frame(), TRUTH)
+        assert list(out["by_division"].index) == ["01", "07"]
+
+    def test_crosses_division_and_source(self):
+        crossed = I.annotation_distribution(self._frame(), TRUTH, "source")["by_source"]
+        assert crossed.loc["01", "tick_pap"] == 2
+        assert crossed.loc["01", "carn_pap"] == 1
+        assert crossed.loc["07", "Total"] == 1
+
+    def test_no_source_column_gives_no_crossing(self):
+        assert I.annotation_distribution(self._frame(), TRUTH, None)["by_source"] is None
+        assert I.annotation_distribution(self._frame(), TRUTH, "absente")["by_source"] is None
+
+    def test_no_truth_yields_none(self):
+        frame = pd.DataFrame({TRUTH: [None, ""]})
+        assert I.annotation_distribution(frame, TRUTH) is None
+
+
+class TestAnnotationConflicts:
+    @staticmethod
+    def _frame(rows):
+        return pd.DataFrame(
+            rows, columns=["raw_product", "shop", TRUTH, "budget"]
+        )
+
+    def test_exact_duplicates_are_removable_but_not_conflicts(self):
+        out = I.annotation_conflicts(self._frame([
+            ("pain", "lidl", "01.1.1.1", 2.0),
+            ("pain", "lidl", "01.1.1.1", 3.0),
+        ]), TRUTH)
+        assert out["n_dup_keys"] == 1
+        assert out["n_removable"] == 1
+        assert out["n_conflict_keys"] == 0
+
+    def test_distinct_codes_on_one_key_are_a_disagreement(self):
+        out = I.annotation_conflicts(self._frame([
+            ("lait", "lidl", "01.1.4.1", 1.0),
+            ("lait", "lidl", "01.1.5.1", 1.0),
+        ]), TRUTH)
+        assert (out["n_conflict_keys"], out["n_desaccord"], out["n_profondeur"]) == (1, 1, 0)
+        assert out["n_removable"] == 0  # deux codes distincts : rien à retirer
+
+    def test_parent_and_child_is_a_depth_conflict(self):
+        out = I.annotation_conflicts(self._frame([
+            ("savon", "lidl", "06.1", 1.0),
+            ("savon", "lidl", "06.1.1", 1.0),
+        ]), TRUTH)
+        assert (out["n_desaccord"], out["n_profondeur"]) == (0, 1)
+
+    def test_case_and_spaces_do_not_hide_a_duplicate(self):
+        out = I.annotation_conflicts(self._frame([
+            ("Pain ", "LIDL", "01.1.1.1", 1.0),
+            ("pain", "lidl ", "01.1.1.1", 1.0),
+        ]), TRUTH)
+        assert out["n_dup_keys"] == 1
+
+    def test_empty_labels_are_left_out_and_counted(self):
+        out = I.annotation_conflicts(self._frame([
+            (None, "lidl", "01.1.1.1", 1.0),
+            ("", "lidl", "01.1.1.1", 1.0),
+            ("pain", "lidl", "01.1.1.1", 1.0),
+        ]), TRUTH)
+        assert out["n_no_label"] == 2
+        assert out["n_dup_keys"] == 0
+
+    def test_same_label_in_two_shops_is_not_a_duplicate(self):
+        out = I.annotation_conflicts(self._frame([
+            ("pain", "lidl", "01.1.1.1", 1.0),
+            ("pain", "aldi", "01.1.1.2", 1.0),
+        ]), TRUTH)
+        assert out["n_dup_keys"] == 0 and out["n_conflict_keys"] == 0
+
+    def test_clean_file_gives_zeros_and_empty_examples(self):
+        out = I.annotation_conflicts(self._frame([("pain", "lidl", "01.1.1.1", 1.0)]), TRUTH)
+        assert out["n_conflict_keys"] == 0
+        assert out["examples"].empty
+
+    def test_missing_columns_yield_none(self):
+        assert I.annotation_conflicts(pd.DataFrame({TRUTH: ["01.1.1.1"]}), TRUTH) is None
+
+    def test_mlflow_scalars(self):
+        out = I.annotation_conflicts(self._frame([
+            ("lait", "lidl", "01.1.4.1", 1.0),
+            ("lait", "lidl", "01.1.5.1", 1.0),
+        ]), TRUTH)
+        flat = I.flatten_annotation_conflicts(out)
+        assert flat["annot_n_conflict_keys"] == 1.0
+        assert I.flatten_annotation_conflicts(None) == {}

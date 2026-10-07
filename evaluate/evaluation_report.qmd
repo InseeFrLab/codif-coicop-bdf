@@ -265,6 +265,124 @@ else:
 Markdown(md)
 ```
 
+## Les annotations : répartition, doublons et incohérences
+
+Avant de lire une accuracy, il faut savoir **sur quoi** elle porte : la vérité terrain n'est pas un fichier neutre. Ce chapitre décrit les annotations elles-mêmes — comment elles se répartissent, et dans quelle mesure elles se contredisent.
+
+Périmètre : les lignes du parquet de conciliation qui portent une vérité (`{python} TRUTH`), soit **`{python} f"{len(scorable):,}".replace(",", " ")`** sur `{python} f"{len(df):,}".replace(",", " ")` lignes. Les lignes captées par la regex n'y figurent pas, et un run lancé avec `sample-observations` ne voit que son échantillon.
+
+### Répartition par division COICOP (niveau 1)
+
+```{python}
+# | label: tbl-annot-division
+_annot = I.annotation_distribution(scorable, TRUTH, SOURCE_COLUMN)
+if _annot is None:
+    md = "_Aucune annotation exploitable._"
+else:
+    _d = _annot["by_division"]
+    _view = pd.DataFrame({
+        "division": [I.label_division(c, DIVISION_LABELS) for c in _d.index],
+        "n": _d["n"].values,
+        "part": _d["part"].map("{:.1%}".format).values,
+    })
+    md = _view.to_markdown(index=False, disable_numparse=True)
+    if not DIVISION_LABELS:
+        md += (
+            "\n\n_Libellés indisponibles : la nomenclature du run "
+            "(`prune-codes/nomenclature_pruned.parquet`) n'a pas pu être lue._"
+        )
+Markdown(md)
+```
+
+### Répartition par source
+
+```{python}
+# | label: tbl-annot-source
+if _annot is None:
+    md = "_Aucune annotation exploitable._"
+elif _annot["by_source"] is None:
+    md = (
+        "_Ventilation par source non disponible : elle exige **deux** paramètres, "
+        "`source_column` (la colonne du fichier d'entrée qui porte la provenance, "
+        "lue par `build-datasets`, qui la renomme `source`) et "
+        "`eval-source-column: \"source\"` (la dimension d'analyse du rapport)._"
+    )
+else:
+    _x = _annot["by_source"]
+    _tot = _x.drop(columns="Total").sum()
+    _view = _x.copy()
+    _view.index = [I.label_division(c, DIVISION_LABELS, width=36) for c in _x.index]
+    _view.index.name = "division"
+    _view = _view.astype(int).astype(str)
+    _view.loc["**Total**"] = [f"**{int(v):,}**".replace(",", " ") for v in _x.sum()]
+    _share = {
+        c: f"{_tot[c] / _tot.sum():.1%}" for c in _tot.index
+    }
+    md = (
+        "**Effectifs : division × provenance.**\n\n"
+        + _view.reset_index().to_markdown(index=False, disable_numparse=True)
+        + "\n\n**Part de chaque provenance dans les annotations :** "
+        + ", ".join(f"`{c}` {v}" for c, v in _share.items()) + "."
+    )
+Markdown(md)
+```
+
+### Doublons et incohérences d'annotation
+
+Un **doublon** est un couple *libellé × magasin* annoté plusieurs fois ; une **incohérence**, un couple annoté avec plusieurs codes **différents une fois ramenés à leur forme canonique** (troncature au niveau 4 puis élagage — c'est la colonne `{python} TRUTH`). Les écarts qui ne tiennent qu'au niveau 5 ne comptent donc pas : le pipeline ne les voit pas.
+
+```{python}
+# | label: md-annot-conflicts
+_c = I.annotation_conflicts(scorable, TRUTH)
+if _c is None:
+    md = (
+        "_Non calculable : il faut les colonnes `raw_product`, `shop` et la vérité "
+        f"`{TRUTH}` dans le parquet de conciliation._"
+    )
+else:
+    _n = lambda v: f"{int(v):,}".replace(",", " ")  # noqa: E731
+    _pct = lambda v, tot: f"{v / tot:.1%}" if tot else "—"  # noqa: E731
+    _rows = [
+        ("Lignes annotées", _n(_c["n_rows"])),
+        ("… dont sans libellé (exclues ci-dessous)", _n(_c["n_no_label"])),
+        ("Couples libellé × magasin distincts", _n(_c["n_keys"])),
+        ("Couples annotés **plusieurs fois**",
+         f"{_n(_c['n_dup_keys'])} ({_pct(_c['n_dup_keys'], _c['n_keys'])})"),
+        ("Lignes concernées", _n(_c["n_rows_in_dup_keys"])),
+        ("Lignes en trop (un exemplaire gardé par couple et code)", _n(_c["n_removable"])),
+        ("Couples annotés avec **plusieurs codes canoniques**",
+         f"{_n(_c['n_conflict_keys'])} ({_pct(_c['n_conflict_keys'], _c['n_keys'])})"),
+        ("… dont désaccords (codes qui ne se contiennent pas)", _n(_c["n_desaccord"])),
+        ("… dont écarts de profondeur (un code est le parent de l'autre)", _n(_c["n_profondeur"])),
+    ]
+    md = (
+        "| Indicateur | Valeur |\n|---|---|\n"
+        + "\n".join(f"| {a} | {b} |" for a, b in _rows)
+    )
+    if _c["n_conflict_keys"] == 0:
+        md += "\n\nAucune incohérence : un même couple n'est jamais annoté de deux façons."
+    else:
+        md += (
+            "\n\n**Lecture.** Un même produit annoté de deux façons est du bruit dans "
+            "la vérité terrain : au mieux une des deux annotations est comptée fausse, "
+            "donc l'accuracy mesurable est **plafonnée** ; et si les deux lignes se "
+            "retrouvent de part et d'autre d'un partage entraînement / test, le modèle "
+            "est évalué sur un produit dont il a vu l'autre version. Les doublons "
+            "exacts gonflent en outre le poids des produits répétés.\n\n"
+            f"**Exemples** (les {len(_c['examples'])} premiers, désaccords d'abord) :\n\n"
+            + _c["examples"].assign(**{
+                "montant (€)": _c["examples"]["montant (€)"].map(
+                    lambda v: "—" if pd.isna(v) else f"{v:,.2f}".replace(",", " ")
+                )
+            }).to_markdown(index=False, disable_numparse=True)
+        )
+    md += (
+        "\n\n_Le libellé est celui que voit le pipeline, déjà normalisé par "
+        "`build-datasets` : des libellés distincts à l'origine ont pu se rejoindre._"
+    )
+Markdown(md)
+```
+
 ## Accuracy globale par niveau
 
 On tronque la vérité terrain (`{python} TRUTH`) et la prédiction aux `k` premiers niveaux, puis on teste l'**égalité**. C'est toute la règle, et il n'y en a qu'une.

@@ -1188,6 +1188,155 @@ def spending_by_division(
 
 
 # ---------------------------------------------------------------------------
+# Les annotations elles-mêmes : répartition, doublons, incohérences
+# ---------------------------------------------------------------------------
+
+def annotation_distribution(
+    data: pd.DataFrame,
+    truth_col: str,
+    source_col: Optional[str] = None,
+) -> Optional[Dict]:
+    """Répartition de la vérité terrain par division COICOP, et par provenance.
+
+    Décrit le fichier annoté, pas la qualité de la chaîne : c'est ce qui permet
+    de lire l'accuracy en sachant sur quoi elle porte. Une division rare n'a pas
+    la même fiabilité statistique qu'une division massive, et une source
+    majoritaire peut masquer les autres dans l'accuracy globale.
+
+    Renvoie ``{"by_division": DataFrame(n, part), "by_source": DataFrame | None,
+    "n": int}`` ; ``by_source`` est le croisement division × source (effectifs),
+    avec une colonne ``Total``. ``None`` si aucune ligne n'a de vérité.
+    """
+    if truth_col not in data.columns:
+        return None
+    truth = data[truth_col].astype("string").str.strip()
+    kept = data.loc[truth.notna() & (truth != "")]
+    if not len(kept):
+        return None
+
+    division = _division(truth.loc[kept.index])
+    by_division = division.value_counts().rename_axis("division").to_frame("n")
+    by_division["part"] = by_division["n"] / by_division["n"].sum()
+
+    by_source = None
+    if source_col and source_col in kept.columns and kept[source_col].notna().any():
+        crossed = pd.crosstab(
+            division, kept[source_col].astype("string").fillna("(inconnue)"),
+        )
+        crossed = crossed.loc[by_division.index]
+        crossed["Total"] = crossed.sum(axis=1)
+        by_source = crossed
+
+    return {"by_division": by_division, "by_source": by_source, "n": len(kept)}
+
+
+def annotation_conflicts(
+    data: pd.DataFrame,
+    truth_col: str,
+    text_col: str = "raw_product",
+    shop_col: str = "shop",
+    budget_col: str = "budget",
+    max_examples: int = 15,
+) -> Optional[Dict]:
+    """Doublons et incohérences d'annotation, sur la forme canonique.
+
+    Un **doublon** est un couple (libellé, magasin) présent plusieurs fois ; une
+    **incohérence** est un couple annoté avec plusieurs codes canoniques
+    distincts. La comparaison se fait sur ``truth_col`` — `code_lvl4` : tronqué
+    au niveau 4 puis élagué —, car un écart de niveau 5 (``01.1.1.3.1`` contre
+    ``01.1.1.3``) n'est pas un désaccord pour le pipeline, qui raisonne sur cette
+    forme. Seuls restent les écarts réels, que le pruning ne fusionne pas.
+
+    Les incohérences sont de deux natures :
+    - ``profondeur`` : tous les codes sont préfixes du plus long (``06.1`` et
+      ``06.1.1``) — un annotateur s'est arrêté plus haut que l'autre ;
+    - ``desaccord`` : au moins deux codes qui ne se contiennent pas.
+
+    Même règle que ``annexes/prepross_annotations_vague1.py``, hormis les
+    libellés vides : ici exclus du calcul (ils partageraient une même clé vide).
+    Le libellé est celui que voit le pipeline, déjà normalisé par
+    ``build-datasets`` : des libellés distincts à l'origine ont pu se rejoindre.
+
+    Renvoie ``None`` si les colonnes manquent ou si rien n'est annoté.
+    """
+    needed = {truth_col, text_col, shop_col}
+    if not needed <= set(data.columns):
+        return None
+
+    frame = pd.DataFrame({
+        "libelle": data[text_col].astype("string").str.strip().str.lower(),
+        "magasin": data[shop_col].astype("string").str.strip().str.lower().fillna(""),
+        "code": data[truth_col].astype("string").str.strip(),
+        "budget": (
+            pd.to_numeric(data[budget_col], errors="coerce")
+            if budget_col in data.columns else float("nan")
+        ),
+    })
+    frame = frame[frame["code"].notna() & (frame["code"] != "")]
+    n_total = len(frame)
+    if not n_total:
+        return None
+    no_label = frame["libelle"].isna() | (frame["libelle"] == "")
+    frame = frame[~no_label]
+
+    keys = ["libelle", "magasin"]
+    sizes = frame.groupby(keys).size()
+    dup_keys = sizes[sizes >= 2]
+    n_distinct = frame.drop_duplicates(keys + ["code"]).shape[0]
+
+    conflicts = []
+    for (libelle, magasin), sub in frame.groupby(keys):
+        codes = sorted(sub["code"].unique())
+        if len(codes) < 2:
+            continue
+        longest = max(codes, key=len)
+        is_depth = all(longest == c or longest.startswith(c + ".") for c in codes)
+        conflicts.append({
+            "libellé": libelle,
+            "magasin": magasin,
+            "codes": " / ".join(codes),
+            "n lignes": len(sub),
+            "montant (€)": sub["budget"].sum(min_count=1),
+            "nature": "profondeur" if is_depth else "désaccord",
+        })
+
+    examples = pd.DataFrame(
+        conflicts,
+        columns=["libellé", "magasin", "codes", "n lignes", "montant (€)", "nature"],
+    )
+    if len(examples):
+        examples = examples.sort_values(
+            ["nature", "n lignes"], ascending=[True, False]
+        ).reset_index(drop=True)  # « désaccord » avant « profondeur »
+    n_desaccord = int((examples["nature"] == "désaccord").sum())
+
+    return {
+        "n_rows": n_total,
+        "n_no_label": int(no_label.sum()),
+        "n_keys": int(len(sizes)),
+        "n_dup_keys": int(len(dup_keys)),
+        "n_rows_in_dup_keys": int(dup_keys.sum()),
+        # Lignes qu'on retirerait en gardant un exemplaire par (couple, code).
+        "n_removable": int(len(frame) - n_distinct),
+        "n_conflict_keys": int(len(examples)),
+        "n_desaccord": n_desaccord,
+        "n_profondeur": int(len(examples)) - n_desaccord,
+        "examples": examples.head(max_examples),
+    }
+
+
+def flatten_annotation_conflicts(conflicts: Optional[Dict]) -> Dict[str, float]:
+    """Les décomptes de ``annotation_conflicts``, en scalaires MLflow."""
+    if not conflicts:
+        return {}
+    keys = (
+        "n_dup_keys", "n_rows_in_dup_keys", "n_removable",
+        "n_conflict_keys", "n_desaccord", "n_profondeur",
+    )
+    return {f"annot_{k}": float(conflicts[k]) for k in keys}
+
+
+# ---------------------------------------------------------------------------
 # Vers MLflow
 # ---------------------------------------------------------------------------
 
