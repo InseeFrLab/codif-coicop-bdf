@@ -40,10 +40,6 @@ spec:
       # CSV d'entrée. Vide = pas d'évaluation, l'étape est sautée.
       - name: label-column
         value: ""
-      # Dimension d'analyse du rapport d'évaluation : accuracy ventilée par
-      # provenance du produit. Ne restreint JAMAIS le périmètre codé.
-      - name: eval-source-column
-        value: ""
       - name: skip-eval
         value: "false"
       - name: eval-experiment
@@ -452,8 +448,10 @@ spec:
                   value: "{{workflow.parameters.input_file}}"
                 - name: reconciliation
                   value: "{{workflow.parameters.reconciliation}}"
-                - name: eval-source-column
-                  value: "{{workflow.parameters.eval-source-column}}"
+                # Renseigné, il déclenche aussi la ventilation par provenance du
+                # rapport d'évaluation.
+                - name: source_column
+                  value: "{{workflow.parameters.source_column}}"
                 - name: eval-experiment
                   value: "{{inputs.parameters.eval-experiment}}"
                 # Le rapport en tire le lien vers le run MLflow d'ENTRAÎNEMENT de
@@ -1453,7 +1451,7 @@ spec:
           - name: run_date
           - name: input_file
           - name: reconciliation
-          - name: eval-source-column
+          - name: source_column
           - name: eval-experiment
           - name: classify-ttc-model-uri
       retryStrategy:          # cf. « Reprise sur échec » en tête de fichier
@@ -1478,8 +1476,10 @@ spec:
                   --reconciliation {{inputs.parameters.reconciliation}} \
                   --input-file {{inputs.parameters.input_file}}"
 
-            # Vide => la ventilation par provenance est omise du rapport.
-            [ -n "{{inputs.parameters.eval-source-column}}" ] && ARGS="$ARGS --source-column {{inputs.parameters.eval-source-column}}"
+            # `source_column` renseigné => ventilation par provenance. On passe le
+            # nom INTERNE `source`, celui que `build-datasets` donne à la colonne
+            # quelle que soit sa dénomination dans le fichier d'entrée.
+            [ -n "{{inputs.parameters.source_column}}" ] && ARGS="$ARGS --source-column source"
             # Vide => le rapport n'affiche pas de lien vers le run d'entraînement TTC.
             [ -n "{{inputs.parameters.classify-ttc-model-uri}}" ] && ARGS="$ARGS --classify-ttc-model-uri {{inputs.parameters.classify-ttc-model-uri}}"
 

@@ -194,7 +194,7 @@ C'est la **donnée** qui décide, pas un mode :
 | Paramètre | Défaut | Rôle |
 |---|---|---|
 | `label-column` | *(vide)* | Nom de la colonne d'étiquettes dans le fichier d'entrée. **Vide ⇒ l'étape `evaluate` est sautée**, ce qui est le cas nominal. Non vide, `build-datasets` la recopie dans `code`, qui la porte jusqu'au bout de la chaîne |
-| `eval-source-column` | *(vide)* | Nom de la colonne de provenance du produit. Ajoute une ventilation de l'accuracy par source au rapport. Ne restreint **jamais** le périmètre codé |
+| `source_column` | *(vide)* | Nom de la colonne de provenance dans le fichier d'entrée. Renseigné (avec `label-column`), il ajoute aussi la ventilation de l'accuracy par source au rapport d'évaluation. Ne restreint **jamais** le périmètre codé. |
 | `skip-eval` | `false` | Échappatoire : saute `evaluate` même si `label-column` est renseignée |
 | `eval-experiment` | `codif-coicop-eval` | Expérience MLflow de l'étape |
 
