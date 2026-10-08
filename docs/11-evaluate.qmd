@@ -97,7 +97,7 @@ comptée fausse.
   où une prédiction plus fine que l'annotation est comptée fausse ;
 - **Accuracy du fichier livré, regex comprise** — le chiffre métier, ventilé par
   source de décision et assorti d'une ligne « hors regex » ;
-- **Accuracy par groupe** : `shop`, `shop_type_name`, **décile de `budget`**, niveau COICOP 2,
+- **Accuracy par groupe** : `shop`, `shop_type_name`, **décile de `budget`**, produits à moins de 50 €, niveau COICOP 2,
   et surtout la ventilation **par division COICOP prédite** — le regroupement se fait sur ce
   que la chaîne annonce, pas sur la vérité. C'est la lecture opérationnelle : « quand elle
   annonce de l'alimentaire, à quelle fréquence a-t-elle raison ? », la seule question qui se

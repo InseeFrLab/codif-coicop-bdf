@@ -61,4 +61,4 @@ report-experiment: codif-coicop-eval
 reconciliation: sirus
 
 # Modèle SIRUS chargé par reconcile-sirus, OBLIGATOIRE si reconciliation: sirus.
-reconcile-sirus-model-uri: "mlflow-artifacts:/15/c0c0ab52a6e94a4684691d2e1ef10127/artifacts/model/"
+reconcile-sirus-model-uri: "mlflow-artifacts:/15/62dbf59064334dbaa5d803ac254373e2/artifacts/model/"

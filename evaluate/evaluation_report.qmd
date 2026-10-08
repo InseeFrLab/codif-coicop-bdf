@@ -1029,6 +1029,39 @@ else:
 Markdown(md)
 ```
 
+### Produits à moins de 50 €
+
+Même accuracy que « Accuracy globale par niveau », restreinte aux produits dont le `budget` est **strictement inférieur** à 50 € (le seuil du chapitre sur la dépense par division). Les produits sans `budget` sont exclus. Chaque méthode apparaît deux fois : sur ce sous-ensemble, puis sur toute la population, pour juger d'un écart.
+
+```{python}
+# | label: tbl-small-budget
+SMALL_BUDGET = 50.0
+if "budget" not in scorable.columns:
+    md = "_Colonne `budget` absente : sous-ensemble non calculable._"
+else:
+    _amount = pd.to_numeric(scorable["budget"], errors="coerce")
+    _small = scorable[_amount < SMALL_BUDGET]
+    if _small.empty:
+        md = f"_Aucun produit à moins de {SMALL_BUDGET:.0f} € parmi les observations étiquetées._"
+    else:
+        _small_tbl = accuracy_table(_small, levels=STRICT_LEVELS)
+        _rows = []
+        for _name in global_tbl.index:
+            if _name in _small_tbl.index:
+                _rows.append(_small_tbl.loc[_name].rename(f"{_name} — < {SMALL_BUDGET:.0f} €"))
+            _rows.append(global_tbl.loc[_name].rename(f"{_name} — tous"))
+        _n_small = len(_small)
+        _n_no_budget = int(_amount.isna().sum())
+        md = (
+            f"**{_n_small:,} produits** à moins de {SMALL_BUDGET:.0f} €".replace(",", " ")
+            + f", soit {_n_small / len(scorable):.1%} des observations étiquetées"
+            + (f" ({_n_no_budget} sans `budget`, exclus du sous-ensemble)." if _n_no_budget else ".")
+            + "\n\n"
+            + pd.DataFrame(_rows).rename_axis("méthode").to_markdown(floatfmt=".1%")
+        )
+Markdown(md)
+```
+
 ## Distorsion de distribution au niveau 1
 
 Les chapitres précédents demandent « chaque produit est-il bien codé ? ». Celui-ci pose une question différente, et qui n'en découle pas : **la répartition des produits entre divisions COICOP ressemble-t-elle à la vraie ?** C'est ce qui compte quand le résultat alimente un agrégat plutôt qu'un dossier individuel.

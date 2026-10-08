@@ -115,6 +115,26 @@ n'applique aucun seuil).
 
 `rules.json` est la seule représentation du modèle.
 
+### Banc de test des réglages (avant un entraînement)
+
+`scripts/banc_sirus.py` compare des réglages d'entraînement par **validation croisée à 5 folds
+par produit** sur un run étiqueté, sans livrer de modèle. Il croise trois réglages : le train
+limité aux produits à budget ≤ 50 € ou non, `num_rule` à 10, 15 ou 20, et le train avec ou sans
+les produits à candidat unique. Le critère est `acc_multi_le50`, l'accuracy hors échantillon sur les
+produits ≤ 50 € à au moins deux candidats.
+
+```bash
+uv run python scripts/banc_sirus.py 2026-10-07/codif-2jcqh             # 12 configurations × 5 folds
+uv run python scripts/banc_sirus.py 2026-10-07/codif-2jcqh --smoke --no-mlflow
+```
+
+Les filtres ne s'appliquent qu'au train. Le fold de test est le même pour toutes les configurations,
+ce qui permet de les comparer deux à deux par un test de McNemar (`comparaisons.csv`). Le script
+appelle `R/fit_sirus.R --eval-only=true`, qui n'ajuste que le modèle d'évaluation. Les sorties vont
+dans `artifacts/banc-<run_id>/`, avec un run parent et un run enfant par configuration dans
+l'expérience MLflow `codif-coicop-sirus-banc`, distincte de celle des modèles livrables. Un fold déjà
+ajusté est sauté : relancer le script reprend là où il s'était arrêté.
+
 ### 2. Coder un run avec SIRUS
 
 ```bash
