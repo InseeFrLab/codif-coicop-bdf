@@ -43,7 +43,13 @@ from codif_common.metrics import (
 )
 from codif_common.s3 import connect_secret, resolve_endpoint
 
-from internals import flatten_internal, input_counts, load_classifier_records
+from internals import (
+    annotation_conflicts,
+    flatten_annotation_conflicts,
+    flatten_internal,
+    input_counts,
+    load_classifier_records,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -179,6 +185,13 @@ def log_to_mlflow(
             for key in ("n_input_rows", "n_dropped_empty_label",
                         "n_dropped_uncodable", "n_observations"):
                 mlflow.log_metric(key, float(counts[key]))
+        # Doublons et incohérences de la vérité terrain : même calcul que le
+        # chapitre « Les annotations » du rapport. Des noms neufs, `annot_*`.
+        for key, val in flatten_annotation_conflicts(
+            annotation_conflicts(scorable, truth_col)
+        ).items():
+            mlflow.log_metric(key, val)
+
         truth = scorable[truth_col]
 
         # Définition INCHANGÉE par le passage à la règle unique : c'est une

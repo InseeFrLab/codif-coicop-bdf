@@ -40,10 +40,6 @@ spec:
       # CSV d'entrée. Vide = pas d'évaluation, l'étape est sautée.
       - name: label-column
         value: ""
-      # Dimension d'analyse du rapport d'évaluation : accuracy ventilée par
-      # provenance du produit. Ne restreint JAMAIS le périmètre codé.
-      - name: eval-source-column
-        value: ""
       - name: skip-eval
         value: "false"
       - name: eval-experiment
@@ -56,6 +52,11 @@ spec:
         value: ""
       - name: classify-rag-model
         value: "gemma4-26b-moe"
+      # Modèle d'embedding des deux RAG. Doit être celui qui a bâti les deux
+      # collections : chaque étape le vérifie contre le manifeste avant tout
+      # travail. Le choisir se fait à l'indexation (index-*-pipeline.yaml).
+      - name: embedding-model
+        value: "qwen3-embedding-8b"
 
       # --- Vector DB : OBLIGATOIRES ------------------------------------------
       # Collections Qdrant produites hors de ce pipeline (index-*-pipeline.yaml,
@@ -278,6 +279,8 @@ spec:
                   value: "{{workflow.parameters.classify-rag-model}}"
                 - name: collection-name
                   value: "{{workflow.parameters.classify-rag-notices-collection}}"
+                - name: embedding-model
+                  value: "{{workflow.parameters.embedding-model}}"
                 - name: mlflow-experiment
                   value: "{{inputs.parameters.rag-experiment}}"
                 - name: run_id
@@ -294,6 +297,8 @@ spec:
                   value: "{{workflow.parameters.classify-rag-model}}"
                 - name: collection-name
                   value: "{{workflow.parameters.classify-rag-annotations-collection}}"
+                - name: embedding-model
+                  value: "{{workflow.parameters.embedding-model}}"
                 - name: mlflow-experiment
                   value: "{{inputs.parameters.rag-experiment}}"
                 - name: run_id
@@ -443,8 +448,10 @@ spec:
                   value: "{{workflow.parameters.input_file}}"
                 - name: reconciliation
                   value: "{{workflow.parameters.reconciliation}}"
-                - name: eval-source-column
-                  value: "{{workflow.parameters.eval-source-column}}"
+                # Renseigné, il déclenche aussi la ventilation par provenance du
+                # rapport d'évaluation.
+                - name: source_column
+                  value: "{{workflow.parameters.source_column}}"
                 - name: eval-experiment
                   value: "{{inputs.parameters.eval-experiment}}"
                 # Le rapport en tire le lien vers le run MLflow d'ENTRAÎNEMENT de
@@ -715,6 +722,7 @@ spec:
           - name: config
             value: config/config.yaml
           - name: classify-rag-model
+          - name: embedding-model
           - name: collection-name
           # Expérience MLflow. Vide = celle de la config du module. La passe
           # smoke y met une expérience dédiée : sans ça, ses métriques calculées
@@ -761,6 +769,8 @@ spec:
             # le smoke run le renseigne toujours. Sans suffixe, ils logueraient
             # dans une seule expérience MLflow.
             [ -n "{{inputs.parameters.mlflow-experiment}}" ] && ARGS="$ARGS --experiment_name {{inputs.parameters.mlflow-experiment}}-notices"
+            # Vide = celui de la config ; vérifié contre le manifeste de la collection.
+            [ -n "{{inputs.parameters.embedding-model}}" ] && ARGS="$ARGS --embedding-model {{inputs.parameters.embedding-model}}"
             uv run --locked --no-dev scripts/2_run_rag.py $ARGS
         env:
           - name: LANGFUSE_BASE_URL
@@ -851,6 +861,7 @@ spec:
           - name: config
             value: config/config.yaml
           - name: classify-rag-model
+          - name: embedding-model
           - name: collection-name
           # Expérience MLflow. Vide = celle de la config du module. La passe
           # smoke y met une expérience dédiée : sans ça, ses métriques calculées
@@ -895,6 +906,8 @@ spec:
             # le smoke run le renseigne toujours. Sans suffixe, ils logueraient
             # dans une seule expérience MLflow.
             [ -n "{{inputs.parameters.mlflow-experiment}}" ] && ARGS="$ARGS --experiment_name {{inputs.parameters.mlflow-experiment}}-annotations"
+            # Vide = celui de la config ; vérifié contre le manifeste de la collection.
+            [ -n "{{inputs.parameters.embedding-model}}" ] && ARGS="$ARGS --embedding-model {{inputs.parameters.embedding-model}}"
             uv run --locked --no-dev scripts/1_run_rag.py $ARGS
         env:
           - name: LANGFUSE_BASE_URL
@@ -1438,7 +1451,7 @@ spec:
           - name: run_date
           - name: input_file
           - name: reconciliation
-          - name: eval-source-column
+          - name: source_column
           - name: eval-experiment
           - name: classify-ttc-model-uri
       retryStrategy:          # cf. « Reprise sur échec » en tête de fichier
@@ -1463,8 +1476,10 @@ spec:
                   --reconciliation {{inputs.parameters.reconciliation}} \
                   --input-file {{inputs.parameters.input_file}}"
 
-            # Vide => la ventilation par provenance est omise du rapport.
-            [ -n "{{inputs.parameters.eval-source-column}}" ] && ARGS="$ARGS --source-column {{inputs.parameters.eval-source-column}}"
+            # `source_column` renseigné => ventilation par provenance. On passe le
+            # nom INTERNE `source`, celui que `build-datasets` donne à la colonne
+            # quelle que soit sa dénomination dans le fichier d'entrée.
+            [ -n "{{inputs.parameters.source_column}}" ] && ARGS="$ARGS --source-column source"
             # Vide => le rapport n'affiche pas de lien vers le run d'entraînement TTC.
             [ -n "{{inputs.parameters.classify-ttc-model-uri}}" ] && ARGS="$ARGS --classify-ttc-model-uri {{inputs.parameters.classify-ttc-model-uri}}"
 

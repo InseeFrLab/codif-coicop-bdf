@@ -149,7 +149,7 @@ Mesure la qualité du run. **Ne tourne que si le fichier d'entrée portait une c
   - `s3://.../classify-rag-notices/retrieved_codes.parquet` et `s3://.../classify-rag-annotations/predictions.parquet` — le **recall de retrieval** : le seul indicateur qui dise si un RAG échoue à *retrouver* ou à *générer*
   - le livrable d'`export-results` — l'**accuracy de bout en bout, regex comprise** : le chiffre métier. Le parquet de conciliation ne l'a pas, car les lignes captées par la regex n'entrent jamais dans la chaîne
 - Sorties : `s3://.../evaluate/evaluation_report.html` **et** les métriques dans MLflow
-- Contenu : accuracy par niveau COICOP (1 à 4) pour **LCS, RAG notices, RAG annotations, TTC, conciliation**, selon la règle unique ; accuracy par `shop`, `shop_type_name` et quartile de `budget` ; matrice de confusion ; calibration (accuracy par bucket de confiance, AUROC) ; coût et latence de l'arbitrage LLM. Avec `-p eval-source-column=…`, une ventilation **par provenance du produit**
+- Contenu : accuracy par niveau COICOP (1 à 4) pour **LCS, RAG notices, RAG annotations, TTC, conciliation**, selon la règle unique ; accuracy par `shop`, `shop_type_name` et quartile de `budget` ; matrice de confusion ; calibration (accuracy par bucket de confiance, AUROC) ; coût et latence de l'arbitrage LLM. Avec `source_column` renseigné, une ventilation **par provenance du produit**
 - Méthodologie *accuracy par niveau*, une seule règle : tronquer la vérité **et** la prédiction aux `k` premiers segments, puis tester l'égalité. Le dénominateur est le même à tous les niveaux (les observations étiquetées), donc les niveaux se comparent. Conséquence : une prédiction plus fine que la vérité est fausse sous la profondeur de celle-ci — vérité `01.4`, prédiction `01.4.3.1` : juste au niveau 2, fausse au niveau 4
 - Elle **échoue** si la vérité canonique `code_lvl4` est absente, plutôt que de se rabattre sur `code` : comparer des prédictions canoniques à une vérité brute sous-estime l'accuracy sur près d'un quart des postes
 
@@ -282,7 +282,7 @@ argo submit argo/codif-pipeline.yaml --parameter-file argo/params.yaml -p sample
 
 # Mesurer le run : uniquement si le fichier d'entrée porte une colonne d'étiquettes
 argo submit argo/codif-pipeline.yaml --parameter-file argo/params.yaml \
-  -p label-column=code -p eval-source-column=source
+  -p label-column=code -p source_column=source_saisie
 
 # Modèle spécifique pour classify-rag-notices
 argo submit argo/codif-pipeline.yaml --parameter-file argo/params.yaml -p classify-rag-model=openai/gpt-oss-120b
@@ -305,10 +305,11 @@ Voir aussi la fiche [`argo/argo_helper.md`](./argo/argo_helper.md) et le fichier
 | `classify-rag-notices-collection` | *(vide)* | **Obligatoire.** Collection Qdrant produite par `index-notices-pipeline.yaml`. |
 | `classify-rag-annotations-collection` | *(vide)* | **Obligatoire.** Collection Qdrant produite par `index-annotations-pipeline.yaml`. |
 | `classify-rag-model` | `gemma4-26b-moe` | Modèle LLM pour `classify-rag-notices` / `classify-rag-annotations` |
+| `embedding-model` | `qwen3-embedding-8b` | Modèle d'embedding des deux RAG. Doit être celui qui a bâti les deux collections (vérifié via leur manifeste) ; il se choisit à l'indexation, où le même paramètre existe. |
 | `reconcile-llm-model` | `gemma4-26b-moe` | Modèle LLM utilisé par `reconcile-llm` |
 | `reconcile-llm-concurrency` | `5` | Nombre d'appels LLM parallèles de `reconcile-llm` |
 | `skip-report` | `false` | Si `false`, génère le rapport de production après `export-results` |
 | `label-column` | *(vide)* | Nom de la colonne d'étiquettes dans `input_file`. **Vide = pas d'évaluation** : l'étape `evaluate` est sautée. Non vide, `build-datasets` la recopie dans `code`, qui la porte jusqu'au bout de la chaîne. |
-| `eval-source-column` | *(vide)* | Nom de la colonne de provenance du produit. Ajoute une ventilation de l'accuracy par source au rapport d'évaluation. Ne restreint **jamais** le périmètre codé. |
+| `source_column` | *(vide)* | Nom de la colonne de provenance dans le fichier d'entrée. Renseigné (avec `label-column`), il ajoute aussi la ventilation de l'accuracy par source au rapport d'évaluation. Ne restreint **jamais** le périmètre codé. |
 | `skip-eval` | `false` | `true` saute l'étape `evaluate` même si `label-column` est renseignée. |
 | `eval-experiment` | `codif-coicop-eval` | Expérience MLflow de l'étape `evaluate`. |

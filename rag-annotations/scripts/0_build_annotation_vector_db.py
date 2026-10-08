@@ -60,10 +60,17 @@ def main():
             "d'indexation. À ne renseigner que pour rejouer un nom précis."
         ),
     )
+    parser.add_argument(
+        "--embedding-model",
+        default=None,
+        help="Modèle d'embedding (écrase `embedding.model_name` de la config).",
+    )
     args = parser.parse_args()
 
     with open(args.config, "r") as f:
         config = yaml.safe_load(f)
+    if args.embedding_model:
+        config["embedding"]["model_name"] = args.embedding_model
     config = expand_paths(config, run_id=args.run_id, run_date=args.run_date)
 
     logger.info("=" * 80)
@@ -166,6 +173,9 @@ def main():
         batch_size=config["embedding"]["batch_size"],
     )
     logger.info(f"  → {len(embeddings)} embeddings generated")
+    # Dimension déduite des vecteurs, pas lue en config : changer de modèle
+    # d'embedding (paramètre `embedding-model`) n'oblige à rien tenir à jour.
+    embedding_dim = len(embeddings[0])
 
     # -----------------------------------------------------------------------
     # STEP 5: create Qdrant collection and upload
@@ -188,7 +198,7 @@ def main():
     client_qdrant.create_collection(
         collection_name=collection_name,
         vectors_config=VectorParams(
-            size=config["embedding"]["model_len"], distance=Distance.COSINE
+            size=embedding_dim, distance=Distance.COSINE
         ),
     )
 
@@ -228,7 +238,7 @@ def main():
         "run_id": args.run_id,
         "run_date": args.run_date,
         "embedding_model": config["embedding"]["model_name"],
-        "embedding_dim": config["embedding"]["model_len"],
+        "embedding_dim": embedding_dim,
         "strategy": None,  # pas de découpage : une annotation = un point
         "sample_size": args.sample_size,
         "point_count": point_count,

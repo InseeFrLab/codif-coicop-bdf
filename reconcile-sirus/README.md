@@ -25,7 +25,7 @@ sans relecture est une question métier, qui s'instruit sur la section
   DANS LE PIPELINE — étape reconcile-sirus, quand `reconciliation: sirus`
   4 classifieurs ──→ reconcile-sirus (Python pur) ──→ reconcile-sirus/predictions.parquet
                           charge rules.json,              sirus_code, sirus_proba,
-                          moyenne des règles              sirus_n_candidats
+                          moyenne des règles              sirus_n_candidats, sirus_route
 ```
 
 **L'entraînement n'est pas une étape du pipeline, et c'est délibéré.** Il produit
@@ -115,6 +115,26 @@ n'applique aucun seuil).
 
 `rules.json` est la seule représentation du modèle.
 
+### Banc de test des réglages (avant un entraînement)
+
+`scripts/banc_sirus.py` compare des réglages d'entraînement par **validation croisée à 5 folds
+par produit** sur un run étiqueté, sans livrer de modèle. Il croise trois réglages : le train
+limité aux produits à budget ≤ 50 € ou non, `num_rule` à 10, 15 ou 20, et le train avec ou sans
+les produits à candidat unique. Le critère est `acc_multi_le50`, l'accuracy hors échantillon sur les
+produits ≤ 50 € à au moins deux candidats.
+
+```bash
+uv run python scripts/banc_sirus.py 2026-10-07/codif-2jcqh             # 12 configurations × 5 folds
+uv run python scripts/banc_sirus.py 2026-10-07/codif-2jcqh --smoke --no-mlflow
+```
+
+Les filtres ne s'appliquent qu'au train. Le fold de test est le même pour toutes les configurations,
+ce qui permet de les comparer deux à deux par un test de McNemar (`comparaisons.csv`). Le script
+appelle `R/fit_sirus.R --eval-only=true`, qui n'ajuste que le modèle d'évaluation. Les sorties vont
+dans `artifacts/banc-<run_id>/`, avec un run parent et un run enfant par configuration dans
+l'expérience MLflow `codif-coicop-sirus-banc`, distincte de celle des modèles livrables. Un fold déjà
+ajusté est sauté : relancer le script reprend là où il s'était arrêté.
+
 ### 2. Coder un run avec SIRUS
 
 ```bash
@@ -132,9 +152,20 @@ argo submit argo/codif-pipeline.yaml --parameter-file argo/params.yaml \
 
 | Colonne | Sens |
 |---|---|
-| `sirus_code` | Code retenu — l'argmax du score parmi les candidats. `NA` si aucun candidat |
-| `sirus_proba` | Score du candidat retenu |
+| `sirus_code` | Code retenu — l'argmax du score parmi les candidats, ou l'unique candidat. `NA` si aucun candidat |
+| `sirus_proba` | Score du candidat retenu. **NaN pour un produit routé** : le modèle n'a pas été appelé |
 | `sirus_n_candidats` | Nombre de candidats scorés — un `0` explique un `NA` |
+| `sirus_route` | `modele` (argmax SIRUS), `candidat_unique` (routé sans modèle), `aucun_candidat` |
+
+**Routage amont.** Un produit à candidat unique — unanimité des classifieurs, ou
+proposition isolée quand les autres se sont abstenus — reçoit ce code sans passer
+par le modèle (`split_single_candidates`, `src/scorer.py`). Le modèle reste, lui,
+entraîné sur **toutes** les lignes : l'option `build-table --multi-candidates-only`
+écarte les candidats uniques, mais son effet sur les produits à plusieurs
+candidats se contredit d'un run à l'autre (−1,6 pt sur le test de codif-c9vjm,
++1,2 pt sur codif-x98xl, cf. `notebooks/sirus_multi_candidats.ipynb`). Un seuil d'exploitation
+appliqué en aval doit donc traiter `sirus_route = "candidat_unique"` explicitement,
+puisque `sirus_proba` y est NaN.
 
 Ce n'est pas un oubli : un verdict calculé ici serait entièrement déduit du
 score, donc sans information propre, tout en figeant dans le parquet un réglage

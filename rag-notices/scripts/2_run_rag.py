@@ -76,7 +76,6 @@ def main():
         client_qdrant=_client_validate,
         collection_name=config['qdrant']['collection_name'],
         manifests_root=config['qdrant']['manifests_root'],
-        expected_dim=config["embedding"]["model_len"],
         expected_embedding_model=config["embedding"]["model_name"],
         expected_strategy=config["qdrant"]["strategy"],
         param_name="classify-rag-notices-collection",
@@ -365,6 +364,12 @@ def setup_argument_parser():
         help='Type of annotation to filter (overrides config)'
     )
     
+    parser.add_argument(
+        '--embedding-model',
+        type=str,
+        help="Modèle d'embedding (overrides config). Doit être celui de la collection."
+    )
+
     # Evaluation parameters
     parser.add_argument(
         '--threshold_confidence',
@@ -412,6 +417,9 @@ def merge_config_with_args(config, args):
         
     if args.model_name is not None:
         config['llm']['model_name'] = args.model_name
+
+    if args.embedding_model is not None:
+        config['embedding']['model_name'] = args.embedding_model
         
     if args.temperature is not None:
         config['llm']['temperature'] = args.temperature

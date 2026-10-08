@@ -56,6 +56,12 @@ spec:
       - name: collection-name
         value: ""
 
+      # Modèle d'embedding de l'index. Écrit dans le manifeste ; le pipeline de
+      # classification doit recevoir le même (`embedding-model` de params.yaml).
+      # La dimension de la collection est déduite des vecteurs produits.
+      - name: embedding-model
+        value: "qwen3-embedding-8b"
+
   # `git -c http.version=HTTP/1.1` sur tous les clones : NE PAS RETIRER.
   # Le git de l'image (2.54.0, lié à libcurl3-gnutls) n'arrive pas à lire la
   # réponse HTTP/2 de GitHub — il échoue sur « expected flush after ref
@@ -100,6 +106,8 @@ spec:
                   value: "{{workflow.parameters.kb-sample-size}}"
                 - name: collection-name
                   value: "{{workflow.parameters.collection-name}}"
+                - name: embedding-model
+                  value: "{{workflow.parameters.embedding-model}}"
 
     # -----------------------------------------------------------------------
     # Produit annotations_full et suggester — la KB complète, sans dépendre
@@ -233,6 +241,7 @@ spec:
           - name: run_date
           - name: kb-sample-size
           - name: collection-name
+          - name: embedding-model
       container:
         image: inseefrlab/onyxia-vscode-python:py3.13.12
         command: [sh, -c]
@@ -245,6 +254,7 @@ spec:
             ARGS="--config {{inputs.parameters.config}} --run-id {{inputs.parameters.run_id}} --run-date {{inputs.parameters.run_date}}"
             [ -n "{{inputs.parameters.kb-sample-size}}" ] && ARGS="$ARGS --sample-size {{inputs.parameters.kb-sample-size}}"
             [ -n "{{inputs.parameters.collection-name}}" ] && ARGS="$ARGS --collection-name {{inputs.parameters.collection-name}}"
+            [ -n "{{inputs.parameters.embedding-model}}" ] && ARGS="$ARGS --embedding-model {{inputs.parameters.embedding-model}}"
             uv run --locked --no-dev scripts/0_build_annotation_vector_db.py $ARGS
         env:
           - name: AWS_ACCESS_KEY_ID

@@ -32,8 +32,10 @@ qdrant:
   upload_batch_size: 56
 
 embedding:
+  # Défaut hors Argo ; les workflows le fixent par le paramètre `embedding-model`.
+  # Pas de dimension ici : elle est déduite des vecteurs à l'indexation, puis
+  # relue dans le manifeste de la collection à la requête.
   model_name: qwen3-embedding-8b
-  model_len: 4096
 
 retrieval:
   size: 10

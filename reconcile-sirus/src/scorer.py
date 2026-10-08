@@ -50,6 +50,11 @@ _MLFLOW_PREFIXES = ("runs:/", "models:/", "mlflow-artifacts:/")
 # côté, sinon on perd la seule protection contre une relecture erronée.
 SCHEMA_VERSION = 1
 
+# Valeurs de `sirus_route` : par quel chemin le produit a reçu son code.
+ROUTE_MODELE = "modele"  # au moins deux candidats, argmax du score SIRUS
+ROUTE_CANDIDAT_UNIQUE = "candidat_unique"  # un seul code proposé, retenu tel quel
+ROUTE_AUCUN = "aucun_candidat"  # aucun candidat exploitable, pas de code
+
 
 @dataclass(frozen=True)
 class Condition:
@@ -295,4 +300,62 @@ def pick_best(table: pd.DataFrame, proba: np.ndarray) -> pd.DataFrame:
     out = best.rename(columns={"code_candidat": "sirus_code"}).merge(
         n_cand, left_on="id", right_index=True, how="left"
     )
+    out["sirus_route"] = ROUTE_MODELE
     return out.reset_index(drop=True)
+
+
+def split_single_candidates(table: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Routage amont : sépare les produits à candidat unique des autres.
+
+    Un produit dont les classifieurs n'ont proposé qu'un seul code distinct
+    (unanimité, ou unique proposition quand les autres se sont abstenus) n'offre
+    rien à choisir : l'argmax ne pourrait que le retenir. Il reçoit donc ce code
+    **sans passer par le modèle** : l'accuracy est inchangée (même code), mais on
+    ne publie plus un score pour un produit où il n'y avait rien à choisir.
+
+    Le modèle, lui, reste entraîné sur toutes les lignes par défaut, candidats
+    uniques compris : les écarter n'a pas montré de gain robuste sur les
+    produits à plusieurs candidats (cf. `train.keep_multi_candidates`).
+
+    Le décompte porte sur les candidats **bruts**, avant `scorable_mask` : un
+    candidat unique d'une division inconnue du modèle reçoit donc son code au
+    lieu d'être perdu.
+
+    Returns
+    -------
+    (routed, multi)
+        ``routed`` : une ligne par produit routé, au format de `pick_best`, avec
+        ``sirus_proba`` à NaN — le modèle n'a pas été appelé, un score inventé
+        mentirait — et ``sirus_route`` à ``"candidat_unique"``.
+        ``multi`` : les lignes candidat des produits à au moins deux candidats.
+    """
+    n_cand = table.groupby("id")["code_candidat"].transform("size")
+    single = table[n_cand == 1]
+    routed = pd.DataFrame(
+        {
+            "id": single["id"].to_numpy(),
+            "sirus_code": single["code_candidat"].to_numpy(),
+            "sirus_proba": np.nan,
+            "sirus_n_candidats": 1,
+            "sirus_route": ROUTE_CANDIDAT_UNIQUE,
+        }
+    )
+    multi = table[n_cand >= 2].reset_index(drop=True)
+    return routed, multi
+
+
+def route_and_score(rules: Rules, table: pd.DataFrame) -> tuple[pd.DataFrame, np.ndarray]:
+    """Décision par produit : routage des candidats uniques, SIRUS pour le reste.
+
+    Renvoie ``(decided, proba)`` : ``decided`` au format de `pick_best`, une ligne
+    par produit ayant au moins un candidat exploitable (les autres sont à
+    rattraper par l'appelant), et ``proba`` les scores des seuls candidats passés
+    par le modèle — vide si tous les produits ont été routés.
+    """
+    routed, multi = split_single_candidates(table)
+    scorable = multi[scorable_mask(rules, multi)].reset_index(drop=True)
+    if scorable.empty:
+        return routed, np.array([], dtype="float64")
+    proba = score(rules, scorable[list(rules.features)])
+    decided = pd.concat([routed, pick_best(scorable, proba)], ignore_index=True)
+    return decided, proba

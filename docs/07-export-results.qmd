@@ -55,6 +55,27 @@ result["llm_comment"] = result["llm_explication"]
 | `prediction_source` | origine : `regex`, `consensus`, `llm`, ou *(vide)* si non codé |
 | `llm_comment` | justification du LLM (vide pour `regex` et `consensus` sans appel) |
 
+### Traçabilité du code livré
+
+Dix colonnes terminent le fichier. Elles disent sur quoi repose chaque code, sans
+avoir à rouvrir le parquet de conciliation (`export-results/src/traceability.py`).
+Elles sont calculées **après** le garde-fou ci-dessous, donc sur le code réellement livré, et
+comparent ce code aux propositions des 4 classifieurs, déjà tronquées et élaguées par
+`load_all_observations`.
+
+| Colonne | Sens |
+|---|---|
+| `reconciliation_type` | Chemin suivi : `candidat_unique` (SIRUS, un seul code proposé, retenu sans modèle), `choix_sirus` (argmax SIRUS parmi ≥ 2 candidats), `consensus` (court-circuit du juge LLM), `choix_llm` (arbitrage du juge), `regex`, `aucun_code` |
+| `n_classifiers_agreeing` | Nombre de classifieurs (0 à 4) ayant proposé `predicted_code`. Entre 1 et 4 en SIRUS ; 0 possible si le juge LLM choisit un code que personne n'a proposé. Vide hors conciliation (regex, aucun code) |
+| `proposed_by_lcs`, `proposed_by_rag`, `proposed_by_ragann`, `proposed_by_ttc` | Le classifieur a-t-il proposé ce code ? `rag` = RAG notices, `ragann` = RAG annotations, `ttc` = top-1 de TTC seulement. Une abstention (`NON_CODABLE`, vide…) ou une valeur qui n'est pas un code ne compte pas. Vide hors conciliation |
+| `lcs_distance`, `rag_confidence`, `ragann_confidence`, `ttc_confidence` | Score brut de chaque classifieur **sur sa propre proposition**, renseigné même quand il a proposé un autre code. ⚠️ `lcs_distance` est une **distance** : plus elle est basse, plus LCS est sûr |
+
+`reconciliation_type` complète `prediction_source` sans la remplacer : le rapport et
+`evaluate` s'appuient sur les valeurs de cette dernière. En conciliation SIRUS,
+`prediction_confidence` (le score `sirus_proba`) est vide sur les lignes `candidat_unique` :
+le modèle n'a pas été appelé. Pour un run antérieur au routage, `candidat_unique` se
+déduit de `sirus_n_candidats = 1`.
+
 ### Garde-fou final : troncature + élagage
 
 Quelle que soit la source de la décision (regex, consensus ou LLM), `predicted_code` passe
@@ -115,6 +136,6 @@ Points d'attention :
 
 | Fichier | Contenu |
 |---|---|
-| `…/{run}/export-results/{nom_fichier_entrée}` | fichier d'entrée enrichi de `predicted_code`, `prediction_source`, `llm_comment` |
+| `…/{run}/export-results/{nom_fichier_entrée}` | fichier d'entrée enrichi de `predicted_code`, `prediction_source`, `llm_comment` (et `prediction_confidence` en SIRUS), puis des dix colonnes de traçabilité |
 
 ➡️ Étape suivante : [10. Report](08-report.qmd), puis [11. Evaluate](11-evaluate.qmd) si le run est étiqueté

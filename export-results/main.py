@@ -15,6 +15,13 @@ from codif_common.contracts import artifact, run_root as contracts_run_root
 from codif_common.s3 import connect_secret as init_duckdb, resolve_endpoint
 from prune_codes.pruning import trunc_and_prune_lvl4
 
+from src.traceability import (
+    DELIVERED_COLUMNS,
+    add_classifier_traceability,
+    decision_columns,
+    reconciliation_type,
+)
+
 
 PIPELINE_COLS = {
     "l_pr_product",
@@ -153,12 +160,16 @@ def main() -> int:
     schema = DECISION_SCHEMAS[args.decision_source]
     decision_path = args.decision_file or artifact(schema["step"], "predictions", **RUN)
     cols = [c for c in (schema["code"], schema["comment"], schema["confidence"], schema["regime"]) if c]
+    # Colonnes de traçabilité (codes et scores des 4 classifieurs, régime de la
+    # conciliation), restreintes à celles que ce run possède.
+    available = set(con.sql(f"DESCRIBE SELECT * FROM read_parquet('{decision_path}')").df()["column_name"])
+    trace_cols = [c for c in decision_columns(available, args.decision_source) if c not in cols]
     print(
         f"[export-results] loading {args.decision_source} decisions: {decision_path}",
         flush=True,
     )
     decisions = con.sql(f"""
-        SELECT id, {", ".join(cols)}
+        SELECT id, {", ".join(cols + trace_cols)}
         FROM read_parquet('{decision_path}')
     """).df()
     # Noms internes : la suite ne connaît plus la conciliation d'origine.
@@ -219,6 +230,27 @@ def main() -> int:
     result = trunc_and_prune_lvl4(result, mapping, code_name="predicted_code")
     result["predicted_code"] = result["predicted_code_tpruned"]
     result = result.drop(columns=["predicted_code_tpruned"])
+
+    # Traçabilité, calculée APRÈS le garde-fou : on compare aux classifieurs le
+    # code réellement livré. `reconciliation_type` distingue en plus un vrai
+    # choix de la conciliation d'un court-circuit (candidat unique, consensus).
+    # Le régime LLM a été renommé `_decision_regime` ci-dessus : on le lui rend
+    # sous son nom pour `reconciliation_type`.
+    if args.decision_source == "llm":
+        result["llm_model"] = result["_decision_regime"]
+    result["reconciliation_type"] = reconciliation_type(result, args.decision_source)
+    result = add_classifier_traceability(result, result["_decision_code"].notna())
+    # Colonnes brutes lues pour le calcul : seules celles qui sont aussi des
+    # colonnes livrées (scores homonymes, comme `lcs_distance`) restent.
+    intermediaires = {*trace_cols, "llm_model"} - set(DELIVERED_COLUMNS)
+    result = result.drop(columns=[c for c in intermediaires if c in result.columns])
+    # Colonnes de traçabilité regroupées en fin de livrable, dans un ordre fixe.
+    result = result[[c for c in result.columns if c not in DELIVERED_COLUMNS] + DELIVERED_COLUMNS]
+    print(
+        "[export-results] reconciliation_type : "
+        f"{result['reconciliation_type'].value_counts().to_dict()}",
+        flush=True,
+    )
 
     result = result.drop(
         columns=[

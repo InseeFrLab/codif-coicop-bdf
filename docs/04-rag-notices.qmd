@@ -41,8 +41,12 @@ Chaque notice COICOP **prunée** (lue depuis `prune-codes/nomenclature_pruned.pa
 re-traitement) est mise en forme en texte (code, libellé FR, notes générales, contenu central,
 exclusions, lignage des parents) puis encodée en vecteur :
 
-- Modèle d'embedding : **`qwen3-embedding-8b`** (dimension **4096**), via l'API
-  OpenAI-compatible de llm.lab (`LLMLAB_URL` / `LLMLAB_API_KEY`).
+- Modèle d'embedding : **`qwen3-embedding-8b`** par défaut (dimension 4096), via l'API
+  OpenAI-compatible de llm.lab (`LLMLAB_URL` / `LLMLAB_API_KEY`). Il se choisit par le
+  paramètre Argo **`embedding-model`**, le même dans le workflow d'indexation et dans
+  `params.yaml` : la classification refuse de démarrer si son modèle n'est pas celui du
+  manifeste de la collection. La dimension n'est pas un réglage : elle est déduite des
+  vecteurs produits à l'indexation, puis relue dans le manifeste.
 - Base vectorielle : **Qdrant**, distance cosinus. La collection porte un **nom unique**
   composé depuis `qdrant.collection_base` (`coicop_notices`) et l'identité du run
   d'indexation : `coicop_notices__{run_date}__{run_id}`, p. ex.

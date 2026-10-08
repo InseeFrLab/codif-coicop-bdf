@@ -1,56 +1,43 @@
 # codif-pipeline parameters — override the YAML defaults.
-# Usage: argo submit codif-pipeline.yaml --parameter-file params.yaml --watch
-#
-# Any uncommented line overrides the default defined in codif-pipeline.yaml
-# (spec.arguments.parameters). Commented lines keep the default.
-#
-# DO NOT set run_id / run_date: they are computed automatically by Argo and
-# guarantee consistent S3 paths across steps.
+
 
 # --- Code source ----------------------------------------------------------
-# Branche du dépôt clonée par tous les steps (défaut YAML: main).
-# La mettre sur une feature branch permet de tester sans merger dans main.
 git-branch: main
 
 # --- Input ----------------------------------------------------------------
 # OBLIGATOIRE. Le pipeline n'a plus qu'un mode : il code ce fichier.
 # input_file: s3://projet-budget-famille/data/workflow_inputs/BDF_data_saisie_vague1_a_codif.csv
 # input_file: s3://projet-budget-famille/data/annotations_vague1_2026/as_new_input/annotations_vague1_2026_a_codif.parquet
-input_file: s3://projet-budget-famille/data/workflow_inputs/BDF_data_flash_copy_20260917_a_codif.parquet
+# input_file: s3://projet-budget-famille/data/workflow_inputs/BDF_data_flash_copy_20260917_a_codif.parquet
+input_file: s3://projet-budget-famille/data/workflow_inputs/bdf_vague1_annotation_2ndround.parquet
+
 
 
 text_column: NAT_DEP        # label column to classify
 shop_column: MAG_DEP        # shop column
 budget_column: MONT_DEP     # amount column
 # annee_column: ""          # optional
-# source_column: ""         # optional
+source_column: source_saisie   # provenance du produit (tick_appli / tick_pap / carn_pap) ; renseignée, elle ajoute aussi la ventilation par source au rapport d'évaluation
 
 # --- Volume / debugging ---------------------------------------------------
-sample-observations: "150"       # ex. "100"
+sample-observations: ""       # ex. "100"
 
-# --- Smoke run ------------------------------------------------------------
-# Le DAG complet tourne d'abord sur `smoke-observations` lignes. Si cette passe
-# échoue, le vrai run ne démarre pas.
-#
-# `skip-smoke: "true"` lance le vrai run sans passer par le smoke — pour une
-# urgence, ou quand un smoke en faux positif immobilise la production.
-#
-# Les deux passes écrivent sous des run_id distincts (`<workflow>-smoke` et
-# `<workflow>`), et le smoke logue dans son propre espace MLflow.
-# skip-smoke: "false"
-# smoke-observations: "100"
-# smoke-experiment: codif-coicop-smoke
 
 # --- LLM models -----------------------------------------------------------
 classify-rag-model: gemma4-26b-moe          # classify-rag-notices model
 reconcile-llm-model: gemma4-26b-moe        # reconcile-llm arbitration model
 reconcile-llm-concurrency: "5"
-classify-ttc-model-uri: "mlflow-artifacts:/10/cacf2603514b4887bbfb77e2654c9bc1/artifacts/model"
+classify-ttc-model-uri: "mlflow-artifacts:/21/8355c81055fb448dbb66e35a1333e142/artifacts/model"
 
 # --- Vector DB : OBLIGATOIRES ---------------------------------------------
 # Collections Qdrant à interroger. Produites HORS de ce pipeline :
 #   argo submit argo/index-notices-pipeline.yaml
 #   argo submit argo/index-annotations-pipeline.yaml
+
+# Modèle d'embedding des requêtes. Doit être celui qui a bâti les deux
+# collections (vérifié au démarrage via leur manifeste). Pour en changer,
+# réindexer avec `-p embedding-model=…` puis recopier les nouveaux noms.
+embedding-model: qwen3-embedding-8b
 
 classify-rag-notices-collection: "coicop_notices__2026-09-02__index-notices-h82mt"
 classify-rag-annotations-collection: "coicop_annotations__full__2026-09-02__index-annotations-jp6dt"
@@ -60,12 +47,7 @@ classify-rag-annotations-collection: "coicop_annotations__full__2026-09-02__inde
 # une colonne d'étiquettes. La renseigner ici suffit à déclencher l'étape
 # `evaluate` : rapport HTML sur S3 + métriques dans MLflow. Vide = étape sautée,
 # ce qui est le cas nominal de production.
-label-column: "code_previous"
-
-# Dimension d'analyse : accuracy ventilée par provenance du produit. Ne
-# restreint jamais le périmètre codé. Vide = section omise du rapport.
-# eval-source-column: "source"
-eval-source-column: ""
+label-column: "code"
 
 # skip-eval: "false"        # "true" pour sauter l'évaluation malgré label-column
 eval-experiment: codif-coicop-eval
@@ -79,4 +61,4 @@ report-experiment: codif-coicop-eval
 reconciliation: sirus
 
 # Modèle SIRUS chargé par reconcile-sirus, OBLIGATOIRE si reconciliation: sirus.
-reconcile-sirus-model-uri: "mlflow-artifacts:/15/c0c0ab52a6e94a4684691d2e1ef10127/artifacts/model/"
+reconcile-sirus-model-uri: "mlflow-artifacts:/15/62dbf59064334dbaa5d803ac254373e2/artifacts/model/"

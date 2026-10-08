@@ -325,3 +325,63 @@ class TestEndToEnd:
         assert out["by_source"] is None
         assert out["n_decided"] == 2
         assert "apport regex" not in out["levels"].columns
+
+
+class TestSpendingByDivision:
+    """Dépense totale par division, code labellisé contre code livré."""
+
+    @staticmethod
+    def _run(monkeypatch, deliverable, observations, threshold=50.0):
+        frames = {"d": deliverable, "o": observations}
+        monkeypatch.setattr(I, "_read", lambda con, path: frames[path])
+        return I.spending_by_division(None, "d", "o", threshold)
+
+    @staticmethod
+    def _deliverable():
+        return pd.DataFrame(
+            {
+                "id": [1, 2, 3, 4, 5],
+                "predicted_code": ["01.1.1.1", "04.1.1", "01.2.1", "Reprise manuelle", None],
+                "prediction_source": ["sirus", "sirus", "regex", "regex", None],
+            }
+        )
+
+    @staticmethod
+    def _observations():
+        return pd.DataFrame(
+            {
+                "id": [1, 2, 3, 4, 5],
+                "code": ["01.1.1.1", "07.1.1", "01.2.1", "98.5", "01.1.1.1"],
+                "budget": [10.0, 200.0, 5.0, np.nan, 3.0],
+            }
+        )
+
+    def test_totals_follow_each_code(self, monkeypatch):
+        out = self._run(monkeypatch, self._deliverable(), self._observations())
+        t = out["all"]
+        assert t.loc["01", "dépense labellisée"] == 15.0
+        assert t.loc["07", "dépense labellisée"] == 200.0
+        assert t.loc["07", "dépense prédite"] == 0.0
+        assert t.loc["04", "dépense prédite"] == 200.0
+        assert t["dépense labellisée"].sum() == t["dépense prédite"].sum() == out["total"]
+
+    def test_undecided_and_budgetless_rows_are_left_out(self, monkeypatch):
+        out = self._run(monkeypatch, self._deliverable(), self._observations())
+        assert out["n"] == 3
+        assert out["n_no_budget"] == 1
+
+    def test_share_gap_is_relative_to_the_total(self, monkeypatch):
+        out = self._run(monkeypatch, self._deliverable(), self._observations())
+        t = out["all"]
+        assert t.loc["04", "écart de part (pts)"] == pytest.approx(100 * 200 / 215)
+        assert pd.isna(t.loc["04", "écart %"])
+
+    def test_below_threshold_keeps_only_small_purchases(self, monkeypatch):
+        out = self._run(monkeypatch, self._deliverable(), self._observations())
+        assert out["n_below"] == 2
+        assert set(out["below"].index) == {"01"}
+        assert out["total_below"] == 15.0
+
+    def test_none_without_budget_column(self, monkeypatch):
+        obs = self._observations().drop(columns=["budget"])
+        assert self._run(monkeypatch, self._deliverable(), obs) is None

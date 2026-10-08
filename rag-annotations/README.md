@@ -169,6 +169,13 @@ sur l'index d'un autre run. Les deux runs ont des identités **distinctes** : le
 `--run-id` / `--run-date` de l'indexation sert à nommer la collection, celui de la
 classification à localiser les entrées et sorties du run de codification.
 
+`--embedding-model` (même orthographe dans les deux scripts) écrase `embedding.model_name`
+de la config ; les workflows Argo le renseignent par le paramètre `embedding-model`. La
+dimension n'est plus en config : l'indexation la déduit des vecteurs produits et l'écrit
+dans le manifeste, la classification la relit dans le manifeste après avoir vérifié que
+son modèle est bien celui de l'index. Changer de modèle, c'est donc réindexer avec
+`-p embedding-model=…`, puis passer le même modèle au pipeline de classification.
+
 ### Ce module ne mesure rien
 
 `1_run_rag.py` produit des prédictions (`data.s3_path_predictions`), et c'est tout.

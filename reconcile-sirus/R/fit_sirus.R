@@ -14,7 +14,12 @@
 #
 # Usage : Rscript R/fit_sirus.R --features=... --out-dir=... [--num-rule=20]
 #                              [--max-depth=2] [--seed=42]
+#         [--eval-only=true]
 #         (depuis le dossier `reconcile-sirus/`)
+#
+# `--eval-only=true` (banc de test, `scripts/banc_sirus.py`) : seul le modèle
+# 80 % est ajusté ; `rules.json` n'est pas écrit et `rules_printed.txt` imprime
+# le modèle d'évaluation. Divise le coût par deux quand aucun modèle n'est livré.
 # =============================================================================
 
 # Un warning R ne met PAS le code de sortie à non-zéro : sans ceci, `train.sh`
@@ -47,6 +52,7 @@ out_dir         <- arg("out-dir")
 num_rule        <- as.integer(arg("num-rule", "20"))
 max_depth       <- as.integer(arg("max-depth", "2"))
 seed            <- as.integer(arg("seed", "42"))
+eval_only       <- identical(tolower(arg("eval-only", "false")), "true")
 
 dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
 
@@ -162,6 +168,17 @@ writeLines(
   export_rules(m_eval, niveaux, metadonnees_communes(m_eval)),
   file.path(out_dir, "rules_eval.json")
 )
+
+if (eval_only) {
+  con_txt <- file(file.path(out_dir, "rules_printed.txt"), open = "wt")
+  sink(con_txt)
+  sirus.print(m_eval)
+  sink()
+  close(con_txt)
+  cat("\nÉcrit dans", out_dir, "(--eval-only) :\n")
+  cat("  rules_eval.json proba_eval_R.csv rules_printed.txt\n")
+  quit(save = "no", status = 0)
+}
 
 # --- Modèle livré : réajusté sur 100 % des données ---------------------------
 # L'évaluation ci-dessus sert à ESTIMER accuracy et calibration. Cette

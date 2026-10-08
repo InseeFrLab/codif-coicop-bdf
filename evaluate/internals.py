@@ -1097,6 +1097,245 @@ def end_to_end(
     }
 
 
+def _division(code: pd.Series) -> pd.Series:
+    """Premier segment d'un code COICOP ; la valeur telle quelle si ce n'en est
+    pas un (« Reprise manuelle » renvoyé par la regex), NA si vide."""
+    code = code.astype("string").str.strip()
+    head = code.str.split(".").str[0]
+    return head.where(head.str.fullmatch(r"\d{2}").fillna(False), code)
+
+
+def spending_by_division(
+    con,
+    deliverable_path: Optional[str],
+    observations_path: Optional[str],
+    threshold: float = 50.0,
+) -> Optional[Dict]:
+    """Dépense totale par division COICOP, selon le code labellisé et le code livré.
+
+    La question d'un agrégat budgétaire : combien d'euros chaque division
+    reçoit-elle si l'on code avec la chaîne plutôt qu'à la main ? Deux
+    périmètres — tous les produits, et ceux de moins de ``threshold`` € —, parce
+    que quelques gros montants mal classés suffisent à déplacer un total.
+
+    Même périmètre et même vérité que `end_to_end` : les lignes du livrable que
+    ce run a codées, regex comprise, jointes à `observations` pour le code
+    labellisé et le `budget`. L'élagage niveau 4 ne fait jamais changer de
+    division, il est donc inutile ici. Les lignes sans budget sont exclues et
+    comptées.
+    """
+    if not (deliverable_path and observations_path):
+        return None
+    deliverable = _read(con, deliverable_path)
+    observations = _read(con, observations_path)
+    if deliverable is None or observations is None:
+        return None
+    if not {"id", "predicted_code"} <= set(deliverable.columns):
+        return None
+    if not {"id", "code", "budget"} <= set(observations.columns):
+        return None
+
+    livre = deliverable[["id", "predicted_code"] + (
+        ["prediction_source"] if "prediction_source" in deliverable.columns else []
+    )]
+    decided = (
+        livre[livre["prediction_source"].notna()]
+        if "prediction_source" in livre.columns
+        else livre[livre["predicted_code"].notna()]
+    )
+    truth = observations[["id", "code", "budget"]]
+    truth = truth[truth["code"].notna() & (truth["code"].astype(str).str.len() > 0)]
+    merged = decided.merge(truth, how="inner", on="id")
+    if not len(merged):
+        return None
+    merged = merged.assign(
+        budget=pd.to_numeric(merged["budget"], errors="coerce"),
+        div_label=_division(merged["code"]),
+        div_predit=_division(merged["predicted_code"]),
+    )
+    n_no_budget = int(merged["budget"].isna().sum())
+    merged = merged[merged["budget"].notna()]
+
+    def _table(frame: pd.DataFrame) -> pd.DataFrame:
+        label = frame.groupby("div_label")["budget"].agg(["size", "sum"])
+        predit = frame.groupby("div_predit")["budget"].agg(["size", "sum"])
+        t = pd.DataFrame({
+            "n labellisé": label["size"],
+            "dépense labellisée": label["sum"],
+            "n prédit": predit["size"],
+            "dépense prédite": predit["sum"],
+        }).fillna(0)
+        t[["n labellisé", "n prédit"]] = t[["n labellisé", "n prédit"]].astype(int)
+        t["écart"] = t["dépense prédite"] - t["dépense labellisée"]
+        # Rapporté à la dépense labellisée : sans objet pour une division que
+        # seule la prédiction fait exister.
+        t["écart %"] = (t["écart"] / t["dépense labellisée"]).where(t["dépense labellisée"] > 0)
+        total = frame["budget"].sum()
+        t["écart de part (pts)"] = 100 * t["écart"] / total if total else None
+        t.index.name = "division"
+        return t.sort_index()
+
+    return {
+        "all": _table(merged),
+        "below": _table(merged[merged["budget"] < threshold]),
+        "threshold": threshold,
+        "n": len(merged),
+        "n_below": int((merged["budget"] < threshold).sum()),
+        "n_no_budget": n_no_budget,
+        "total": float(merged["budget"].sum()),
+        "total_below": float(merged.loc[merged["budget"] < threshold, "budget"].sum()),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Les annotations elles-mêmes : répartition, doublons, incohérences
+# ---------------------------------------------------------------------------
+
+def annotation_distribution(
+    data: pd.DataFrame,
+    truth_col: str,
+    source_col: Optional[str] = None,
+) -> Optional[Dict]:
+    """Répartition de la vérité terrain par division COICOP, et par provenance.
+
+    Décrit le fichier annoté, pas la qualité de la chaîne : c'est ce qui permet
+    de lire l'accuracy en sachant sur quoi elle porte. Une division rare n'a pas
+    la même fiabilité statistique qu'une division massive, et une source
+    majoritaire peut masquer les autres dans l'accuracy globale.
+
+    Renvoie ``{"by_division": DataFrame(n, part), "by_source": DataFrame | None,
+    "n": int}`` ; ``by_source`` est le croisement division × source (effectifs),
+    avec une colonne ``Total``. ``None`` si aucune ligne n'a de vérité.
+    """
+    if truth_col not in data.columns:
+        return None
+    truth = data[truth_col].astype("string").str.strip()
+    kept = data.loc[truth.notna() & (truth != "")]
+    if not len(kept):
+        return None
+
+    division = _division(truth.loc[kept.index])
+    by_division = division.value_counts().rename_axis("division").to_frame("n")
+    by_division["part"] = by_division["n"] / by_division["n"].sum()
+
+    by_source = None
+    if source_col and source_col in kept.columns and kept[source_col].notna().any():
+        crossed = pd.crosstab(
+            division, kept[source_col].astype("string").fillna("(inconnue)"),
+        )
+        crossed = crossed.loc[by_division.index]
+        crossed["Total"] = crossed.sum(axis=1)
+        by_source = crossed
+
+    return {"by_division": by_division, "by_source": by_source, "n": len(kept)}
+
+
+def annotation_conflicts(
+    data: pd.DataFrame,
+    truth_col: str,
+    text_col: str = "raw_product",
+    shop_col: str = "shop",
+    budget_col: str = "budget",
+    max_examples: int = 15,
+) -> Optional[Dict]:
+    """Doublons et incohérences d'annotation, sur la forme canonique.
+
+    Un **doublon** est un couple (libellé, magasin) présent plusieurs fois ; une
+    **incohérence** est un couple annoté avec plusieurs codes canoniques
+    distincts. La comparaison se fait sur ``truth_col`` — `code_lvl4` : tronqué
+    au niveau 4 puis élagué —, car un écart de niveau 5 (``01.1.1.3.1`` contre
+    ``01.1.1.3``) n'est pas un désaccord pour le pipeline, qui raisonne sur cette
+    forme. Seuls restent les écarts réels, que le pruning ne fusionne pas.
+
+    Les incohérences sont de deux natures :
+    - ``profondeur`` : tous les codes sont préfixes du plus long (``06.1`` et
+      ``06.1.1``) — un annotateur s'est arrêté plus haut que l'autre ;
+    - ``desaccord`` : au moins deux codes qui ne se contiennent pas.
+
+    Même règle que ``annexes/prepross_annotations_vague1.py``, hormis les
+    libellés vides : ici exclus du calcul (ils partageraient une même clé vide).
+    Le libellé est celui que voit le pipeline, déjà normalisé par
+    ``build-datasets`` : des libellés distincts à l'origine ont pu se rejoindre.
+
+    Renvoie ``None`` si les colonnes manquent ou si rien n'est annoté.
+    """
+    needed = {truth_col, text_col, shop_col}
+    if not needed <= set(data.columns):
+        return None
+
+    frame = pd.DataFrame({
+        "libelle": data[text_col].astype("string").str.strip().str.lower(),
+        "magasin": data[shop_col].astype("string").str.strip().str.lower().fillna(""),
+        "code": data[truth_col].astype("string").str.strip(),
+        "budget": (
+            pd.to_numeric(data[budget_col], errors="coerce")
+            if budget_col in data.columns else float("nan")
+        ),
+    })
+    frame = frame[frame["code"].notna() & (frame["code"] != "")]
+    n_total = len(frame)
+    if not n_total:
+        return None
+    no_label = frame["libelle"].isna() | (frame["libelle"] == "")
+    frame = frame[~no_label]
+
+    keys = ["libelle", "magasin"]
+    sizes = frame.groupby(keys).size()
+    dup_keys = sizes[sizes >= 2]
+    n_distinct = frame.drop_duplicates(keys + ["code"]).shape[0]
+
+    conflicts = []
+    for (libelle, magasin), sub in frame.groupby(keys):
+        codes = sorted(sub["code"].unique())
+        if len(codes) < 2:
+            continue
+        longest = max(codes, key=len)
+        is_depth = all(longest == c or longest.startswith(c + ".") for c in codes)
+        conflicts.append({
+            "libellé": libelle,
+            "magasin": magasin,
+            "codes": " / ".join(codes),
+            "n lignes": len(sub),
+            "montant (€)": sub["budget"].sum(min_count=1),
+            "nature": "profondeur" if is_depth else "désaccord",
+        })
+
+    examples = pd.DataFrame(
+        conflicts,
+        columns=["libellé", "magasin", "codes", "n lignes", "montant (€)", "nature"],
+    )
+    if len(examples):
+        examples = examples.sort_values(
+            ["nature", "n lignes"], ascending=[True, False]
+        ).reset_index(drop=True)  # « désaccord » avant « profondeur »
+    n_desaccord = int((examples["nature"] == "désaccord").sum())
+
+    return {
+        "n_rows": n_total,
+        "n_no_label": int(no_label.sum()),
+        "n_keys": int(len(sizes)),
+        "n_dup_keys": int(len(dup_keys)),
+        "n_rows_in_dup_keys": int(dup_keys.sum()),
+        # Lignes qu'on retirerait en gardant un exemplaire par (couple, code).
+        "n_removable": int(len(frame) - n_distinct),
+        "n_conflict_keys": int(len(examples)),
+        "n_desaccord": n_desaccord,
+        "n_profondeur": int(len(examples)) - n_desaccord,
+        "examples": examples.head(max_examples),
+    }
+
+
+def flatten_annotation_conflicts(conflicts: Optional[Dict]) -> Dict[str, float]:
+    """Les décomptes de ``annotation_conflicts``, en scalaires MLflow."""
+    if not conflicts:
+        return {}
+    keys = (
+        "n_dup_keys", "n_rows_in_dup_keys", "n_removable",
+        "n_conflict_keys", "n_desaccord", "n_profondeur",
+    )
+    return {f"annot_{k}": float(conflicts[k]) for k in keys}
+
+
 # ---------------------------------------------------------------------------
 # Vers MLflow
 # ---------------------------------------------------------------------------

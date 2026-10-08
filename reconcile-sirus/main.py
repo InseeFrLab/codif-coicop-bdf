@@ -36,16 +36,19 @@ from src.candidates import (  # noqa: E402
     reconcile_population,
 )
 from src.scorer import (  # noqa: E402
+    ROUTE_AUCUN,
+    ROUTE_CANDIDAT_UNIQUE,
+    ROUTE_MODELE,
     load_rules,
-    pick_best,
     resolve_model_path,
+    route_and_score,
     score,
-    scorable_mask,
 )
 from src.train import (  # noqa: E402
     build_calibration,
     check_drift,
     feature_distribution,
+    keep_multi_candidates,
     log_to_mlflow,
     split_by_product,
     verify_scorer_against_r,
@@ -96,6 +99,15 @@ def _share_without_candidate(artifacts_dir: Path) -> float | None:
     return len(diag.get("ids_without_candidate", [])) / n
 
 
+def _training_population(artifacts_dir: Path) -> str | None:
+    """Population d'entraînement (« multi_candidats » ou « tous »), relue des
+    diagnostics de build-table. ``None`` pour une table antérieure au filtre."""
+    chemin = artifacts_dir / "features.diagnostics.json"
+    if not chemin.exists():
+        return None
+    return json.loads(chemin.read_text(encoding="utf-8")).get("training_population")
+
+
 def _tocodify_ids(path: str | None) -> set | None:
     """Identifiants réellement à coder, pour détecter les produits perdus en amont."""
     if not path:
@@ -127,6 +139,16 @@ def cmd_build_table(args: argparse.Namespace) -> int:
     table = split_by_product(
         table, frac=args.split_frac, seed=args.split_seed
     )
+    if args.multi_candidates_only:
+        n_avant = table["id"].nunique()
+        table = keep_multi_candidates(table)
+        diag["n_products_single_candidate_dropped"] = n_avant - int(table["id"].nunique())
+        logger.info(
+            "%d produit(s) à candidat unique écartés de l'entraînement "
+            "(--multi-candidates-only)",
+            diag["n_products_single_candidate_dropped"],
+        )
+    diag["training_population"] = "multi_candidats" if args.multi_candidates_only else "tous"
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     # Parquet, lu tel quel par R via duckdb : il porte les types et les doubles
@@ -197,6 +219,7 @@ def cmd_finalize(args: argparse.Namespace) -> int:
         "n_candidates": int(len(features)),
         "split_frac": args.split_frac,
         "split_seed": args.split_seed,
+        "population": _training_population(art),
         "date": datetime.now(timezone.utc).date().isoformat(),
         # Référence du contrôle de dérive de `reconcile-sirus` : la part de
         # produits sans aucun candidat, mesurée quand les 4 classifieurs
@@ -265,25 +288,24 @@ def cmd_predict(args: argparse.Namespace) -> int:
     log_diagnostics(diag)
     check_drift(meta, table, diag)
 
-    mask = scorable_mask(rules, table)
-    scorable = table[mask].reset_index(drop=True)
-    if scorable.empty:
-        # Il y avait des observations, mais pas un seul candidat scorable : soit
+    # Routage amont : un produit à candidat unique reçoit ce code sans passer
+    # par le modèle (cf. `split_single_candidates`).
+    decided, proba = route_and_score(rules, table)
+    if decided.empty:
+        # Il y avait des observations, mais pas un seul produit décidable : soit
         # les 4 classifieurs se sont tous abstenus, soit leurs codes ont changé
         # de forme (dé-zéro-paddés, tronqués autrement) et sont tous rejetés,
-        # soit toutes les divisions COICOP sont inconnues du modèle. Aucun de ces
-        # cas n'est normal — d'où l'échec, plutôt qu'une sortie entièrement vide
-        # qui laisserait croire que le run a été traité.
+        # soit toutes les divisions COICOP des produits à plusieurs candidats
+        # sont inconnues du modèle. Aucun de ces cas n'est normal — d'où
+        # l'échec, plutôt qu'une sortie entièrement vide qui laisserait croire
+        # que le run a été traité.
         logger.error(
-            "%d observation(s) en entrée mais aucun candidat scorable. Regarder "
+            "%d observation(s) en entrée mais aucun produit décidable. Regarder "
             "les compteurs de rejet ci-dessus : s'ils sont élevés, la forme des "
             "codes émis en amont a probablement changé. Étape en échec.",
             len(merged),
         )
         return 1
-
-    proba = score(rules, scorable[FEATURES])
-    decided = pick_best(scorable, proba)
 
     # Produits sans candidat exploitable : absents de `decided`, ils
     # disparaîtraient de la sortie sans ce rattrapage explicite.
@@ -298,10 +320,11 @@ def cmd_predict(args: argparse.Namespace) -> int:
                         "id": manquants,
                         "sirus_code": pd.NA,
                         "sirus_proba": np.nan,
-                        # Aucun candidat proposé par les 4 classifieurs : il n'y
-                        # a pas d'argmax à prendre. `sirus_code` à NA et
-                        # `sirus_n_candidats` à 0 le disent sans colonne dédiée.
+                        # Aucun candidat exploitable : il n'y a pas d'argmax à
+                        # prendre. `sirus_code` à NA et `sirus_n_candidats` à 0
+                        # le disent, `sirus_route` le nomme.
                         "sirus_n_candidats": 0,
+                        "sirus_route": ROUTE_AUCUN,
                     }
                 ),
             ],
@@ -325,22 +348,27 @@ def cmd_predict(args: argparse.Namespace) -> int:
     assert len(out) == len(merged), "la jointure a changé le nombre de lignes"
     _write_parquet(out, args.output_file)
 
-    n_sans_code = int(decided["sirus_code"].isna().sum())
+    routes = decided["sirus_route"].value_counts()
     logger.info(
-        "%d produit(s) codés, %d sans candidat exploitable",
-        len(decided) - n_sans_code,
-        n_sans_code,
+        "%d produit(s) codés par SIRUS, %d routés (candidat unique, sans score), "
+        "%d sans candidat exploitable",
+        int(routes.get(ROUTE_MODELE, 0)),
+        int(routes.get(ROUTE_CANDIDAT_UNIQUE, 0)),
+        int(routes.get(ROUTE_AUCUN, 0)),
     )
-    logger.info(
-        "score attribué — min/médiane/max : %.4f / %.4f / %.4f. La sortie étant "
-        "une moyenne de sorties de règles, elle n'atteint jamais 0 ni 1 : c'est "
-        "pourquoi un seuil d'exploitation, s'il en faut un en aval, ne se lit pas "
-        "comme une probabilité usuelle (voir la section « Calibration de SIRUS » "
-        "du rapport d'évaluation).",
-        float(proba.min()),
-        float(np.median(proba)),
-        float(proba.max()),
-    )
+    if proba.size == 0:
+        logger.info("aucun produit à plusieurs candidats : le modèle n'a rien scoré")
+    else:
+        logger.info(
+            "score attribué — min/médiane/max : %.4f / %.4f / %.4f. La sortie étant "
+            "une moyenne de sorties de règles, elle n'atteint jamais 0 ni 1 : c'est "
+            "pourquoi un seuil d'exploitation, s'il en faut un en aval, ne se lit pas "
+            "comme une probabilité usuelle (voir la section « Calibration de SIRUS » "
+            "du rapport d'évaluation).",
+            float(proba.min()),
+            float(np.median(proba)),
+            float(proba.max()),
+        )
     logger.info("écrit : %s (%d lignes)", args.output_file, len(out))
     return 0
 
@@ -369,6 +397,13 @@ def build_parser() -> argparse.ArgumentParser:
     bt.add_argument("--out", required=True)
     bt.add_argument("--split-frac", type=float, default=0.8)
     bt.add_argument("--split-seed", type=int, default=42)
+    bt.add_argument(
+        "--multi-candidates-only",
+        action="store_true",
+        help="N'entraîner que sur les produits à au moins deux candidats. Non "
+        "appliqué par défaut : son effet sur les produits où SIRUS tranche se "
+        "contredit d'un run à l'autre (cf. notebooks/sirus_multi_candidats.ipynb).",
+    )
     bt.set_defaults(func=cmd_build_table)
 
     fi = sub.add_parser("finalize", help="Mesure, calibration et log MLflow du modèle ajusté")

@@ -11,7 +11,7 @@ Les termes et colonnes qui reviennent dans toute la documentation, regroupés pa
 | **COICOP** | *Classification of Individual Consumption According to Purpose* — nomenclature hiérarchique des dépenses de consommation (voir [l'accueil](index.qmd#la-nomenclature-coicop-en-bref)). |
 | **BDF** | Enquête **Budget de Famille** : collecte des tickets de caisse des ménages ; chaque ligne de ticket est un produit à coder. |
 | **`label-column`** | Nom de la colonne d'étiquettes dans le fichier d'entrée. Vide (le cas nominal) : l'étape [`evaluate`](11-evaluate.qmd) est sautée. Renseignée : `build-datasets` la recopie dans `code`, elle traverse la chaîne, et le run devient mesurable. Il y avait auparavant deux **modes** dérivés du seul fait qu'`input_file` soit vide ou non ; le pipeline n'en a plus qu'un ([Généralités](00-generalites.qmd)). |
-| **`eval-source-column`** | Nom de la colonne de provenance du produit. Ajoute une ventilation de l'accuracy par source au rapport d'évaluation. Ne restreint **jamais** le périmètre codé. |
+| **`source_column`** | Nom de la colonne de provenance dans le fichier d'entrée. Renseigné (avec `label-column`), il ajoute aussi la ventilation de l'accuracy par source au rapport d'évaluation. Ne restreint **jamais** le périmètre codé. |
 | **`evaluate`** | Étape finale **facultative** qui mesure la qualité d'un run étiqueté : rapport HTML sur S3 et métriques dans MLflow ([Evaluate](11-evaluate.qmd)). |
 | **LCS** | *Longest Common Substring* — codification par plus longue sous-chaîne commune avec un pool de libellés déjà codés ([Codif LCS](03-classify-lcs.qmd)). |
 | **RAG** | *Retrieval-Augmented Generation* — recherche sémantique puis choix par un LLM. Deux branches : sur les **notices** de la nomenclature ([RAG COICOP](04-rag-notices.qmd)) et sur des **exemples déjà codifiés** ([RAG annotations](09-rag-annotations.qmd)). |
@@ -94,6 +94,8 @@ Tous ces codes sont **tronqués au niveau 4 et élagués** par `reconcile-llm` q
 | `llm_error` | `reconcile-llm` | Raison de l'échec quand `llm_code` est NA (`RateLimitError`, JSON invalide…). |
 | `predicted_code` | `export-results` | Code livré : `llm_code` s'il existe, sinon `predict_code` (regex), sinon vide. |
 | `prediction_source` | `export-results` | Origine du code : `consensus` > `regex` > `llm` > *(vide)* — un indicateur de fiabilité. |
+| `reconciliation_type` | `export-results` | Chemin suivi par la conciliation : `candidat_unique`, `choix_sirus`, `consensus`, `choix_llm`, `regex`, `aucun_code`. Sépare un vrai choix d'un court-circuit. |
+| `n_classifiers_agreeing` | `export-results` | Nombre de classifieurs (0-4) ayant proposé le code livré ; détail par classifieur dans `proposed_by_{lcs,rag,ragann,ttc}`. |
 | `code_parent_equivalent` | `prune-codes` | Code canonique d'un code replié, dans `mapping_lvl4.parquet`. |
 | `code_lvl4` | `reconcile-llm` | Vérité terrain **canonique** : `code` tronqué au niveau 4 puis élagué. C'est la colonne que l'étape [`evaluate`](11-evaluate.qmd) score — son absence la fait **échouer**. |
 | `llm_comment` | `export-results` | Copie de `llm_explication` dans le fichier livré. |

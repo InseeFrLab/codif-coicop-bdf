@@ -110,11 +110,11 @@ def validate_collection(
     client_qdrant: Any,
     collection_name: Optional[str],
     manifests_root: str,
-    expected_dim: int,
     expected_embedding_model: str,
     param_name: str,
     index_pipeline: str,
     expected_strategy: Optional[str] = None,
+    expected_dim: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Vérifie qu'une collection est utilisable, AVANT tout travail coûteux.
 
@@ -125,6 +125,11 @@ def validate_collection(
     il fait échouer le pipeline après ~2 h sur un `argument --model-uri:
     expected one argument` qui ne dit ni ce qu'il fallait renseigner, ni où.
     Chaque message ci-dessous nomme le paramètre et le pipeline à lancer.
+
+    `expected_dim` vide (le cas des étapes de classification) : la dimension
+    attendue est celle du manifeste. C'est sûr parce que le modèle est vérifié
+    d'abord — même modèle, même dimension — et cela évite de tenir la dimension
+    à jour à la main à côté du paramètre `embedding-model`.
 
     Renvoie le manifeste, que l'appelant peut journaliser.
     """
@@ -151,26 +156,37 @@ def validate_collection(
             f"dans Qdrant — supprimée ? Relancer `{index_pipeline}`."
         )
 
+    # Le modèle d'abord : c'est lui qui fixe la dimension attendue quand
+    # l'appelant ne la donne pas.
+    actual_model = manifest.get("embedding_model")
+    if actual_model != expected_embedding_model:
+        raise ValueError(
+            f"Modèle d'embedding incompatible pour « {collection_name} » : index "
+            f"bâti avec « {actual_model} », ce run interroge avec "
+            f"« {expected_embedding_model} » (paramètre `embedding-model`). Même "
+            "dimension ne veut pas dire même espace vectoriel — les résultats "
+            "seraient silencieusement faux. Aligner `embedding-model` sur le "
+            f"modèle de l'index, ou réindexer avec `{index_pipeline}`."
+        )
+
     info = client_qdrant.get_collection(collection_name)
 
     # Vecteur anonyme dans les deux constructeurs ; on reste défensif au cas où
     # quelqu'un passerait un jour à des vecteurs nommés (le type devient un dict).
     vectors = info.config.params.vectors
     actual_dim = vectors.size if hasattr(vectors, "size") else vectors[""].size
-    if actual_dim != expected_dim:
+    wanted_dim = expected_dim if expected_dim is not None else manifest.get("embedding_dim")
+    if wanted_dim is None or actual_dim != int(wanted_dim):
         raise ValueError(
             f"Dimension incompatible pour « {collection_name} » : la collection "
-            f"est en {actual_dim}, ce run attend {expected_dim} "
-            f"(embedding.model_len). Index bâti avec un autre modèle d'embedding."
-        )
-
-    actual_model = manifest.get("embedding_model")
-    if actual_model != expected_embedding_model:
-        raise ValueError(
-            f"Modèle d'embedding incompatible pour « {collection_name} » : index "
-            f"bâti avec « {actual_model} », ce run interroge avec "
-            f"« {expected_embedding_model} ». Même dimension ne veut pas dire même "
-            "espace vectoriel — les résultats seraient silencieusement faux."
+            f"est en {actual_dim}, "
+            + (
+                f"ce run attend {expected_dim}."
+                if expected_dim is not None
+                else f"son manifeste annonce {wanted_dim}. Manifeste et collection "
+                "ne décrivent pas le même index."
+            )
+            + f" Relancer `{index_pipeline}`."
         )
 
     if expected_strategy is not None:

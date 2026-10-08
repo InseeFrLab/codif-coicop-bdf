@@ -36,13 +36,13 @@ l'évaluation explicite : on la demande, elle ne se déclenche pas toute seule.
 | Paramètre | Défaut | Rôle |
 |---|---|---|
 | `label-column` | *(vide)* | Nom de la colonne d'étiquettes dans le fichier d'entrée. **C'est le déclencheur.** `build-datasets` la recopie dans `code`, qui la porte jusqu'au bout de la chaîne |
-| `eval-source-column` | *(vide)* | Nom de la colonne de provenance du produit. Ajoute la ventilation par source. Ne restreint **jamais** le périmètre codé |
+| `source_column` | *(vide)* | Nom de la colonne de provenance dans le fichier d'entrée. Renseigné, il ajoute la ventilation par source. Ne restreint **jamais** le périmètre codé |
 | `skip-eval` | `false` | Échappatoire : saute l'étape même si `label-column` est renseignée |
 | `eval-experiment` | `codif-coicop-eval` | Expérience MLflow |
 
 ```bash
 argo submit argo/codif-pipeline.yaml --parameter-file argo/params.yaml \
-  -p label-column=code -p eval-source-column=source
+  -p label-column=code -p source_column=source_saisie
 ```
 
 ## Les entrées : le parquet de conciliation ne suffit pas
@@ -83,12 +83,21 @@ comptée fausse.
   codification**, seule population sur laquelle portent les accuracies qui suivent. Un run
   échantillonné y voit apparaître la ligne correspondante, sans quoi l'entonnoir ne
   s'additionnerait pas ;
+- **Les annotations : répartition, doublons et incohérences** : avant de lire une accuracy,
+  sur quoi porte-t-elle ? La répartition de la vérité par division COICOP (niveau 1), puis
+  croisée avec la provenance du produit quand `source_column` est
+  renseigné ; enfin les **doublons** (un couple libellé × magasin annoté plusieurs fois) et
+  les **incohérences** (un couple annoté avec plusieurs codes **canoniques** — tronqués au
+  niveau 4 puis élagués, donc sans les écarts de niveau 5 que le pipeline ne voit pas),
+  ventilées en `désaccord` (codes qui ne se contiennent pas) et `profondeur` (un code est le
+  parent de l'autre), avec des exemples. Une vérité qui se contredit plafonne l'accuracy
+  mesurable ; le périmètre est celui du parquet de conciliation (sans les lignes regex) ;
 - **Accuracy globale par niveau** COICOP pour LCS, RAG notices, RAG annotations, TTC
   et la conciliation (tableau + graphique), et la profondeur de la vérité terrain, qui dit
   où une prédiction plus fine que l'annotation est comptée fausse ;
 - **Accuracy du fichier livré, regex comprise** — le chiffre métier, ventilé par
   source de décision et assorti d'une ligne « hors regex » ;
-- **Accuracy par groupe** : `shop`, `shop_type_name`, **décile de `budget`**, niveau COICOP 2,
+- **Accuracy par groupe** : `shop`, `shop_type_name`, **décile de `budget`**, produits à moins de 50 €, niveau COICOP 2,
   et surtout la ventilation **par division COICOP prédite** — le regroupement se fait sur ce
   que la chaîne annonce, pas sur la vérité. C'est la lecture opérationnelle : « quand elle
   annonce de l'alimentaire, à quelle fréquence a-t-elle raison ? », la seule question qui se
@@ -106,9 +115,10 @@ comptée fausse.
   saisie pauvre laisse souvent le niveau 1 intact et s'effondre au niveau 4 : on sait que
   c'est de l'alimentaire, pas quel poste. Un second tableau ventile par classifieur, pour
   distinguer une source qui dégrade toute la chaîne d'une source qui met une brique en
-  défaut. **Exige deux paramètres**, tous deux vides par défaut : `source_column` (la
-  colonne du fichier d'entrée qui porte la provenance, lue par `build-datasets`) et
-  `eval-source-column: "source"` (la dimension d'analyse du rapport) ;
+  défaut. **Exige `source_column`**, vide par défaut : le nom de la colonne du fichier
+  d'entrée qui porte la provenance, lu par `build-datasets` qui la renomme `source`. Si ce
+  nom ne désigne aucune colonne, `source` ne contient que « prediction » et le rapport
+  l'avertit au lieu d'afficher un tableau à une ligne ;
 - **Distorsion de distribution au niveau 1** : la répartition des produits entre divisions
   COICOP ressemble-t-elle à la vraie ? Question distincte de l'accuracy, et qui n'en
   découle pas — des erreurs qui se compensent laissent la répartition intacte. Le chapitre
@@ -116,7 +126,12 @@ comptée fausse.
   brutes, la **distance en variation totale** — la part des produits qu'il faudrait
   déplacer pour retrouver la vraie répartition —, et le **taux de compensation**, la part
   des erreurs qui s'annulent entre elles. La divergence de Kullback-Leibler est donnée en
-  complément, à comparer entre runs et non dans l'absolu ;
+  complément, à comparer entre runs et non dans l'absolu. Il se termine par la **dépense
+  totale par division** : la somme des `budget` rangée selon le code labellisé puis selon le
+  code livré, regex comprise, sur tous les produits puis sur ceux de moins de 50 €. Un
+  agrégat budgétaire compte des euros, pas des produits, et quelques gros montants mal
+  classés suffisent à déplacer un total ; la comparaison des deux tableaux dit si un écart
+  vient des petits achats ou des gros ;
 - **Accuracy par régime de décision** : une part des lignes est décidée sans que la
   conciliation choisisse quoi que ce soit — court-circuit consensus pour le juge LLM,
   candidat unique pour SIRUS (quand les classifieurs s'accordent, il ne reste qu'un
@@ -301,6 +316,8 @@ Sont enregistrés :
   `regime/<brique>/<régime>/accuracy_niv4` et `…/n`,
   `confidence/<brique>/auroc`, `…/accuracy_at_<seuil>`, `…/coverage_at_<seuil>`,
   `codable/<brique>/lift`, `distortion/<brique>/level_<k>/{tv_distance,kl_divergence}` ;
+- **Doublons et incohérences d'annotation** : `annot_n_dup_keys`, `annot_n_rows_in_dup_keys`,
+  `annot_n_removable`, `annot_n_conflict_keys`, `annot_n_desaccord`, `annot_n_profondeur` ;
 - **Volumétrie du fichier d'entrée** : `n_input_rows`, `n_dropped_empty_label`,
   `n_dropped_uncodable`, `n_observations`. Sans `n_input_rows`, comparer deux runs ne
   permet pas de distinguer un fichier plus petit d'un filtrage plus lourd ;

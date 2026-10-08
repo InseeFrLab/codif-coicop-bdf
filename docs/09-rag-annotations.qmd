@@ -82,7 +82,7 @@ dans un run d'indexation. Les deux sources lui sont passées explicitement
 | KB d'annotations | `…/{run}/prune-codes/annotations_train_pruned.parquet` |
 | Suggester | `…/{run}/prune-codes/suggester_pruned.parquet` |
 
-- Embeddings : **`qwen3-embedding-8b`** (`model_len` 4096, `batch_size` 64), `upload_batch_size` 56.
+- Embeddings : **`qwen3-embedding-8b`** par défaut, choisi par le paramètre Argo `embedding-model` (le même à l'indexation et dans `params.yaml`, vérifié contre le manifeste) ; dimension déduite des vecteurs (4096 pour ce modèle), `batch_size` 64, `upload_batch_size` 56.
 - Collection Qdrant au **nom unique**, composé depuis `qdrant.collection_base`
   (`coicop_annotations`) et l'identité du run :
   `coicop_annotations__{run_date}__{run_id}[__sampleN]`, p. ex.

@@ -1132,6 +1132,11 @@ dependencies = [
     { name = "s3fs" },
 ]
 
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "boto3", specifier = ">=1.35" },
@@ -1142,6 +1147,9 @@ requires-dist = [
     { name = "pyarrow", specifier = ">=16" },
     { name = "s3fs", specifier = ">=2024" },
 ]
+
+[package.metadata.requires-dev]
+dev = [{ name = "pytest", specifier = ">=9.0.2" }]
 
 [[package]]
 name = "fastapi"

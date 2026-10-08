@@ -88,19 +88,20 @@ argo submit argo/codif-pipeline.yaml --parameter-file argo/params.yaml -p skip-r
 
 # Measure the run: only if the input file carries a ground-truth column.
 argo submit argo/codif-pipeline.yaml --parameter-file argo/params.yaml \
-  -p label-column=code -p eval-source-column=source
+  -p label-column=code -p source_column=source_saisie
 ```
 
 Key pipeline parameters:
 - `input_file` — **required**. The file to codify. The pipeline has a single mode; the prod/eval duality is gone.
 - `label-column` — name of the ground-truth column in `input_file`. **Empty = no evaluation**: the `evaluate` step is skipped, which is the nominal production case. Non-empty, and `build-datasets` copies it into `code`, which carries it through the whole chain.
-- `eval-source-column` — name of the product-provenance column. Adds a per-source accuracy breakdown to the evaluation report. Never restricts what gets codified.
+- `source_column` — name of the product-provenance column in the input file. When set (with `label-column`), also adds a per-source accuracy breakdown to the evaluation report. Never restricts what gets codified.
 - `skip-eval` (default `false`), `eval-experiment` — the escape hatch and the MLflow experiment of the `evaluate` step.
 - `classify-rag-notices-collection` / `classify-rag-annotations-collection` — **required**, no default. Qdrant collections produced by workflows ① and ②. Argo has no required-parameter mechanism, so the guard is written twice: a `[ -z ] && exit 1` in the container script *and* `required=True` in argparse. An unset name must fail in seconds, not silently fall back to some other run's index.
 - `git-branch` (default `main`) — **every Argo step clones the repo from GitHub at this branch**; nothing in the working copy reaches the cluster. Code changes must be pushed, and a feature branch is tested with `-p git-branch=<branch>`, never by editing files locally.
 - `sample-observations` — cap the to-codify set; sampled once at `classify-regex`. To cap the indexed KB instead, that is `kb-sample-size` of workflow ②.
 - Smoke pass: `skip-smoke` (skip it), `smoke-only` (run *only* the smoke — checks a branch in ~8 min), `smoke-observations` (default `100`), `smoke-experiment` (default `codif-coicop-smoke`; without a dedicated experiment the 100-row metrics would be indistinguishable from real ones in MLflow).
 - MLflow experiments: `report-experiment`, `eval-experiment`, `rag-experiment` (base name, suffixed `-notices` / `-annotations`; empty = each module's default).
+- `embedding-model` (default `qwen3-embedding-8b`) — shared by both RAGs **and** by the two indexing workflows. It must be the model that built both collections: `validate_collection` checks it against the manifest before MLflow. The vector dimension is no longer configured — inferred from the vectors at indexing time, read back from the manifest at query time.
 - `classify-rag-model` (LLM for classify-rag-notices), `reconcile-llm-model` (default `gemma4-26b-moe`), `reconcile-llm-concurrency` (default `5`), `skip-report`.
 - `reconciliation` — `llm` (default, `reconcile-llm`) or `sirus` (`reconcile-sirus`). **Mutually exclusive**: the other step is skipped via `when:`, and `export-results`/`report` depend on both (legacy `dependencies:` tolerates a Skipped node).
 - `reconcile-sirus-model-uri` — MLflow artifact URI, required when `reconciliation: sirus`. Training happens **outside the pipeline** (`cd reconcile-sirus/ && ./train.sh <date>/<run_id>`), so the model can never come from the run it scores — train-on-test is impossible by construction (same pattern as `classify-ttc-model-uri`).

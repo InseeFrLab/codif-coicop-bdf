@@ -240,7 +240,9 @@ def test_pick_best_keeps_argmax_per_product():
 def test_pick_best_emits_no_verdict():
     """Aucune colonne de décision : ni `sirus_decision`, ni équivalent."""
     out = pick_best(_table_deux_produits(), np.array([0.2, 0.75, 0.31, 0.05]))
-    assert set(out.columns) == {"id", "sirus_code", "sirus_proba", "sirus_n_candidats"}
+    assert set(out.columns) == {
+        "id", "sirus_code", "sirus_proba", "sirus_n_candidats", "sirus_route"
+    }
     assert "sirus_decision" not in out.columns
 
 

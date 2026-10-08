@@ -5,6 +5,11 @@ d'indexation. Ce test fixe la forme du nom, identique pour les deux : ce qui
 distingue deux collections, c'est le run qui les a bâties.
 """
 
+from types import SimpleNamespace
+
+import pytest
+
+from codif_common import vector_index
 from codif_common.vector_index import build_collection_name, manifest_uri
 
 
@@ -69,3 +74,46 @@ class TestManifestUri:
 
     def test_trailing_slash_does_not_double_up(self):
         assert manifest_uri("s3://bucket/manifests/", "c") == "s3://bucket/manifests/c.json"
+
+
+class TestValidateCollection:
+    """Sans `expected_dim`, la dimension attendue est celle du manifeste : c'est
+    ce qui permet de changer `embedding-model` sans tenir une dimension à jour
+    à la main."""
+
+    @staticmethod
+    def _run(monkeypatch, *, collection_dim=4096, manifest_dim=4096,
+             manifest_model="qwen3-embedding-8b", query_model="qwen3-embedding-8b",
+             expected_dim=None):
+        manifest = {"collection_name": "c", "embedding_model": manifest_model,
+                    "embedding_dim": manifest_dim}
+        monkeypatch.setattr(vector_index, "read_manifest", lambda con, root, name: manifest)
+        info = SimpleNamespace(
+            config=SimpleNamespace(params=SimpleNamespace(vectors=SimpleNamespace(size=collection_dim))),
+            status="green",
+        )
+        client = SimpleNamespace(
+            collection_exists=lambda name: True,
+            get_collection=lambda name: info,
+            count=lambda collection_name, exact: SimpleNamespace(count=10),
+        )
+        return vector_index.validate_collection(
+            con=None, client_qdrant=client, collection_name="c", manifests_root="s3://m",
+            expected_embedding_model=query_model, param_name="p", index_pipeline="idx.yaml",
+            expected_dim=expected_dim,
+        )
+
+    def test_dimension_comes_from_the_manifest(self, monkeypatch):
+        assert self._run(monkeypatch)["point_count_live"] == 10
+
+    def test_manifest_and_collection_disagreeing_fails(self, monkeypatch):
+        with pytest.raises(ValueError, match="manifeste annonce 1024"):
+            self._run(monkeypatch, manifest_dim=1024)
+
+    def test_other_model_fails_naming_the_parameter(self, monkeypatch):
+        with pytest.raises(ValueError, match="embedding-model"):
+            self._run(monkeypatch, query_model="bge-m3")
+
+    def test_explicit_dimension_is_still_honoured(self, monkeypatch):
+        with pytest.raises(ValueError, match="ce run attend 1024"):
+            self._run(monkeypatch, expected_dim=1024)
